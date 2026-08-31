@@ -1,0 +1,356 @@
+name: Build AyuGram v7.0.9 TTL-only
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-windows-ttl-only.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ayugram-v7.0.9-ttl-only
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPOSITORY: https://github.com/AyuGram/AyuGramDesktop.git
+  SOURCE_TAG: v7.0.9
+  SOURCE_SHA: 032ad328549cff9f612d106d8660fbc03eb43130
+  OFFICIAL_ZIP_URL: https://github.com/AyuGram/AyuGramDesktop/releases/download/v7.0.9/AyuGram.zip
+  OFFICIAL_ZIP_SHA256: 5360e93f71a5acb4938ade03872dc7ce556c41853d63c0144f26ddbda74768c3
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout build recipe
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Select a drive with enough free space
+        shell: pwsh
+        run: |
+          $minimum = 45GB
+          $selected = $null
+          foreach ($name in @("D", "C")) {
+            $drive = Get-PSDrive -Name $name -ErrorAction SilentlyContinue
+            if ($drive -and $drive.Free -ge $minimum) {
+              $selected = $drive
+              break
+            }
+          }
+          if (-not $selected) {
+            Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
+            throw "The runner has less than 45 GB free. Retry the workflow later."
+          }
+          $root = "$($selected.Name):\AyuBuild"
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          "BUILD_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using $root with $([math]::Round($selected.Free / 1GB, 1)) GB free."
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.10"
+
+      - name: Clone the fixed source and apply the patch
+        shell: pwsh
+        run: |
+          git config --global core.longpaths true
+          git clone --branch $env:SOURCE_TAG --depth 1 --recurse-submodules --shallow-submodules $env:SOURCE_REPOSITORY "$env:BUILD_ROOT\tdesktop"
+          $actual = (git -C "$env:BUILD_ROOT\tdesktop" rev-parse HEAD).Trim()
+          if ($actual -ne $env:SOURCE_SHA) {
+            throw "Unexpected source commit: $actual"
+          }
+          $patch = "$env:RUNNER_TEMP\self-destruct-photo.patch"
+          $patchBase64 = @'
+          ZGlmZiAtLWdpdCBhL1RlbGVncmFtL1Jlc291cmNlcy9sYW5ncy9sYW5nLnN0cmluZ3MgYi9UZWxl
+          Z3JhbS9SZXNvdXJjZXMvbGFuZ3MvbGFuZy5zdHJpbmdzCmluZGV4IDdhZDQzNzk1Yy4uM2NkYWVj
+          MTJjIDEwMDY0NAotLS0gYS9UZWxlZ3JhbS9SZXNvdXJjZXMvbGFuZ3MvbGFuZy5zdHJpbmdzCisr
+          KyBiL1RlbGVncmFtL1Jlc291cmNlcy9sYW5ncy9sYW5nLnN0cmluZ3MKQEAgLTg3NzcsNiArODc3
+          Nyw4IEBAIGh0dHBzOi8vZ2l0aHViLmNvbS90ZWxlZ3JhbWRlc2t0b3AvdGRlc2t0b3AvYmxvYi9t
+          YXN0ZXIvTEVHQUwKICJheXVfTWVzc2FnZUJ1YmJsZVJhZGl1cyIgPSAiTWVzc2FnZSBCdWJibGUg
+          UmFkaXVzIjsKICJheXVfU2V0dGluZ3NXaWRlTXVsdGlwbGllciIgPSAiV2lkZSBNZXNzYWdlcyBN
+          dWx0aXBsaWVyIjsKICJheXVfU2V0dGluZ3NXaWRlTXVsdGlwbGllckRlc2NyaXB0aW9uIiA9ICJZ
+          b3UgY2FuIGNoYW5nZSBtZXNzYWdlIHdpZHRoIGZvciBiZXR0ZXIgZGlzcGxheSBvbiB3aWRlIG1v
+          bml0b3JzLiI7CisiYXl1X1NlbGZEZXN0cnVjdFBob3RvVGltZXIiID0gIumYheWQjuWNs+eEmueF
+          p+eJhyI7CisiYXl1X1NlbGZEZXN0cnVjdFBob3RvVGltZXJEZXNjcmlwdGlvbiIgPSAi6K6+572u
+          5LiA5qyh5ZCO77yM56eB6IGK5Lit5q2j5bi45Y+R6YCB55qE5omA5pyJ54Wn54mH6YO95Lya5L2/
+          55So6L+Z5Liq6Ieq5q+B5pe26Ze044CC6K6+5Li64oCc5YWz6Zet4oCd5Y2z5Y+v5YGc55So77yb
+          5L2c5Li65paH5Lu25Y+R6YCB44CB5a6a5pe25Y+R6YCB44CB576k57uE44CB5py65Zmo5Lq65ZKM
+          5pS26JeP5aS55LiN5Y+X5b2x5ZON44CCIjsKICJheXVfU2V0dGluZ3NTcG9vZldlYnZpZXdBc0Fu
+          ZHJvaWQiID0gIlNwb29mIENsaWVudCBhcyBBbmRyb2lkIjsKICJheXVfU2V0dGluZ3NCaWdnZXJX
+          aW5kb3ciID0gIkJpZ2dlciBXaW5kb3ciOwogImF5dV9TZXR0aW5nc0luY3JlYXNlV2Vidmlld0hl
+          aWdodCIgPSAiSW5jcmVhc2UgQ29udGVudCBIZWlnaHQiOwpkaWZmIC0tZ2l0IGEvVGVsZWdyYW0v
+          U291cmNlRmlsZXMvYXBpL2FwaV9zZW5kaW5nLmNwcCBiL1RlbGVncmFtL1NvdXJjZUZpbGVzL2Fw
+          aS9hcGlfc2VuZGluZy5jcHAKaW5kZXggMzNhZjg1N2E4Li5mMDEyMGE0NzAgMTAwNjQ0Ci0tLSBh
+          L1RlbGVncmFtL1NvdXJjZUZpbGVzL2FwaS9hcGlfc2VuZGluZy5jcHAKKysrIGIvVGVsZWdyYW0v
+          U291cmNlRmlsZXMvYXBpL2FwaV9zZW5kaW5nLmNwcApAQCAtNzE0LDEyICs3MTQsMTQgQEAgdm9p
+          ZCBTZW5kQ29uZmlybWVkRmlsZSgKIAl9CiAJY29uc3QgYXV0byBtZWRpYSA9IE1UUE1lc3NhZ2VN
+          ZWRpYShbJl0gewogCQlpZiAoZmlsZS0+dHlwZSA9PSBTZW5kTWVkaWFUeXBlOjpQaG90bykgewor
+          CQkJY29uc3QgYXV0byB0dGxTZWNvbmRzID0gZmlsZS0+dG8ub3B0aW9ucy50dGxTZWNvbmRzOwog
+          CQkJdXNpbmcgRmxhZyA9IE1UUERtZXNzYWdlTWVkaWFQaG90bzo6RmxhZzsKIAkJCXJldHVybiBN
+          VFBfbWVzc2FnZU1lZGlhUGhvdG8oCiAJCQkJTVRQX2ZsYWdzKEZsYWc6OmZfcGhvdG8KKwkJCQkJ
+          fCAodHRsU2Vjb25kcyA/IEZsYWc6OmZfdHRsX3NlY29uZHMgOiBGbGFnKCkpCiAJCQkJCXwgKGZp
+          bGUtPnNwb2lsZXIgPyBGbGFnOjpmX3Nwb2lsZXIgOiBGbGFnKCkpKSwKIAkJCQlmaWxlLT5waG90
+          bywKLQkJCQlNVFBpbnQoKSwgLy8gdHRsX3NlY29uZHMKKwkJCQlNVFBfaW50KHR0bFNlY29uZHMp
+          LAogCQkJCU1UUERvY3VtZW50KCkpOyAvLyB2aWRlbwogCQl9IGVsc2UgaWYgKGZpbGUtPnR5cGUg
+          PT0gU2VuZE1lZGlhVHlwZTo6RmlsZSkgewogCQkJdXNpbmcgRmxhZyA9IE1UUERtZXNzYWdlTWVk
+          aWFEb2N1bWVudDo6RmxhZzsKZGlmZiAtLWdpdCBhL1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5dS9h
+          eXVfc2V0dGluZ3MuY3BwIGIvVGVsZWdyYW0vU291cmNlRmlsZXMvYXl1L2F5dV9zZXR0aW5ncy5j
+          cHAKaW5kZXggMjcxMWI3YzFiLi5kZmY2ZjY3NTkgMTAwNjQ0Ci0tLSBhL1RlbGVncmFtL1NvdXJj
+          ZUZpbGVzL2F5dS9heXVfc2V0dGluZ3MuY3BwCisrKyBiL1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5
+          dS9heXVfc2V0dGluZ3MuY3BwCkBAIC0yMSw2ICsyMSw3IEBACiAjaW5jbHVkZSAicnBsL2NvbWJp
+          bmUuaCIKICNpbmNsdWRlICJ3aW5kb3cvd2luZG93X2NvbnRyb2xsZXIuaCIKIAorI2luY2x1ZGUg
+          PGFsZ29yaXRobT4KICNpbmNsdWRlIDxmc3RyZWFtPgogI2luY2x1ZGUgPFFBcHBsaWNhdGlvbj4K
+          IApAQCAtMTAxNyw2ICsxMDE4LDEzIEBAIHZvaWQgQXl1U2V0dGluZ3M6OnNldFJvdW5kQ29uZmly
+          bWF0aW9uKGJvb2wgdmFsKSB7CiAJc2F2ZSgpOwogfQogCit2b2lkIEF5dVNldHRpbmdzOjpzZXRT
+          ZWxmRGVzdHJ1Y3RQaG90b1NlY29uZHMoaW50IHZhbCkgeworCXZhbCA9IHN0ZDo6Y2xhbXAodmFs
+          LCAwLCA2MCk7CisJaWYgKF9zZWxmRGVzdHJ1Y3RQaG90b1NlY29uZHMuY3VycmVudCgpID09IHZh
+          bCkgcmV0dXJuOworCV9zZWxmRGVzdHJ1Y3RQaG90b1NlY29uZHMgPSB2YWw7CisJc2F2ZSgpOwor
+          fQorCiB2b2lkIEF5dVNldHRpbmdzOjpzZXRUcmFuc2xhdGlvblByb3ZpZGVyKFRyYW5zbGF0aW9u
+          UHJvdmlkZXIgdmFsKSB7CiAJaWYgKCh2YWwgPT0gVHJhbnNsYXRpb25Qcm92aWRlcjo6TmF0aXZl
+          KQogCQkmJiAhUGxhdGZvcm06OklzVHJhbnNsYXRlUHJvdmlkZXJBdmFpbGFibGUoKSkgewpAQCAt
+          MTE1OCw2ICsxMTY2LDcgQEAgdm9pZCB0b19qc29uKG5sb2htYW5uOjpqc29uICZqLCBjb25zdCBB
+          eXVTZXR0aW5ncyAmcykgewogCQl7ImdpZkNvbmZpcm1hdGlvbiIsIHMuX2dpZkNvbmZpcm1hdGlv
+          bi5jdXJyZW50KCl9LAogCQl7InZvaWNlQ29uZmlybWF0aW9uIiwgcy5fdm9pY2VDb25maXJtYXRp
+          b24uY3VycmVudCgpfSwKIAkJeyJyb3VuZENvbmZpcm1hdGlvbiIsIHMuX3JvdW5kQ29uZmlybWF0
+          aW9uLmN1cnJlbnQoKX0sCisJCXsic2VsZkRlc3RydWN0UGhvdG9TZWNvbmRzIiwgcy5fc2VsZkRl
+          c3RydWN0UGhvdG9TZWNvbmRzLmN1cnJlbnQoKX0sCiAJCXsidHJhbnNsYXRpb25Qcm92aWRlciIs
+          IHMuX3RyYW5zbGF0aW9uUHJvdmlkZXIuY3VycmVudCgpfSwKIAkJeyJhZGFwdGl2ZUNvdmVyQ29s
+          b3IiLCBzLl9hZGFwdGl2ZUNvdmVyQ29sb3IuY3VycmVudCgpfSwKIAkJeyJpbXByb3ZlTGlua1By
+          ZXZpZXdzIiwgcy5faW1wcm92ZUxpbmtQcmV2aWV3cy5jdXJyZW50KCl9LApAQCAtMTI2Miw2ICsx
+          MjcxLDEyIEBAIHZvaWQgZnJvbV9qc29uKGNvbnN0IG5sb2htYW5uOjpqc29uICZqLCBBeXVTZXR0
+          aW5ncyAmcykgewogCXMuX2dpZkNvbmZpcm1hdGlvbiA9IGoudmFsdWUoImdpZkNvbmZpcm1hdGlv
+          biIsIGRlZmF1bHRzLl9naWZDb25maXJtYXRpb24uY3VycmVudCgpKTsKIAlzLl92b2ljZUNvbmZp
+          cm1hdGlvbiA9IGoudmFsdWUoInZvaWNlQ29uZmlybWF0aW9uIiwgZGVmYXVsdHMuX3ZvaWNlQ29u
+          ZmlybWF0aW9uLmN1cnJlbnQoKSk7CiAJcy5fcm91bmRDb25maXJtYXRpb24gPSBqLnZhbHVlKCJy
+          b3VuZENvbmZpcm1hdGlvbiIsIGRlZmF1bHRzLl9yb3VuZENvbmZpcm1hdGlvbi5jdXJyZW50KCkp
+          OworCXMuX3NlbGZEZXN0cnVjdFBob3RvU2Vjb25kcyA9IHN0ZDo6Y2xhbXAoCisJCWoudmFsdWUo
+          CisJCQkic2VsZkRlc3RydWN0UGhvdG9TZWNvbmRzIiwKKwkJCWRlZmF1bHRzLl9zZWxmRGVzdHJ1
+          Y3RQaG90b1NlY29uZHMuY3VycmVudCgpKSwKKwkJMCwKKwkJNjApOwogCXMuX3RyYW5zbGF0aW9u
+          UHJvdmlkZXIgPSBqLnZhbHVlKCJ0cmFuc2xhdGlvblByb3ZpZGVyIiwgZGVmYXVsdHMuX3RyYW5z
+          bGF0aW9uUHJvdmlkZXIuY3VycmVudCgpKTsKIAlzLl9hZGFwdGl2ZUNvdmVyQ29sb3IgPSBqLnZh
+          bHVlKCJhZGFwdGl2ZUNvdmVyQ29sb3IiLCBkZWZhdWx0cy5fYWRhcHRpdmVDb3ZlckNvbG9yLmN1
+          cnJlbnQoKSk7CiAJcy5faW1wcm92ZUxpbmtQcmV2aWV3cyA9IGoudmFsdWUoImltcHJvdmVMaW5r
+          UHJldmlld3MiLCBkZWZhdWx0cy5faW1wcm92ZUxpbmtQcmV2aWV3cy5jdXJyZW50KCkpOwpkaWZm
+          IC0tZ2l0IGEvVGVsZWdyYW0vU291cmNlRmlsZXMvYXl1L2F5dV9zZXR0aW5ncy5oIGIvVGVsZWdy
+          YW0vU291cmNlRmlsZXMvYXl1L2F5dV9zZXR0aW5ncy5oCmluZGV4IDQ5ZTliZmY4OS4uNmI3Zjc5
+          OGI2IDEwMDY0NAotLS0gYS9UZWxlZ3JhbS9Tb3VyY2VGaWxlcy9heXUvYXl1X3NldHRpbmdzLmgK
+          KysrIGIvVGVsZWdyYW0vU291cmNlRmlsZXMvYXl1L2F5dV9zZXR0aW5ncy5oCkBAIC0zNDYsNiAr
+          MzQ2LDcgQEAgcHVibGljOgogCVtbbm9kaXNjYXJkXV0gYm9vbCBnaWZDb25maXJtYXRpb24oKSBj
+          b25zdCB7IHJldHVybiBfZ2lmQ29uZmlybWF0aW9uLmN1cnJlbnQoKTsgfQogCVtbbm9kaXNjYXJk
+          XV0gYm9vbCB2b2ljZUNvbmZpcm1hdGlvbigpIGNvbnN0IHsgcmV0dXJuIF92b2ljZUNvbmZpcm1h
+          dGlvbi5jdXJyZW50KCk7IH0KIAlbW25vZGlzY2FyZF1dIGJvb2wgcm91bmRDb25maXJtYXRpb24o
+          KSBjb25zdCB7IHJldHVybiBfcm91bmRDb25maXJtYXRpb24uY3VycmVudCgpOyB9CisJW1tub2Rp
+          c2NhcmRdXSBpbnQgc2VsZkRlc3RydWN0UGhvdG9TZWNvbmRzKCkgY29uc3QgeyByZXR1cm4gX3Nl
+          bGZEZXN0cnVjdFBob3RvU2Vjb25kcy5jdXJyZW50KCk7IH0KIAlbW25vZGlzY2FyZF1dIFRyYW5z
+          bGF0aW9uUHJvdmlkZXIgdHJhbnNsYXRpb25Qcm92aWRlcigpIGNvbnN0IHsgcmV0dXJuIF90cmFu
+          c2xhdGlvblByb3ZpZGVyLmN1cnJlbnQoKTsgfQogCVtbbm9kaXNjYXJkXV0gYm9vbCBhZGFwdGl2
+          ZUNvdmVyQ29sb3IoKSBjb25zdCB7IHJldHVybiBfYWRhcHRpdmVDb3ZlckNvbG9yLmN1cnJlbnQo
+          KTsgfQogCVtbbm9kaXNjYXJkXV0gYm9vbCBpbXByb3ZlTGlua1ByZXZpZXdzKCkgY29uc3QgeyBy
+          ZXR1cm4gX2ltcHJvdmVMaW5rUHJldmlld3MuY3VycmVudCgpOyB9CkBAIC00MzMsNiArNDM0LDcg
+          QEAgcHVibGljOgogCXZvaWQgc2V0R2lmQ29uZmlybWF0aW9uKGJvb2wgdmFsKTsKIAl2b2lkIHNl
+          dFZvaWNlQ29uZmlybWF0aW9uKGJvb2wgdmFsKTsKIAl2b2lkIHNldFJvdW5kQ29uZmlybWF0aW9u
+          KGJvb2wgdmFsKTsKKwl2b2lkIHNldFNlbGZEZXN0cnVjdFBob3RvU2Vjb25kcyhpbnQgdmFsKTsK
+          IAl2b2lkIHNldFRyYW5zbGF0aW9uUHJvdmlkZXIoVHJhbnNsYXRpb25Qcm92aWRlciB2YWwpOwog
+          CXZvaWQgc2V0QWRhcHRpdmVDb3ZlckNvbG9yKGJvb2wgdmFsKTsKIAl2b2lkIHNldEltcHJvdmVM
+          aW5rUHJldmlld3MoYm9vbCB2YWwpOwpAQCAtNzA0LDYgKzcwNiw3IEBAIHByaXZhdGU6CiAJcnBs
+          Ojp2YXJpYWJsZTxib29sPiBfZ2lmQ29uZmlybWF0aW9uID0gZmFsc2U7CiAJcnBsOjp2YXJpYWJs
+          ZTxib29sPiBfdm9pY2VDb25maXJtYXRpb24gPSBmYWxzZTsKIAlycGw6OnZhcmlhYmxlPGJvb2w+
+          IF9yb3VuZENvbmZpcm1hdGlvbiA9IGZhbHNlOworCXJwbDo6dmFyaWFibGU8aW50PiBfc2VsZkRl
+          c3RydWN0UGhvdG9TZWNvbmRzID0gMzsKIAlycGw6OnZhcmlhYmxlPFRyYW5zbGF0aW9uUHJvdmlk
+          ZXI+IF90cmFuc2xhdGlvblByb3ZpZGVyID0gVHJhbnNsYXRpb25Qcm92aWRlcjo6VGVsZWdyYW07
+          CiAJcnBsOjp2YXJpYWJsZTxib29sPiBfYWRhcHRpdmVDb3ZlckNvbG9yID0gdHJ1ZTsKIAlycGw6
+          OnZhcmlhYmxlPGJvb2w+IF9pbXByb3ZlTGlua1ByZXZpZXdzID0gZmFsc2U7CmRpZmYgLS1naXQg
+          YS9UZWxlZ3JhbS9Tb3VyY2VGaWxlcy9heXUvdWkvc2V0dGluZ3Mvc2V0dGluZ3NfY2hhdHMuY3Bw
+          IGIvVGVsZWdyYW0vU291cmNlRmlsZXMvYXl1L3VpL3NldHRpbmdzL3NldHRpbmdzX2NoYXRzLmNw
+          cAppbmRleCAwYTgyZGI0MjcuLjM1NzIxYzkyMiAxMDA2NDQKLS0tIGEvVGVsZWdyYW0vU291cmNl
+          RmlsZXMvYXl1L3VpL3NldHRpbmdzL3NldHRpbmdzX2NoYXRzLmNwcAorKysgYi9UZWxlZ3JhbS9T
+          b3VyY2VGaWxlcy9heXUvdWkvc2V0dGluZ3Mvc2V0dGluZ3NfY2hhdHMuY3BwCkBAIC0xMjQsNiAr
+          MTI0LDMxIEBAIHZvaWQgQnVpbGRHcm91cHNBbmRDaGFubmVscyhTZWN0aW9uQnVpbGRlciAmYnVp
+          bGRlciwgQXl1U2VjdGlvbkJ1aWxkZXIgJmF5dSkgewogCWJ1aWxkZXIuYWRkU2tpcCgpOwogfQog
+          Cit2b2lkIEJ1aWxkU2VsZkRlc3RydWN0UGhvdG9zKFNlY3Rpb25CdWlsZGVyICZidWlsZGVyLCBB
+          eXVTZWN0aW9uQnVpbGRlciAmYXl1KSB7CisJYnVpbGRlci5hZGRTdWJzZWN0aW9uVGl0bGUodHI6
+          OmF5dV9TZWxmRGVzdHJ1Y3RQaG90b1RpbWVyKCkpOworCisJYXl1LmFkZFNsaWRlcih7CisJCS5p
+          ZCA9IHUiYXl1L3NlbGZEZXN0cnVjdFBob3RvU2Vjb25kcyJfcSwKKwkJLnRpdGxlID0gdHI6OmF5
+          dV9TZWxmRGVzdHJ1Y3RQaG90b1RpbWVyKCksCisJCS5zdGVwcyA9IDYxLAorCQkuY3VycmVudCA9
+          IEF5dVNldHRpbmdzOjpnZXRJbnN0YW5jZSgpLnNlbGZEZXN0cnVjdFBob3RvU2Vjb25kcygpLAor
+          CQkuaW5kZXhUb1ZhbHVlID0gW10oaW50IGluZGV4KSB7IHJldHVybiBpbmRleDsgfSwKKwkJLm9u
+          Q2hhbmdlZCA9IG51bGxwdHIsCisJCS5vbkZpbmFsQ2hhbmdlZCA9IFtdKGludCBpbmRleCkgewor
+          CQkJQXl1U2V0dGluZ3M6OmdldEluc3RhbmNlKCkuc2V0U2VsZkRlc3RydWN0UGhvdG9TZWNvbmRz
+          KGluZGV4KTsKKwkJfSwKKwkJLmZvcm1hdExhYmVsID0gW10oaW50IGluZGV4KSB7CisJCQlyZXR1
+          cm4gaW5kZXgKKwkJCQk/IHRyOjpsbmdfc2Vjb25kcyh0cjo6bm93LCBsdF9jb3VudCwgaW5kZXgp
+          CisJCQkJOiB0cjo6bG5nX3NldHRpbmdzX3R0bF9hZnRlcl9vZmYodHI6Om5vdyk7CisJCX0sCisJ
+          fSk7CisKKwlidWlsZGVyLmFkZFNraXAoKTsKKwlidWlsZGVyLmFkZERpdmlkZXJUZXh0KHRyOjph
+          eXVfU2VsZkRlc3RydWN0UGhvdG9UaW1lckRlc2NyaXB0aW9uKCkpOworCWJ1aWxkZXIuYWRkU2tp
+          cCgpOworfQorCiB2b2lkIEJ1aWxkTWFya3MoCiAJCVNlY3Rpb25CdWlsZGVyICZidWlsZGVyLAog
+          CQlBeXVTZWN0aW9uQnVpbGRlciAmYXl1LApAQCAtNDU3LDYgKzQ4Miw3IEBAIGNvbnN0IGF1dG8g
+          a01ldGEgPSBCdWlsZEhlbHBlcih7CiAJYnVpbGRlci5hZGRTa2lwKCk7CiAJQnVpbGRTdGlja2Vy
+          c0FuZEVtb2ppKGJ1aWxkZXIsIGF5dSk7CiAJQnVpbGRHcm91cHNBbmRDaGFubmVscyhidWlsZGVy
+          LCBheXUpOworCUJ1aWxkU2VsZkRlc3RydWN0UGhvdG9zKGJ1aWxkZXIsIGF5dSk7CiAJQnVpbGRN
+          YXJrcyhidWlsZGVyLCBheXUsIHByZXZpZXdTdGF0ZSk7CiAJQnVpbGRXaWRlTWVzc2FnZXNNdWx0
+          aXBsaWVyKGJ1aWxkZXIsIGF5dSwgcHJldmlld1N0YXRlKTsKIAlCdWlsZENvbnRleHRNZW51RWxl
+          bWVudHMoYnVpbGRlciwgYXl1KTsKZGlmZiAtLWdpdCBhL1RlbGVncmFtL1NvdXJjZUZpbGVzL2Jv
+          eGVzL3NlbmRfZmlsZXNfYm94LmNwcCBiL1RlbGVncmFtL1NvdXJjZUZpbGVzL2JveGVzL3NlbmRf
+          ZmlsZXNfYm94LmNwcAppbmRleCBkMDBhNWYwMTEuLmYzNjRmOTUxMSAxMDA2NDQKLS0tIGEvVGVs
+          ZWdyYW0vU291cmNlRmlsZXMvYm94ZXMvc2VuZF9maWxlc19ib3guY3BwCisrKyBiL1RlbGVncmFt
+          L1NvdXJjZUZpbGVzL2JveGVzL3NlbmRfZmlsZXNfYm94LmNwcApAQCAtMjQ3Niw3ICsyNDc2LDYg
+          QEAgdm9pZCBTZW5kRmlsZXNCb3g6OnNlbmQoCiAJY29uc3QgYXV0byBzdW1TaXplID0gcmFuZ2Vz
+          OjphY2N1bXVsYXRlKAogCQlfbGlzdC5maWxlcywgaW50NjQoMCksCiAJCVtdKGludDY0IHN1bSwg
+          Y29uc3QgYXV0byAmZmlsZSkgeyByZXR1cm4gc3VtICsgZmlsZS5zaXplOyB9KTsKLQlhcHBseUdo
+          b3N0U2NoZWR1bGluZygmX3Nob3ctPnNlc3Npb24oKSwgb3B0aW9ucywgZ2V0U2NoZWR1bGVUaW1l
+          KHN1bVNpemUpKTsKIAogCWlmICgoX3NlbmRUeXBlID09IEFwaTo6U2VuZFR5cGU6OlNjaGVkdWxl
+          ZAogCQl8fCBfc2VuZFR5cGUgPT0gQXBpOjpTZW5kVHlwZTo6U2NoZWR1bGVkVG9Vc2VyKQpAQCAt
+          MjQ5Nyw3ICsyNDk2LDMxIEBAIHZvaWQgU2VuZEZpbGVzQm94OjpzZW5kKAogCQlyZXR1cm47CiAJ
+          fQogCi0JY29uc3QgYXV0byB3YXkgPSBfc2VuZFdheS5jdXJyZW50KCk7CisJYXV0byB3YXkgPSBf
+          c2VuZFdheS5jdXJyZW50KCk7CisJY29uc3QgYXV0byBzZWxmRGVzdHJ1Y3RQaG90b1NlY29uZHMg
+          PQorCQlBeXVTZXR0aW5nczo6Z2V0SW5zdGFuY2UoKS5zZWxmRGVzdHJ1Y3RQaG90b1NlY29uZHMo
+          KTsKKwljb25zdCBhdXRvIHVzZXIgPSBfdG9QZWVyLT5hc1VzZXIoKTsKKwljb25zdCBhdXRvIGFs
+          bFBob3RvcyA9ICFfbGlzdC5maWxlcy5lbXB0eSgpCisJCSYmIHdheS5zZW5kSW1hZ2VzQXNQaG90
+          b3MoKQorCQkmJiByYW5nZXM6OmFsbF9vZihfbGlzdC5maWxlcywgW10oY29uc3QgVWk6OlByZXBh
+          cmVkRmlsZSAmZmlsZSkgeworCQkJcmV0dXJuIGZpbGUudHlwZSA9PSBVaTo6UHJlcGFyZWRGaWxl
+          OjpUeXBlOjpQaG90bzsKKwkJfSk7CisJaWYgKHNlbGZEZXN0cnVjdFBob3RvU2Vjb25kcyA+IDAK
+          KwkJJiYgdXNlcgorCQkmJiAhdXNlci0+aXNTZWxmKCkKKwkJJiYgIXVzZXItPmlzQm90KCkKKwkJ
+          JiYgIW9wdGlvbnMuc2NoZWR1bGVkCisJCSYmICFvcHRpb25zLnNob3J0Y3V0SWQKKwkJJiYgYWxs
+          UGhvdG9zKSB7CisJCW9wdGlvbnMudHRsU2Vjb25kcyA9IHNlbGZEZXN0cnVjdFBob3RvU2Vjb25k
+          czsKKwkJd2F5LnNldEdyb3VwRmlsZXMoZmFsc2UpOworCX0KKwlpZiAoIW9wdGlvbnMudHRsU2Vj
+          b25kcykgeworCQlhcHBseUdob3N0U2NoZWR1bGluZygKKwkJCSZfc2hvdy0+c2Vzc2lvbigpLAor
+          CQkJb3B0aW9ucywKKwkJCWdldFNjaGVkdWxlVGltZShzdW1TaXplKSk7CisJfQogCiAJZm9yIChh
+          dXRvICZpdGVtIDogX2xpc3QuZmlsZXMpIHsKIAkJaXRlbS5zcG9pbGVyID0gZmFsc2U7Cgo=
+          '@
+          [IO.File]::WriteAllBytes($patch, [Convert]::FromBase64String(($patchBase64 -replace '\s', '')))
+          git -C "$env:BUILD_ROOT\tdesktop" apply --check $patch
+          git -C "$env:BUILD_ROOT\tdesktop" apply $patch
+          git -C "$env:BUILD_ROOT\tdesktop" diff --check
+
+          # Ninja uses per-source language-key subsets. AyuGram's pinned
+          # code generator scans lng_* keys only, so teach it about ayu_* too.
+          $langPatch = "$env:RUNNER_TEMP\ninja-lang-subsets-ayu.patch"
+          $langPatchBase64 = @'
+          ZGlmZiAtLWdpdCBhL2NvZGVnZW4vbGFuZy9zdWJzZXRzLmNwcCBiL2NvZGVnZW4vbGFuZy9zdWJz
+          ZXRzLmNwcAppbmRleCBmZGE5MjZiLi44MTEwYjUyIDEwMDY0NAotLS0gYS9jb2RlZ2VuL2xhbmcv
+          c3Vic2V0cy5jcHAKKysrIGIvY29kZWdlbi9sYW5nL3N1YnNldHMuY3BwCkBAIC0xNzIsMTEgKzE3
+          MiwxNiBAQCB2b2lkIFNjYW4oY29uc3QgUUJ5dGVBcnJheSAmY29udGVudCwgU2Nhbm5lZCAmcmVz
+          dWx0KSB7CiAJY29uc3QgYXV0byBkYXRhID0gY29udGVudC5jb25zdERhdGEoKTsKIAljb25zdCBh
+          dXRvIHNpemUgPSBjb250ZW50LnNpemUoKTsKIAlmb3IgKGF1dG8gaSA9IHFzaXpldHlwZSgwKTsg
+          aSArIDQgPCBzaXplOyArK2kpIHsKLQkJaWYgKGRhdGFbaV0gIT0gJ2wnCi0JCQl8fCBkYXRhW2kg
+          KyAxXSAhPSAnbicKLQkJCXx8IGRhdGFbaSArIDJdICE9ICdnJwotCQkJfHwgZGF0YVtpICsgM10g
+          IT0gJ18nCi0JCQl8fCAoaSA+IDAgJiYgSXNJZGVudGlmaWVyQ2hhcihkYXRhW2kgLSAxXSkpKSB7
+          CisJCWNvbnN0IGF1dG8gaXNUZWxlZ3JhbUtleSA9IGRhdGFbaV0gPT0gJ2wnCisJCQkmJiBkYXRh
+          W2kgKyAxXSA9PSAnbicKKwkJCSYmIGRhdGFbaSArIDJdID09ICdnJworCQkJJiYgZGF0YVtpICsg
+          M10gPT0gJ18nOworCQljb25zdCBhdXRvIGlzQXl1R3JhbUtleSA9IGRhdGFbaV0gPT0gJ2EnCisJ
+          CQkmJiBkYXRhW2kgKyAxXSA9PSAneScKKwkJCSYmIGRhdGFbaSArIDJdID09ICd1JworCQkJJiYg
+          ZGF0YVtpICsgM10gPT0gJ18nOworCQlpZiAoKCFpc1RlbGVncmFtS2V5ICYmICFpc0F5dUdyYW1L
+          ZXkpCisJCQkJfHwgKGkgPiAwICYmIElzSWRlbnRpZmllckNoYXIoZGF0YVtpIC0gMV0pKSkgewog
+          CQkJY29udGludWU7CiAJCX0KIAkJYXV0byB0aWxsID0gaSArIDQ7Cg==
+          '@
+          [IO.File]::WriteAllBytes($langPatch, [Convert]::FromBase64String(($langPatchBase64 -replace '\s', '')))
+          git -C "$env:BUILD_ROOT\tdesktop\Telegram\codegen" apply --check $langPatch
+          git -C "$env:BUILD_ROOT\tdesktop\Telegram\codegen" apply $langPatch
+          git -C "$env:BUILD_ROOT\tdesktop\Telegram\codegen" diff --check
+
+      - name: Find Visual Studio
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) {
+            throw "Visual Studio C++ tools were not found."
+          }
+          $devcmd = "$vs\VC\Auxiliary\Build\vcvars64.bat"
+          "VSINSTALLPATH=$vs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VSDEVCMD=$devcmd" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install ATL and MFC for the v14.44 toolset
+        shell: pwsh
+        run: |
+          $setup = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $arguments = @(
+            "modify"
+            "--installPath `"$env:VSINSTALLPATH`""
+            "--add Microsoft.VisualStudio.Component.VC.14.44.17.14.ATL"
+            "--add Microsoft.VisualStudio.Component.VC.14.44.17.14.MFC"
+            "--quiet"
+            "--norestart"
+            "--nocache"
+          )
+          $process = Start-Process -FilePath $setup -ArgumentList $arguments -Wait -PassThru
+          $exitCode = $process.ExitCode
+          if ($exitCode -notin @(0, 3010)) {
+            throw "Visual Studio component installation failed with exit code $exitCode."
+          }
+          $toolset = Get-ChildItem "$env:VSINSTALLPATH\VC\Tools\MSVC" -Directory |
+            Where-Object Name -Like "14.44.*" |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+          if (-not $toolset -or -not (Test-Path "$($toolset.FullName)\atlmfc\include\atlbase.h")) {
+            throw "The v14.44 ATL/MFC headers were not installed."
+          }
+          Write-Host "Using ATL/MFC from $($toolset.FullName)."
+
+      - name: Prepare libraries and build AyuGram
+        shell: cmd
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: 4
+        run: |
+          call "%VSDEVCMD%" -vcvars_ver=14.44
+          if errorlevel 1 exit /b 1
+          cd /d "%BUILD_ROOT%"
+          call tdesktop\Telegram\build\prepare\win.bat
+          if errorlevel 1 exit /b 1
+          cd /d "%BUILD_ROOT%\tdesktop\Telegram"
+          where ninja
+          if errorlevel 1 exit /b 1
+          set CMAKE_BUILD_PARALLEL_LEVEL=2
+          set _CL_=/MP1
+          rem Omit release debug symbols so the final link does not exhaust runner memory.
+          call configure.bat "-GNinja Multi-Config" -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT:STRING= -D TDESKTOP_API_ID=2040 -D TDESKTOP_API_HASH=b18441a1ff607e10a989891a5462e627
+          if errorlevel 1 exit /b 1
+          cmake --build ..\out --config Release --target Telegram --parallel 2
+          if errorlevel 1 exit /b 1
+          if not exist "%BUILD_ROOT%\tdesktop\out\Release\AyuGram.exe" exit /b 1
+
+      - name: Create the portable ZIP
+        shell: pwsh
+        run: |
+          $output = "$env:GITHUB_WORKSPACE\output"
+          $official = "$output\official.zip"
+          $package = "$output\package"
+          New-Item -ItemType Directory -Force -Path $output | Out-Null
+          Invoke-WebRequest -Uri $env:OFFICIAL_ZIP_URL -OutFile $official
+          $actual = (Get-FileHash $official -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:OFFICIAL_ZIP_SHA256) {
+            throw "Official ZIP checksum mismatch: $actual"
+          }
+          Expand-Archive -Path $official -DestinationPath $package
+          Copy-Item "$env:BUILD_ROOT\tdesktop\out\Release\AyuGram.exe" "$package\AyuGram.exe" -Force
+          @"
+          AyuGram v7.0.9 定制版：阅后即焚照片
+
+          设置位置：AyuGram 设置 -> Chats -> 阅后即焚照片
+          默认时间：3 秒；选择“关闭”即可停用。
+          只作用于私聊中“作为照片”正常发送的内容。
+          多张照片会拆开逐张发送。定时发送、机器人、群组、收藏夹和“作为文件”不受影响。
+
+          本程序没有官方数字签名。首次启动时 Windows 可能显示安全提示。
+          "@ | Set-Content -Path "$package\使用说明.txt" -Encoding utf8
+          $zip = "$output\AyuGram-v7.0.9-TTL-only.zip"
+          Compress-Archive -Path "$package\*" -DestinationPath $zip -CompressionLevel Optimal
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  AyuGram-v7.0.9-TTL-only.zip" | Set-Content "$zip.sha256" -Encoding ascii
+
+      - name: Upload the finished program
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: AyuGram-v7.0.9-TTL-only
+          path: |
+            output/AyuGram-v7.0.9-TTL-only.zip
+            output/AyuGram-v7.0.9-TTL-only.zip.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
