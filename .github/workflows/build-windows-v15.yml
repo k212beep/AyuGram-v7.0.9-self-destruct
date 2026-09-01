@@ -21,7 +21,7 @@ env:
   SOURCE_SHA: 032ad328549cff9f612d106d8660fbc03eb43130
   OFFICIAL_ZIP_URL: https://github.com/AyuGram/AyuGramDesktop/releases/download/v7.0.9/AyuGram.zip
   OFFICIAL_ZIP_SHA256: 5360e93f71a5acb4938ade03872dc7ce556c41853d63c0144f26ddbda74768c3
-  PATCH_SHA256: 80daab08188ccc109afe69eef5600e82ae8075676f1d9f2d32e847a163ee21da
+  PATCH_SHA256: 03fede2795bc4f49a2ca050a673f58ba0c0e7c31226cd19589d47b902c0b6bb8
 
 jobs:
   build:
@@ -1398,7 +1398,98 @@ jobs:
           CkBAIC04MjcsNiArODMzLDcgQEAgcHJpdmF0ZToKIAlib29sIF9kZWxldGVkID0gZmFsc2U7CiAJ
           Ym9vbCBfZGVsZXRlZEFuaW1hdGVkID0gZmFsc2U7CiAJaW50IF91bnN1cHBvcnRlZFRUTCA9IDA7
           CisJTXNnSWQgX2F5dU9yaWdpbmFsTWVzc2FnZUlkID0gTXNnSWQoKTsKIAogCVRpbWVJZCBfZGF0
-          ZSA9IDA7CiAJVGltZUlkIF90dGxEZXN0cm95QXQgPSAwOwo=
+          ZSA9IDA7CiAJVGltZUlkIF90dGxEZXN0cm95QXQgPSAwOwpkaWZmIC0tZ2l0IGEvVGVsZWdyYW0v
+          U291cmNlRmlsZXMvYXl1L3VpL3NldHRpbmdzL3NldHRpbmdzX3NlbGZfZGVzdHJ1Y3QuY3BwIGIv
+          VGVsZWdyYW0vU291cmNlRmlsZXMvYXl1L3VpL3NldHRpbmdzL3NldHRpbmdzX3NlbGZfZGVzdHJ1
+          Y3QuY3BwCm5ldyBmaWxlIG1vZGUgMTAwNjQ0CmluZGV4IDAwMDAwMDAuLmY4YzdmNDUKLS0tIC9k
+          ZXYvbnVsbAorKysgYi9UZWxlZ3JhbS9Tb3VyY2VGaWxlcy9heXUvdWkvc2V0dGluZ3Mvc2V0dGlu
+          Z3Nfc2VsZl9kZXN0cnVjdC5jcHAKQEAgLTAsMCArMSwxMjcgQEAKKy8vIFRoaXMgaXMgdGhlIHNv
+          dXJjZSBjb2RlIG9mIEF5dUdyYW0gZm9yIERlc2t0b3AuCisvLworLy8gV2UgZG8gbm90IGFuZCBj
+          YW5ub3QgcHJldmVudCB0aGUgdXNlIG9mIG91ciBjb2RlLAorLy8gYnV0IGJlIHJlc3BlY3RmdWwg
+          YW5kIGNyZWRpdCB0aGUgb3JpZ2luYWwgYXV0aG9yLgorLy8KKy8vIENvcHlyaWdodCBAUmFkb2x5
+          biwgMjAyNgorI2luY2x1ZGUgImF5dS91aS9zZXR0aW5ncy9zZXR0aW5nc19zZWxmX2Rlc3RydWN0
+          LmgiCisKKyNpbmNsdWRlICJheXUvdWkvc2V0dGluZ3MvYXl1X2J1aWxkZXIuaCIKKyNpbmNsdWRl
+          ICJheXUvdWkvc2V0dGluZ3Mvc2V0dGluZ3NfbWFpbi5oIgorI2luY2x1ZGUgImF5dS9heXVfc2V0
+          dGluZ3MuaCIKKyNpbmNsdWRlICJsYW5nX2F1dG8uaCIKKyNpbmNsdWRlICJzZXR0aW5ncy9zZXR0
+          aW5nc19idWlsZGVyLmgiCisjaW5jbHVkZSAic2V0dGluZ3Mvc2V0dGluZ3NfY29tbW9uLmgiCisj
+          aW5jbHVkZSAidWkvd3JhcC92ZXJ0aWNhbF9sYXlvdXQuaCIKKyNpbmNsdWRlICJ3aW5kb3cvd2lu
+          ZG93X3Nlc3Npb25fY29udHJvbGxlci5oIgorCisjaW5jbHVkZSAic3R5bGVzL3N0eWxlX21lbnVf
+          aWNvbnMuaCIKKworbmFtZXNwYWNlIFNldHRpbmdzIHsKKwordXNpbmcgbmFtZXNwYWNlIEJ1aWxk
+          ZXI7Cit1c2luZyBuYW1lc3BhY2UgQXl1QnVpbGRlcjsKKworbmFtZXNwYWNlIHsKKwordm9pZCBC
+          dWlsZE91dGdvaW5nKFNlY3Rpb25CdWlsZGVyICZidWlsZGVyLCBBeXVTZWN0aW9uQnVpbGRlciAm
+          YXl1KSB7CisJYnVpbGRlci5hZGRTa2lwKCk7CisJYnVpbGRlci5hZGRTdWJzZWN0aW9uVGl0bGUo
+          dHI6OmF5dV9TZWxmRGVzdHJ1Y3RPdXRnb2luZ0hlYWRlcigpKTsKKworCWNvbnN0IGF1dG8gc2Vj
+          b25kcyA9IEF5dVNldHRpbmdzOjpnZXRJbnN0YW5jZSgpCisJCS5zZWxmRGVzdHJ1Y3RQaG90b1Nl
+          Y29uZHMoKTsKKwlheXUuYWRkU2xpZGVyKHsKKwkJLmlkID0gdSJheXUvc2VsZkRlc3RydWN0TWVk
+          aWFTZWNvbmRzIl9xLAorCQkuYWx0SWRzID0geyB1ImF5dS9zZWxmRGVzdHJ1Y3RQaG90b1NlY29u
+          ZHMiX3EgfSwKKwkJLnRpdGxlID0gdHI6OmF5dV9TZWxmRGVzdHJ1Y3RNZWRpYVRpbWVyKCksCisJ
+          CS5zdGVwcyA9IDYwLAorCQkuY3VycmVudCA9IHNlY29uZHMsCisJCS5pbmRleFRvVmFsdWUgPSBb
+          XShpbnQgaW5kZXgpIHsgcmV0dXJuIGluZGV4ICsgMTsgfSwKKwkJLm9uQ2hhbmdlZCA9IG51bGxw
+          dHIsCisJCS5vbkZpbmFsQ2hhbmdlZCA9IFtdKGludCB2YWx1ZSkgeworCQkJQXl1U2V0dGluZ3M6
+          OmdldEluc3RhbmNlKCkuc2V0U2VsZkRlc3RydWN0UGhvdG9TZWNvbmRzKHZhbHVlKTsKKwkJfSwK
+          KwkJLmZvcm1hdExhYmVsID0gW10oaW50IHZhbHVlKSB7CisJCQlyZXR1cm4gdHI6OmxuZ19zZWNv
+          bmRzKHRyOjpub3csIGx0X2NvdW50LCB2YWx1ZSk7CisJCX0sCisJfSk7CisKKwlheXUuYWRkU2V0
+          dGluZ1RvZ2dsZSh7CisJCS5pZCA9IHUiYXl1L291dGdvaW5nU2VsZkRlc3RydWN0QnlEZWZhdWx0
+          Il9xLAorCQkudGl0bGUgPSB0cjo6YXl1X091dGdvaW5nU2VsZkRlc3RydWN0RGVmYXVsdCgpLAor
+          CQkuZ2V0dGVyID0gJkF5dVNldHRpbmdzOjpvdXRnb2luZ1NlbGZEZXN0cnVjdEJ5RGVmYXVsdCwK
+          KwkJLnNldHRlciA9ICZBeXVTZXR0aW5nczo6c2V0T3V0Z29pbmdTZWxmRGVzdHJ1Y3RCeURlZmF1
+          bHQsCisJCS5pY29uID0geyAmc3Q6Om1lbnVJY29uVGltZXIgfSwKKwl9KTsKKworCWJ1aWxkZXIu
+          YWRkU2tpcCgpOworCWJ1aWxkZXIuYWRkRGl2aWRlclRleHQodHI6OmF5dV9TZWxmRGVzdHJ1Y3RP
+          dXRnb2luZ0Rlc2NyaXB0aW9uKCkpOworfQorCit2b2lkIEJ1aWxkSW5jb21pbmcoU2VjdGlvbkJ1
+          aWxkZXIgJmJ1aWxkZXIsIEF5dVNlY3Rpb25CdWlsZGVyICZheXUpIHsKKwlheXUuYWRkU2VjdGlv
+          bkRpdmlkZXIoKTsKKwlidWlsZGVyLmFkZFN1YnNlY3Rpb25UaXRsZSh0cjo6YXl1X1NlbGZEZXN0
+          cnVjdEluY29taW5nSGVhZGVyKCkpOworCisJYXl1LmFkZFNldHRpbmdUb2dnbGUoeworCQkuaWQg
+          PSB1ImF5dS9pbmNvbWluZ1NlbGZEZXN0cnVjdEF1dG9tYXRpY2FsbHkiX3EsCisJCS50aXRsZSA9
+          IHRyOjpheXVfSW5jb21pbmdTZWxmRGVzdHJ1Y3RBdXRvbWF0aWNhbGx5KCksCisJCS5nZXR0ZXIg
+          PSAmQXl1U2V0dGluZ3M6OmluY29taW5nU2VsZkRlc3RydWN0QXV0b21hdGljYWxseSwKKwkJLnNl
+          dHRlciA9ICZBeXVTZXR0aW5nczo6c2V0SW5jb21pbmdTZWxmRGVzdHJ1Y3RBdXRvbWF0aWNhbGx5
+          LAorCQkuaWNvbiA9IHsgJnN0OjptZW51SWNvbkRvd25sb2FkIH0sCisJfSk7CisJYnVpbGRlci5h
+          ZGRTa2lwKCk7CisJYnVpbGRlci5hZGREaXZpZGVyVGV4dCh0cjo6YXl1X0luY29taW5nU2VsZkRl
+          c3RydWN0RGVzY3JpcHRpb24oKSk7Cit9CisKK3ZvaWQgQnVpbGRQZXJzaXN0ZW5jZShTZWN0aW9u
+          QnVpbGRlciAmYnVpbGRlciwgQXl1U2VjdGlvbkJ1aWxkZXIgJmF5dSkgeworCWF5dS5hZGRTZWN0
+          aW9uRGl2aWRlcigpOworCWJ1aWxkZXIuYWRkU3Vic2VjdGlvblRpdGxlKHRyOjpheXVfRGVsZXRl
+          ZE1lc3NhZ2VzUGVyc2lzdGVuY2VIZWFkZXIoKSk7CisKKwlheXUuYWRkU2V0dGluZ1RvZ2dsZSh7
+          CisJCS5pZCA9IHUiYXl1L2tlZXBEZWxldGVkTWVzc2FnZXNBZnRlclJlc3RhcnQiX3EsCisJCS50
+          aXRsZSA9IHRyOjpheXVfS2VlcERlbGV0ZWRNZXNzYWdlc0FmdGVyUmVzdGFydCgpLAorCQkuZ2V0
+          dGVyID0gJkF5dVNldHRpbmdzOjprZWVwRGVsZXRlZE1lc3NhZ2VzQWZ0ZXJSZXN0YXJ0LAorCQku
+          c2V0dGVyID0gJkF5dVNldHRpbmdzOjpzZXRLZWVwRGVsZXRlZE1lc3NhZ2VzQWZ0ZXJSZXN0YXJ0
+          LAorCQkuaWNvbiA9IHsgJnN0OjptZW51SWNvblNhdmVJbWFnZSB9LAorCX0pOworCWJ1aWxkZXIu
+          YWRkU2tpcCgpOworCWJ1aWxkZXIuYWRkRGl2aWRlclRleHQodHI6OmF5dV9LZWVwRGVsZXRlZE1l
+          c3NhZ2VzRGVzY3JpcHRpb24oKSk7CisJYnVpbGRlci5hZGRTa2lwKCk7Cit9CisKK2NvbnN0IGF1
+          dG8ga01ldGEgPSBCdWlsZEhlbHBlcih7CisJLmlkID0gQXl1U2VsZkRlc3RydWN0OjpJZCgpLAor
+          CS5wYXJlbnRJZCA9IEF5dU1haW46OklkKCksCisJLnRpdGxlID0gJnRyOjpheXVfQ2F0ZWdvcnlT
+          ZWxmRGVzdHJ1Y3QsCisJLmljb24gPSAmc3Q6Om1lbnVJY29uVGltZXIsCit9LCBbXShTZWN0aW9u
+          QnVpbGRlciAmYnVpbGRlcikgeworCWF1dG8gYXl1ID0gQXl1U2VjdGlvbkJ1aWxkZXIoYnVpbGRl
+          cik7CisJQnVpbGRPdXRnb2luZyhidWlsZGVyLCBheXUpOworCUJ1aWxkSW5jb21pbmcoYnVpbGRl
+          ciwgYXl1KTsKKwlCdWlsZFBlcnNpc3RlbmNlKGJ1aWxkZXIsIGF5dSk7Cit9KTsKKworfSAvLyBu
+          YW1lc3BhY2UKKworcnBsOjpwcm9kdWNlcjxRU3RyaW5nPiBBeXVTZWxmRGVzdHJ1Y3Q6OnRpdGxl
+          KCkgeworCXJldHVybiB0cjo6YXl1X0NhdGVnb3J5U2VsZkRlc3RydWN0KCk7Cit9CisKK0F5dVNl
+          bGZEZXN0cnVjdDo6QXl1U2VsZkRlc3RydWN0KAorCVFXaWRnZXQgKnBhcmVudCwKKwlub3RfbnVs
+          bDxXaW5kb3c6OlNlc3Npb25Db250cm9sbGVyKj4gY29udHJvbGxlcikKKzogU2VjdGlvbihwYXJl
+          bnQsIGNvbnRyb2xsZXIpIHsKKwlzZXR1cENvbnRlbnQoKTsKK30KKwordm9pZCBBeXVTZWxmRGVz
+          dHJ1Y3Q6OnNldHVwQ29udGVudCgpIHsKKwljb25zdCBhdXRvIGNvbnRlbnQgPSBVaTo6Q3JlYXRl
+          Q2hpbGQ8VWk6OlZlcnRpY2FsTGF5b3V0Pih0aGlzKTsKKwlidWlsZChjb250ZW50LCBrTWV0YS5i
+          dWlsZCk7CisJVWk6OlJlc2l6ZUZpdENoaWxkKHRoaXMsIGNvbnRlbnQpOworfQorCitUeXBlIEF5
+          dVNlbGZEZXN0cnVjdElkKCkgeworCXJldHVybiBBeXVTZWxmRGVzdHJ1Y3Q6OklkKCk7Cit9CisK
+          K30gLy8gbmFtZXNwYWNlIFNldHRpbmdzCmRpZmYgLS1naXQgYS9UZWxlZ3JhbS9Tb3VyY2VGaWxl
+          cy9heXUvdWkvc2V0dGluZ3Mvc2V0dGluZ3Nfc2VsZl9kZXN0cnVjdC5oIGIvVGVsZWdyYW0vU291
+          cmNlRmlsZXMvYXl1L3VpL3NldHRpbmdzL3NldHRpbmdzX3NlbGZfZGVzdHJ1Y3QuaApuZXcgZmls
+          ZSBtb2RlIDEwMDY0NAppbmRleCAwMDAwMDAwLi4xNjVkM2NjCi0tLSAvZGV2L251bGwKKysrIGIv
+          VGVsZWdyYW0vU291cmNlRmlsZXMvYXl1L3VpL3NldHRpbmdzL3NldHRpbmdzX3NlbGZfZGVzdHJ1
+          Y3QuaApAQCAtMCwwICsxLDMzIEBACisvLyBUaGlzIGlzIHRoZSBzb3VyY2UgY29kZSBvZiBBeXVH
+          cmFtIGZvciBEZXNrdG9wLgorLy8KKy8vIFdlIGRvIG5vdCBhbmQgY2Fubm90IHByZXZlbnQgdGhl
+          IHVzZSBvZiBvdXIgY29kZSwKKy8vIGJ1dCBiZSByZXNwZWN0ZnVsIGFuZCBjcmVkaXQgdGhlIG9y
+          aWdpbmFsIGF1dGhvci4KKy8vCisvLyBDb3B5cmlnaHQgQFJhZG9seW4sIDIwMjYKKyNwcmFnbWEg
+          b25jZQorCisjaW5jbHVkZSAic2V0dGluZ3Mvc2V0dGluZ3NfY29tbW9uLmgiCisjaW5jbHVkZSAi
+          c2V0dGluZ3Mvc2V0dGluZ3NfY29tbW9uX3Nlc3Npb24uaCIKKworbmFtZXNwYWNlIFdpbmRvdyB7
+          CitjbGFzcyBTZXNzaW9uQ29udHJvbGxlcjsKK30gLy8gbmFtZXNwYWNlIFdpbmRvdworCituYW1l
+          c3BhY2UgU2V0dGluZ3MgeworCitjbGFzcyBBeXVTZWxmRGVzdHJ1Y3QgOiBwdWJsaWMgU2VjdGlv
+          bjxBeXVTZWxmRGVzdHJ1Y3Q+IHsKK3B1YmxpYzoKKwlBeXVTZWxmRGVzdHJ1Y3QoCisJCVFXaWRn
+          ZXQgKnBhcmVudCwKKwkJbm90X251bGw8V2luZG93OjpTZXNzaW9uQ29udHJvbGxlcio+IGNvbnRy
+          b2xsZXIpOworCisJW1tub2Rpc2NhcmRdXSBycGw6OnByb2R1Y2VyPFFTdHJpbmc+IHRpdGxlKCkg
+          b3ZlcnJpZGU7CisKK3ByaXZhdGU6CisJdm9pZCBzZXR1cENvbnRlbnQoKTsKKworfTsKKworW1tu
+          b2Rpc2NhcmRdXSBUeXBlIEF5dVNlbGZEZXN0cnVjdElkKCk7CisKK30gLy8gbmFtZXNwYWNlIFNl
+          dHRpbmdzCg==
           '@
           [IO.File]::WriteAllBytes($patch, [Convert]::FromBase64String(($patchBase64 -replace '\s', '')))
           $patchHash = (Get-FileHash $patch -Algorithm SHA256).Hash.ToLowerInvariant()
