@@ -1496,9 +1496,8 @@ jobs:
           $photoUpdateRegion = $mediaTypesSource.Substring(
             $photoUpdateStart,
             $mediaFileStart - $photoUpdateStart)
-          if ($photoUpdateRegion.Contains("mediaPhoto.vttl_seconds()")
-            -or $photoUpdateRegion.Contains(
-              "or with ttl_seconds in updateSentMedia()")) {
+          $photoRejectsTtl = $photoUpdateRegion.Contains("mediaPhoto.vttl_seconds()") -or $photoUpdateRegion.Contains("or with ttl_seconds in updateSentMedia()")
+          if ($photoRejectsTtl) {
             throw "MediaPhoto still rejects a valid TTL server response."
           }
 
@@ -1523,9 +1522,8 @@ jobs:
             "AyuDatabase::addDeletedMessage(message);")
           $startCountdown = $archiveRegion.IndexOf(
             "StartSelfDestructAfterArchive(item, manuallyRequested);")
-          if ($databaseWrite -lt 0
-            -or $startCountdown -lt 0
-            -or $databaseWrite -ge $startCountdown) {
+          $invalidArchiveOrder = ($databaseWrite -lt 0) -or ($startCountdown -lt 0) -or ($databaseWrite -ge $startCountdown)
+          if ($invalidArchiveOrder) {
             throw "Permanent record is not written before self-destruct starts."
           }
 
