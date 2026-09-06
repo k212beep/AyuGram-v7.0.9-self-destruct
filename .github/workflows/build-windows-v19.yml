@@ -36,7 +36,7 @@ jobs:
         shell: pwsh
         run: |
           $recipe = Get-Content "$env:GITHUB_WORKSPACE\.github\workflows\build-windows-v19.yml" -Raw
-          $blocks = [regex]::Matches($recipe, '(?m)^        run: \|\r?\n((?:^          .*\r?\n|^\r?\n)+)')
+          $blocks = [regex]::Matches($recipe, '(?m)^        shell: pwsh\r?\n        run: \|\r?\n((?:^          .*\r?\n|^\r?\n)+)')
           if ($blocks.Count -eq 0) { throw "No workflow scripts were found." }
           foreach ($block in $blocks) {
             $script = $block.Groups[1].Value -replace '(?m)^          ', ''
