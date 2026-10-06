@@ -21,7 +21,7 @@ env:
   SOURCE_SHA: 032ad328549cff9f612d106d8660fbc03eb43130
   OFFICIAL_ZIP_URL: https://github.com/AyuGram/AyuGramDesktop/releases/download/v7.0.9/AyuGram.zip
   OFFICIAL_ZIP_SHA256: 5360e93f71a5acb4938ade03872dc7ce556c41853d63c0144f26ddbda74768c3
-  PATCH_SHA256: 4f91a1388ce1b3d8d7588ae2e15c300ddd67536c1d2c8ae9a3f85077b232df7c
+  PATCH_SHA256: a965c7bc02fbe65d450c9f38f465f73157d823f0541541db3a5e15a2b0e53d9d
 
 jobs:
   build:
@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Checkout build recipe
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
       - name: Validate PowerShell syntax before downloading dependencies
         shell: pwsh
@@ -72,7 +72,7 @@ jobs:
           Write-Host "Using $root with $([math]::Round($selected.Free / 1GB, 1)) GB free."
 
       - name: Set up Python 3.10
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.10"
 
@@ -2610,7 +2610,32 @@ jobs:
           ZUFycmF5IGZpbGVtZDU7CiAJaW50NjQgcGFydHNzaXplID0gMDsKKwlRQnl0ZUFycmF5IGF5dVJl
           dXNlRmluZ2VycHJpbnQ7CiAKIAl1aW50NjQgdGh1bWJJZCA9IDA7IC8vIGlkIGlzIGFsd2F5cyBm
           aWxlLWlkIG9mIG1lZGlhLCB0aHVtYklkIGlzIGZpbGUtaWQgb2YgdGh1bWIgKCA9PSBpZCBmb3Ig
-          cGhvdG9zKQogCVFTdHJpbmcgdGh1bWJuYW1lOwo=
+          cGhvdG9zKQogCVFTdHJpbmcgdGh1bWJuYW1lOwpkaWZmIC0tZ2l0IGEvVGVsZWdyYW0vYnVpbGQv
+          cHJlcGFyZS9wcmVwYXJlLnB5IGIvVGVsZWdyYW0vYnVpbGQvcHJlcGFyZS9wcmVwYXJlLnB5Cmlu
+          ZGV4IDJlYTE1MjUuLmQ2OThhZmYgMTAwNjQ0Ci0tLSBhL1RlbGVncmFtL2J1aWxkL3ByZXBhcmUv
+          cHJlcGFyZS5weQorKysgYi9UZWxlZ3JhbS9idWlsZC9wcmVwYXJlL3ByZXBhcmUucHkKQEAgLTgy
+          LDcgKzgyLDcgQEAgaWYgbm90IG9zLnBhdGguaXNkaXIob3MucGF0aC5qb2luKHRoaXJkUGFydHlE
+          aXIsIGtleXNMb2MpKToKICAgICBwYXRobGliLlBhdGgob3MucGF0aC5qb2luKHRoaXJkUGFydHlE
+          aXIsIGtleXNMb2MpKS5ta2RpcihwYXJlbnRzPVRydWUsIGV4aXN0X29rPVRydWUpCiAKIHBhdGhQ
+          cmVmaXhlcyA9IFsKLSAgICAnVGhpcmRQYXJ0eVxcbXN5czY0XFxtaW5ndzY0XFxiaW4nLAorICAg
+          ICdUaGlyZFBhcnR5XFxtc3lzNjRcXHVjcnQ2NFxcYmluJywKICAgICAnVGhpcmRQYXJ0eVxcam9t
+          JywKICAgICAnVGhpcmRQYXJ0eVxcZ3lwJywKIF0gaWYgd2luIGVsc2UgWwpAQCAtNDc1LDExICs0
+          NzUsMTcgQEAgd2luOgogICAgIGJhc2ggLWMgInBhY21hbi1rZXkgLS1pbml0OyBwYWNtYW4ta2V5
+          IC0tcG9wdWxhdGU7IHBhY21hbiAtU3l1IC0tbm9jb25maXJtIgogICAgIHBhY21hbiAtU3l1IC0t
+          bm9jb25maXJtIF4KICAgICAgICAgbWFrZSBeCi0gICAgICAgIG1pbmd3LXc2NC14ODZfNjQtZGlm
+          ZnV0aWxzIF4KLSAgICAgICAgbWluZ3ctdzY0LXg4Nl82NC1ncGVyZiBeCi0gICAgICAgIG1pbmd3
+          LXc2NC14ODZfNjQtbmFzbSBeCi0gICAgICAgIG1pbmd3LXc2NC14ODZfNjQtcGVybCBeCi0gICAg
+          ICAgIG1pbmd3LXc2NC14ODZfNjQtcGtnY29uZgorICAgICAgICBtaW5ndy13NjQtdWNydC14ODZf
+          NjQtZGlmZnV0aWxzIF4KKyAgICAgICAgbWluZ3ctdzY0LXVjcnQteDg2XzY0LWdwZXJmIF4KKyAg
+          ICAgICAgbWluZ3ctdzY0LXVjcnQteDg2XzY0LW5hc20gXgorICAgICAgICBtaW5ndy13NjQtdWNy
+          dC14ODZfNjQtcGVybCBeCisgICAgICAgIG1pbmd3LXc2NC11Y3J0LXg4Nl82NC1wa2djb25mCisK
+          KyAgICAlVEhJUkRQQVJUWV9ESVIlXFxtc3lzNjRcXHVjcnQ2NFxcYmluXFxkaWZmLmV4ZSAtLXZl
+          cnNpb24KKyAgICAlVEhJUkRQQVJUWV9ESVIlXFxtc3lzNjRcXHVjcnQ2NFxcYmluXFxncGVyZi5l
+          eGUgLS12ZXJzaW9uCisgICAgJVRISVJEUEFSVFlfRElSJVxcbXN5czY0XFx1Y3J0NjRcXGJpblxc
+          bmFzbS5leGUgLXYKKyAgICAlVEhJUkRQQVJUWV9ESVIlXFxtc3lzNjRcXHVjcnQ2NFxcYmluXFxw
+          ZXJsLmV4ZSAtdgorICAgICVUSElSRFBBUlRZX0RJUiVcXG1zeXM2NFxcdWNydDY0XFxiaW5cXHBr
+          Z2NvbmYuZXhlIC0tdmVyc2lvbgogIiIiLCAnVGhpcmRQYXJ0eScpCiAKIHN0YWdlKCdweXRob24n
+          LCAiIiIK
           '@
           [IO.File]::WriteAllBytes($patch, [Convert]::FromBase64String(($patchBase64 -replace '\s', '')))
           $patchHash = (Get-FileHash $patch -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -2933,6 +2958,9 @@ jobs:
             @{ File = "Telegram\SourceFiles\history\history_item.cpp"; Text = "bool allowDeletedPreservation" }
             @{ File = "Telegram\SourceFiles\history\history_item.cpp"; Text = ").c_messageService(), false)" }
             @{ File = "Telegram\SourceFiles\history\history_item.h"; Text = "bool allowDeletedPreservation = true" }
+            @{ File = "Telegram\build\prepare\prepare.py"; Text = "mingw-w64-ucrt-x86_64-diffutils" }
+            @{ File = "Telegram\build\prepare\prepare.py"; Text = "ucrt64" }
+            @{ File = "Telegram\build\prepare\prepare.py"; Text = "pkgconf.exe --version" }
           )
           foreach ($check in $v21FixChecks) {
             if (-not (Select-String -Path "$env:BUILD_ROOT\tdesktop\$($check.File)" -SimpleMatch $check.Text -Quiet)) {
@@ -3105,7 +3133,7 @@ jobs:
           "$hash  AyuGram-v7.0.9-self-destruct-persistence-reuse-v21.zip" | Set-Content "$zip.sha256" -Encoding ascii
 
       - name: Upload the finished program
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: AyuGram-v7.0.9-self-destruct-persistence-reuse-v21
           path: |
