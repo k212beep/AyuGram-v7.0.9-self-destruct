@@ -21,7 +21,7 @@ env:
   SOURCE_SHA: 032ad328549cff9f612d106d8660fbc03eb43130
   OFFICIAL_ZIP_URL: https://github.com/AyuGram/AyuGramDesktop/releases/download/v7.0.9/AyuGram.zip
   OFFICIAL_ZIP_SHA256: 5360e93f71a5acb4938ade03872dc7ce556c41853d63c0144f26ddbda74768c3
-  RECIPE_REVISION: v22.1-compile-runtime-fix
+  RECIPE_REVISION: v22.2-workflow-scope-fix
   PATCH_SHA256: 4dbc3289925248e13ee771f44120c4abfc95018a643407b6086cd2804aed0286
 
 jobs:
@@ -4062,9 +4062,14 @@ jobs:
       - name: Validate language keys and prepare C++ checks
         shell: pwsh
         run: |
+          Set-StrictMode -Version Latest
+          $storageSource = Get-Content "$env:BUILD_ROOT\tdesktop\Telegram\SourceFiles\ayu\data\messages_storage.cpp" -Raw -ErrorAction Stop
           $mediaRestoreStart = $storageSource.IndexOf("AyuRestoredMedia restorePermanentMedia")
+          if ($mediaRestoreStart -lt 0) {
+            throw "Could not locate permanent media restoration."
+          }
           $mediaRestoreEnd = $storageSource.IndexOf("namespace {", $mediaRestoreStart)
-          if ($mediaRestoreStart -lt 0 -or $mediaRestoreEnd -le $mediaRestoreStart) {
+          if ($mediaRestoreEnd -le $mediaRestoreStart) {
             throw "Could not isolate permanent media restoration."
           }
           $mediaRestoreRegion = $storageSource.Substring($mediaRestoreStart, $mediaRestoreEnd - $mediaRestoreStart)
@@ -4353,7 +4358,7 @@ jobs:
           Expand-Archive -Path $official -DestinationPath $package
           Copy-Item "$env:BUILD_ROOT\tdesktop\out\Release\AyuGram.exe" "$package\AyuGram.exe" -Force
           @"
-          AyuGram v7.0.9 定制版（阅后即焚、永久保留与媒体秒发 v22.1）
+          AyuGram v7.0.9 定制版（阅后即焚、永久保留与媒体秒发 v22.2）
           构建标识：$env:RECIPE_REVISION
 
           设置位置：AyuGram 设置 -> 阅后即焚与保留
@@ -4372,9 +4377,10 @@ jobs:
           v21 修复：被删除的尾部消息和已自毁提示在切换聊天、重载历史及重启后重新挂回视图；同秒消息按原编号排序，并保持正确的聊天列表尾部。
           归档消息恢复发送方向和已读/媒体已读状态；后续读回执同步写入数据库。媒体文件查找限定账号和聊天目录，避免同编号消息串用其它聊天的媒体。
           v21 补充：对方双向清空聊天记录时保护最后一条普通消息的原内容并归档；重复清空通知和历史重载不会再将它改成空记录。
-          v22.1 修复：重启时从本地对话索引恢复聊天列表，包括服务器已清空并从列表移除的私聊；聊天列表显示最后一条存档预览。
+          v22.2 修复：重启时从本地对话索引恢复聊天列表，包括服务器已清空并从列表移除的私聊；聊天列表显示最后一条存档预览。
           服务器历史已空时，重新进入或重载对话会重新显示完整的本地存档；剩余的一两条本地缓存不会限制恢复范围。
           兼容旧的删除记录表、媒体目录和初始文件编号；新的媒体被编辑替换时使用独立文件名，重复使用同一视频不会删除另一条消息的永久文件。
+          v22.2：修正 PowerShell 独立步骤间变量不可共享导致的构建中断；每一步自行读取所需源码，保留全部源码和媒体恢复检查。
           v22.1：修正 Windows 消息类型转换和缺少声明导致的编译错误；修复大量存档反复恢复时的全量扫描与媒体对象重复创建。
           同一存档媒体使用稳定本地身份，图片通过本地文件按需异步读取；不会在重建历史时提前把全部原图加载进内存。
           历史范围、存档或缓存变化时重新核对；相同范围的重复界面更新复用恢复结果。重复已读和清空回执不再重复写盘。
@@ -4398,18 +4404,18 @@ jobs:
 
           本程序没有官方数字签名。首次启动时 Windows 可能显示安全提示。
           "@ | Set-Content -Path "$package\使用说明.txt" -Encoding utf8
-          $zip = "$output\AyuGram-v7.0.9-self-destruct-persistence-reuse-v22.1.zip"
+          $zip = "$output\AyuGram-v7.0.9-self-destruct-persistence-reuse-v22.2.zip"
           Compress-Archive -Path "$package\*" -DestinationPath $zip -CompressionLevel Optimal
           $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  AyuGram-v7.0.9-self-destruct-persistence-reuse-v22.1.zip" | Set-Content "$zip.sha256" -Encoding ascii
+          "$hash  AyuGram-v7.0.9-self-destruct-persistence-reuse-v22.2.zip" | Set-Content "$zip.sha256" -Encoding ascii
 
       - name: Upload the finished program
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: AyuGram-v7.0.9-self-destruct-persistence-reuse-v22.1
+          name: AyuGram-v7.0.9-self-destruct-persistence-reuse-v22.2
           path: |
-            output/AyuGram-v7.0.9-self-destruct-persistence-reuse-v22.1.zip
-            output/AyuGram-v7.0.9-self-destruct-persistence-reuse-v22.1.zip.sha256
+            output/AyuGram-v7.0.9-self-destruct-persistence-reuse-v22.2.zip
+            output/AyuGram-v7.0.9-self-destruct-persistence-reuse-v22.2.zip.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
