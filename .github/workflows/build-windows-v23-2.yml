@@ -84,12 +84,91 @@ jobs:
         shell: pwsh
         run: |
           git config --global core.longpaths true
-          git clone --branch $env:SOURCE_TAG --depth 1 --recurse-submodules --shallow-submodules $env:SOURCE_REPOSITORY "$env:BUILD_ROOT\tdesktop"
-          if ($LASTEXITCODE -ne 0) { throw "Source clone failed." }
-          $actual = (git -C "$env:BUILD_ROOT\tdesktop" rev-parse HEAD).Trim()
-          if ($actual -ne $env:SOURCE_SHA) {
-            throw "Unexpected source commit: $actual"
-          }
+          $sourceCheckout = @'
+          import os
+          from pathlib import Path
+          import subprocess
+          import time
+          
+          
+          MAX_ATTEMPTS = 5
+          NETWORK_TIMEOUT_SECONDS = 900
+          RETRY_DELAYS = (5, 10, 20, 30)
+          
+          
+          def run_git(arguments, *, network=False, capture_output=False):
+              command = ["git", "-c", "http.version=HTTP/1.1"]
+              command.extend(arguments)
+              environment = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+              attempts = MAX_ATTEMPTS if network else 1
+              for attempt in range(1, attempts + 1):
+                  print(f"Git attempt {attempt}/{attempts}: {' '.join(arguments)}", flush=True)
+                  try:
+                      result = subprocess.run(
+                          command,
+                          env=environment,
+                          text=True,
+                          capture_output=capture_output,
+                          timeout=NETWORK_TIMEOUT_SECONDS if network else 180,
+                      )
+                  except subprocess.TimeoutExpired:
+                      failure = "download timed out"
+                  else:
+                      if result.returncode == 0:
+                          return result
+                      failure = f"exit code {result.returncode}"
+                  if attempt == attempts:
+                      raise RuntimeError(
+                          f"Git command failed after {attempts} attempt(s): {failure}: "
+                          + " ".join(arguments)
+                      )
+                  delay = RETRY_DELAYS[attempt - 1]
+                  print(f"Git download interrupted ({failure}); retrying in {delay}s.", flush=True)
+                  time.sleep(delay)
+          
+          
+          def main():
+              source = Path(os.environ["BUILD_ROOT"]) / "tdesktop"
+              repository = os.environ["SOURCE_REPOSITORY"]
+              tag = os.environ["SOURCE_TAG"]
+              expected = os.environ["SOURCE_SHA"]
+              source.mkdir(parents=True, exist_ok=True)
+              run_git(["init", str(source)])
+              prefix = ["-C", str(source)]
+              run_git(prefix + ["config", "core.longpaths", "true"])
+              run_git(prefix + ["config", "remote.origin.url", repository])
+              tag_ref = f"refs/tags/{tag}"
+              run_git(
+                  prefix + ["fetch", "--depth", "1", "origin", f"{tag_ref}:{tag_ref}"],
+                  network=True,
+              )
+              actual = run_git(
+                  prefix + ["rev-parse", tag_ref + "^{commit}"], capture_output=True
+              ).stdout.strip()
+              if actual != expected:
+                  raise RuntimeError(f"Unexpected source commit: {actual}; expected {expected}")
+              run_git(prefix + ["checkout", "--detach", actual])
+              run_git(prefix + ["submodule", "sync", "--recursive"])
+              run_git(
+                  prefix + ["submodule", "update", "--init", "--recursive", "--depth", "1"],
+                  network=True,
+              )
+              status = run_git(
+                  prefix + ["submodule", "status", "--recursive"], capture_output=True
+              ).stdout
+              invalid = [line for line in status.splitlines() if not line.startswith(" ")]
+              if invalid:
+                  raise RuntimeError("Submodules are not at their pinned commits:\n" + "\n".join(invalid))
+              print(f"Source and all recursive submodules are at their pinned commits: {actual}", flush=True)
+          
+          
+          if __name__ == "__main__":
+              main()
+          '@
+          $sourceCheckoutPath = "$env:RUNNER_TEMP\source-checkout-v23-2.py"
+          [IO.File]::WriteAllText($sourceCheckoutPath, $sourceCheckout, [Text.UTF8Encoding]::new($false))
+          python $sourceCheckoutPath
+          if ($LASTEXITCODE -ne 0) { throw "Pinned source or submodule download failed after retries." }
           $patch = "$env:RUNNER_TEMP\self-destruct-persistence-v23-2.patch"
           # Single complete patch against SOURCE_SHA, including all new files.
           $patchBase64 = @'
