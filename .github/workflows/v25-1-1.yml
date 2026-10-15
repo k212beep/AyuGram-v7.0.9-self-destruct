@@ -1,0 +1,1910 @@
+# 使用方法：保存为 .github/workflows/v25-1-1.yml，提交到 main 后自动构建。
+# 基于成功编译的 v25-1，修复媒体下载超时回调的连接编号换算；保留照片发送复用与原有功能。
+# 增加下载失败/超时日志，便于区分接收下载错误与发送引用刷新。
+# 保留聊天记录、归档媒体及缓存文件，不加入清理或删除数据的动作。
+# 针对性检查复现旧版 175 种超时恢复遗漏，并验证修复；完整 Windows 编译仍由 Actions 执行。
+name: Build AyuGram v7.0.9 download timeout recovery v25-1-1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/v25-1-1.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ayugram-v7.0.9-self-destruct-v25-1-1
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPOSITORY: https://github.com/AyuGram/AyuGramDesktop.git
+  SOURCE_TAG: v7.0.9
+  SOURCE_SHA: 032ad328549cff9f612d106d8660fbc03eb43130
+  OFFICIAL_ZIP_URL: https://github.com/AyuGram/AyuGramDesktop/releases/download/v7.0.9/AyuGram.zip
+  OFFICIAL_ZIP_SHA256: 5360e93f71a5acb4938ade03872dc7ce556c41853d63c0144f26ddbda74768c3
+  PATCH_SHA256: e5147e5310f651efeef434f40e67594e6203bd5d80615f033ef2671ea9417d81
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout build recipe
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Validate PowerShell syntax before downloading dependencies
+        shell: pwsh
+        run: |
+          $recipe = Get-Content "$env:GITHUB_WORKSPACE\.github\workflows\v25-1-1.yml" -Raw
+          $blocks = [regex]::Matches($recipe, '(?m)^        shell: pwsh\r?\n        run: \|\r?\n((?:^          .*\r?\n|^\r?\n)+)')
+          if ($blocks.Count -eq 0) { throw "No workflow scripts were found." }
+          foreach ($block in $blocks) {
+            $script = $block.Groups[1].Value -replace '(?m)^          ', ''
+            $parsedTokens = $null
+            $syntaxErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseInput($script, [ref]$parsedTokens, [ref]$syntaxErrors)
+            if ($syntaxErrors.Count -gt 0) {
+              $syntaxErrors | ForEach-Object { Write-Host $_.Message }
+              throw "A workflow PowerShell script did not parse."
+            }
+          }
+          Write-Host "All $($blocks.Count) PowerShell scripts parsed successfully."
+
+      - name: Select a drive with enough free space
+        shell: pwsh
+        run: |
+          $minimum = 45GB
+          $selected = $null
+          foreach ($name in @("D", "C")) {
+            $drive = Get-PSDrive -Name $name -ErrorAction SilentlyContinue
+            if ($drive -and $drive.Free -ge $minimum) {
+              $selected = $drive
+              break
+            }
+          }
+          if (-not $selected) {
+            Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
+            throw "The runner has less than 45 GB free. Retry the workflow later."
+          }
+          $root = "$($selected.Name):\AyuBuild"
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          "BUILD_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using $root with $([math]::Round($selected.Free / 1GB, 1)) GB free."
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.10"
+
+      - name: Clone the fixed source and apply the patch
+        shell: pwsh
+        run: |
+          git config --global core.longpaths true
+          $sourceCheckout = @'
+          import os
+          from pathlib import Path
+          import subprocess
+          import time
+          
+          
+          MAX_ATTEMPTS = 5
+          NETWORK_TIMEOUT_SECONDS = 900
+          RETRY_DELAYS = (5, 10, 20, 30)
+          
+          
+          def run_git(arguments, *, network=False, capture_output=False):
+              command = ["git", "-c", "http.version=HTTP/1.1"]
+              command.extend(arguments)
+              environment = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+              attempts = MAX_ATTEMPTS if network else 1
+              for attempt in range(1, attempts + 1):
+                  print(f"Git attempt {attempt}/{attempts}: {' '.join(arguments)}", flush=True)
+                  try:
+                      result = subprocess.run(
+                          command,
+                          env=environment,
+                          text=True,
+                          capture_output=capture_output,
+                          timeout=NETWORK_TIMEOUT_SECONDS if network else 180,
+                      )
+                  except subprocess.TimeoutExpired:
+                      failure = "download timed out"
+                  else:
+                      if result.returncode == 0:
+                          return result
+                      failure = f"exit code {result.returncode}"
+                  if attempt == attempts:
+                      raise RuntimeError(
+                          f"Git command failed after {attempts} attempt(s): {failure}: "
+                          + " ".join(arguments)
+                      )
+                  delay = RETRY_DELAYS[attempt - 1]
+                  print(f"Git download interrupted ({failure}); retrying in {delay}s.", flush=True)
+                  time.sleep(delay)
+          
+          
+          def main():
+              source = Path(os.environ["BUILD_ROOT"]) / "tdesktop"
+              repository = os.environ["SOURCE_REPOSITORY"]
+              tag = os.environ["SOURCE_TAG"]
+              expected = os.environ["SOURCE_SHA"]
+              source.mkdir(parents=True, exist_ok=True)
+              run_git(["init", str(source)])
+              prefix = ["-C", str(source)]
+              run_git(prefix + ["config", "core.longpaths", "true"])
+              run_git(prefix + ["config", "remote.origin.url", repository])
+              tag_ref = f"refs/tags/{tag}"
+              run_git(
+                  prefix + ["fetch", "--depth", "1", "origin", f"{tag_ref}:{tag_ref}"],
+                  network=True,
+              )
+              actual = run_git(
+                  prefix + ["rev-parse", tag_ref + "^{commit}"], capture_output=True
+              ).stdout.strip()
+              if actual != expected:
+                  raise RuntimeError(f"Unexpected source commit: {actual}; expected {expected}")
+              run_git(prefix + ["checkout", "--detach", actual])
+              run_git(prefix + ["submodule", "sync", "--recursive"])
+              run_git(
+                  prefix + ["submodule", "update", "--init", "--recursive", "--depth", "1"],
+                  network=True,
+              )
+              status = run_git(
+                  prefix + ["submodule", "status", "--recursive"], capture_output=True
+              ).stdout
+              invalid = [line for line in status.splitlines() if not line.startswith(" ")]
+              if invalid:
+                  raise RuntimeError("Submodules are not at their pinned commits:\n" + "\n".join(invalid))
+              print(f"Source and all recursive submodules are at their pinned commits: {actual}", flush=True)
+          
+          
+          if __name__ == "__main__":
+              main()
+          '@
+          $sourceCheckoutPath = "$env:RUNNER_TEMP\source-checkout-v25-1-1.py"
+          [IO.File]::WriteAllText($sourceCheckoutPath, $sourceCheckout, [Text.UTF8Encoding]::new($false))
+          python $sourceCheckoutPath
+          if ($LASTEXITCODE -ne 0) { throw "Pinned source or submodule download failed after retries." }
+          $patch = "$env:RUNNER_TEMP\self-destruct-persistence-v25-1-1.patch"
+          # Gzip-compressed complete patch against SOURCE_SHA, including all new files.
+          $patchGzipBase64 = @'
+          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
+          '@
+          $patchGzipBase64 | python -c 'import base64, gzip, pathlib, sys; pathlib.Path(sys.argv[1]).write_bytes(gzip.decompress(base64.b64decode(sys.stdin.buffer.read())))' $patch
+          if ($LASTEXITCODE -ne 0) { throw "Embedded patch decompression failed." }
+          $patchHash = (Get-FileHash $patch -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($patchHash -ne $env:PATCH_SHA256) {
+            throw "Embedded patch checksum mismatch: $patchHash"
+          }
+          git -C "$env:BUILD_ROOT\tdesktop" apply --check $patch
+          if ($LASTEXITCODE -ne 0) { throw "Patch application or whitespace validation failed." }
+          git -C "$env:BUILD_ROOT\tdesktop" apply $patch
+          if ($LASTEXITCODE -ne 0) { throw "Patch application or whitespace validation failed." }
+
+          git -C "$env:BUILD_ROOT\tdesktop" diff --check
+          if ($LASTEXITCODE -ne 0) { throw "Patch application or whitespace validation failed." }
+
+          $langStringsForValidation = Get-Content "$env:BUILD_ROOT\tdesktop\Telegram\Resources\langs\lang.strings" -Raw
+          $langEntries = [regex]::Matches($langStringsForValidation, '(?m)^[ \t]*"([^"]+)"[ \t]*=[ \t]*"((?:\\.|[^"\\])*)";[ \t]*\r?$')
+          if ($langEntries.Count -eq 0) { throw "No language entries were found." }
+          foreach ($entry in $langEntries) {
+            $key = $entry.Groups[1].Value
+            $value = $entry.Groups[2].Value
+            if ($key -notmatch '#(zero|one|two|few|many|other)$' -and $value -match '\{count(?:_short|_decimal)?(?=[:}])') {
+              throw "Reserved plural tag in non-plural language key: $key"
+            }
+          }
+
+          $prepareSource = Get-Content "$env:BUILD_ROOT\tdesktop\Telegram\build\prepare\prepare.py" -Raw
+          if ($prepareSource.Contains("mingw-w64-x86_64-diffutils") -or $prepareSource -notmatch '(?m)^\s+diffutils \^\r?$') {
+            throw "MSYS2 diffutils dependency fix is missing."
+          }
+
+          $v2431Checks = @(
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "SerializeMtp<MTPInputPhoto>(input)" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "SerializeMtp<MTPInputDocument>(input)" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "DeserializeUploadReference<MTPInputPhoto>" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "DeserializeUploadReference<MTPInputDocument>" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "binding.vrandom_id().v" }
+            @{ File = "Telegram\SourceFiles\apiwrap.cpp"; Text = "_session->uploader().upload(localId, file);" }
+            @{ File = "Telegram\SourceFiles\apiwrap.cpp"; Text = "recover && recover(error)" }
+            @{ File = "Telegram\SourceFiles\history\history_item.cpp"; Text = "void HistoryItem::markAyuMediaExpired(bool video)" }
+            @{ File = "Telegram\SourceFiles\history\history.cpp"; Text = "AyuMessages::restoreExpiredMediaNotice(result);" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "hiddenExpiredMediaDialogs" }
+            @{ File = "Telegram\SourceFiles\ayu\utils\telegram_helpers.cpp"; Text = "hideExpiredMediaNotices" }
+            @{ File = "Telegram\SourceFiles\ayu\ui\context_menu\context_menu.cpp"; Text = "ayu_HideExpiredMediaNotices" }
+          )
+          foreach ($check in $v2431Checks) {
+            if (-not (Select-String -Path "$env:BUILD_ROOT\tdesktop\$($check.File)" -SimpleMatch $check.Text -Quiet)) {
+              throw "v25-1-1 source check failed: $($check.File) -> $($check.Text)"
+            }
+          }
+          $v2431Checks = @(
+            @{ File = "Telegram\Resources\langs\lang.strings"; Text = "ayu_GroupMemoryCacheCleared#one" }
+            @{ File = "Telegram\Resources\langs\lang.strings"; Text = "ayu_GroupMemoryCacheCleared#other" }
+            @{ File = "Telegram\SourceFiles\api\api_sending.cpp"; Text = "it->ayuReuseFingerprint = file->ayuReuseFingerprint;" }
+            @{ File = "Telegram\SourceFiles\apiwrap.cpp"; Text = "reuseBindings.emplace_back(part.randomId, part.ayuReuseFingerprint);" }
+            @{ File = "Telegram\SourceFiles\history\history.cpp"; Text = "int History::unloadAyuGroupCache()" }
+            @{ File = "Telegram\SourceFiles\history\history.cpp"; Text = "owner().unregisterMessage(item, true);" }
+            @{ File = "Telegram\SourceFiles\history\history.cpp"; Text = "AyuMessages::isGroupPersistenceEnabled(peer)" }
+            @{ File = "Telegram\SourceFiles\data\data_replies_list.cpp"; Text = "update.flags & Flag::CacheUnloaded" }
+            @{ File = "Telegram\SourceFiles\data\data_history_messages.cpp"; Text = "void HistoryMessages::unloadCache()" }
+            @{ File = "Telegram\SourceFiles\data\data_sparse_ids.cpp"; Text = "bool SparseIdsSliceBuilder::unloadCache()" }
+            @{ File = "Telegram\SourceFiles\ayu\ui\settings\settings_self_destruct.cpp"; Text = "tr::ayu_ClearGroupMemoryCache()" }
+            @{ File = "Telegram\SourceFiles\history\view\history_view_top_bar_widget.cpp"; Text = "_outgoingMask->setClickedCallback" }
+            @{ File = "Telegram\SourceFiles\history\view\history_view_message.cpp"; Text = "void Message::drawAyuOutgoingMask" }
+            @{ File = "Telegram\SourceFiles\history\history_inner_widget.cpp"; Text = "outgoingMaskChanges" }
+            @{ File = "Telegram\SourceFiles\history\view\history_view_list_widget.cpp"; Text = "outgoingMaskChanges" }
+          )
+          foreach ($check in $v2431Checks) {
+            if (-not (Select-String -Path "$env:BUILD_ROOT\tdesktop\$($check.File)" -SimpleMatch $check.Text -Quiet)) {
+              throw "v25-1-1 feature check failed: $($check.File) -> $($check.Text)"
+            }
+          }
+          $archiveChecks = @(
+            @{ File = "Telegram\SourceFiles\ayu\data\ayu_database.cpp"; Text = "make_table<SavedMessage>" }
+            @{ File = "Telegram\SourceFiles\ayu\data\ayu_database.cpp"; Text = "make_table<SavedDialog>" }
+            @{ File = "Telegram\SourceFiles\ayu\data\ayu_database.cpp"; Text = "idx_saved_message_identity" }
+            @{ File = "Telegram\SourceFiles\ayu\data\ayu_database.cpp"; Text = "storage.pragma.synchronous(2)" }
+            @{ File = "Telegram\SourceFiles\ayu\data\ayu_database.cpp"; Text = "markSavedMessagesDeleted" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "bool saveMessageSnapshot" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "void saveSentMessageSnapshot" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "void restoreArchivedDialogs" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "confirmedMissing || history->ayuServerHistoryEmpty()" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "history->beginAyuArchiveRestore()" }
+            @{ File = "Telegram\SourceFiles\history\history.cpp"; Text = "AyuMessages::saveMessageSnapshot(result, &message)" }
+            @{ File = "Telegram\SourceFiles\history\history.cpp"; Text = "const auto goodArchivedItem =" }
+            @{ File = "Telegram\SourceFiles\history\history.cpp"; Text = "const auto lastOrderId =" }
+            @{ File = "Telegram\SourceFiles\history\history.cpp"; Text = "void History::restoreAyuChatListEntry()" }
+            @{ File = "Telegram\SourceFiles\history\history_item.cpp"; Text = "bool allowDeletedPreservation" }
+            @{ File = "Telegram\SourceFiles\history\history_item.cpp"; Text = "AyuMessages::saveSentMessageSnapshot(this," }
+            @{ File = "Telegram\SourceFiles\data\data_session.cpp"; Text = "AyuDatabase::markSavedMessagesDeleted" }
+            @{ File = "Telegram\SourceFiles\main\main_session.cpp"; Text = "AyuMessages::restoreArchivedDialogs(this)" }
+            @{ File = "Telegram\SourceFiles\apiwrap.cpp"; Text = "deleteTillId = *history->lastServerMessageId()" }
+          )
+          foreach ($check in $archiveChecks) {
+            if (-not (Select-String -Path "$env:BUILD_ROOT\tdesktop\$($check.File)" -SimpleMatch $check.Text -Quiet)) {
+              throw "Durable archive source check failed: $($check.File) -> $($check.Text)"
+            }
+          }
+          $selectionMaskChecks = @(
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.h"; Text = "_maskedMessageKeys" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "void AyuSettings::setMessageMasks(" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "void AyuSettings::changeMaskedMessageId(" }
+            @{ File = "Telegram\SourceFiles\history\history_item.cpp"; Text = "bool HistoryItem::ayuMasked() const" }
+            @{ File = "Telegram\SourceFiles\history\history_item.cpp"; Text = "changeMaskedMessageId(" }
+            @{ File = "Telegram\SourceFiles\history\history_inner_widget.cpp"; Text = "result.maskableIds.push_back(item->fullId())" }
+            @{ File = "Telegram\SourceFiles\history\view\history_view_chat_section.cpp"; Text = "state.maskableIds.push_back(item.msgId)" }
+            @{ File = "Telegram\SourceFiles\history\view\history_view_pinned_section.cpp"; Text = "state.maskableIds.push_back(item.msgId)" }
+            @{ File = "Telegram\SourceFiles\history\view\history_view_scheduled_section.cpp"; Text = "state.maskableIds.push_back(item.msgId)" }
+            @{ File = "Telegram\SourceFiles\history\view\history_view_top_bar_widget.cpp"; Text = "_messageMask->setClickedCallback" }
+            @{ File = "Telegram\SourceFiles\history\view\history_view_top_bar_widget.cpp"; Text = "void TopBarWidget::toggleSelectionMask()" }
+            @{ File = "Telegram\SourceFiles\history\view\history_view_top_bar_widget.cpp"; Text = "_maskableIds == state.maskableIds" }
+            @{ File = "Telegram\SourceFiles\history\view\history_view_top_bar_widget.cpp"; Text = "_messageMask->moveToLeft" }
+            @{ File = "Telegram\SourceFiles\history\view\history_view_top_bar_widget.cpp"; Text = "_messageMask->setFullWidth(buttonFullWidth)" }
+            @{ File = "Telegram\SourceFiles\history\view\history_view_message.cpp"; Text = "void DrawAyuMessageMask(" }
+            @{ File = "Telegram\SourceFiles\history\view\history_view_message.cpp"; Text = "const auto maskReply = this->data()->ayuMasked()" }
+            @{ File = "Telegram\SourceFiles\history\view\history_view_message.cpp"; Text = "if (item && item->ayuMasked())" }
+            @{ File = "Telegram\SourceFiles\history\view\media\history_view_media_grouped.cpp"; Text = "if (part.item->ayuMasked())" }
+            @{ File = "Telegram\SourceFiles\history\view\media\history_view_media_grouped.cpp"; Text = "return TextState(part.item)" }
+            @{ File = "Telegram\SourceFiles\history\view\media\history_view_media_grouped.h"; Text = "bool handlesAyuMessageMasks() const override" }
+          )
+          foreach ($check in $selectionMaskChecks) {
+            if (-not (Select-String -Path "$env:BUILD_ROOT\tdesktop\$($check.File)" -SimpleMatch $check.Text -Quiet)) {
+              throw "Selected message mask check failed: $($check.File) -> $($check.Text)"
+            }
+          }
+          $archivePerformanceChecks = @(
+            @{ File = "Telegram\SourceFiles\data\data_histories.cpp"; Text = "history->readAyuArchivedMessages(originalId)" }
+            @{ File = "Telegram\SourceFiles\data\data_histories.cpp"; Text = "originalId < *serverTill" }
+            @{ File = "Telegram\SourceFiles\history\history.h"; Text = "void readAyuArchivedMessages(MsgId tillId)" }
+            @{ File = "Telegram\SourceFiles\history\history.cpp"; Text = "readClientSideMessages(tillId)" }
+            @{ File = "Telegram\SourceFiles\ayu\data\ayu_database.h"; Text = "archiveRevision(ID userId, ID dialogId)" }
+            @{ File = "Telegram\SourceFiles\ayu\data\ayu_database.cpp"; Text = "void NoteArchiveMutation(ID userId, ID dialogId)" }
+            @{ File = "Telegram\SourceFiles\ayu\data\ayu_database.cpp"; Text = "ArchiveDialogRevisions" }
+            @{ File = "Telegram\SourceFiles\ayu\data\ayu_database.cpp"; Text = "idx_saved_message_preview" }
+            @{ File = "Telegram\SourceFiles\ayu\data\ayu_database.cpp"; Text = "idx_deleted_message_preview" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "!message.archiveDeleted" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "AyuDatabase::archiveRevision(userId, dialogId)" }
+          )
+          foreach ($check in $archivePerformanceChecks) {
+            if (-not (Select-String -Path "$env:BUILD_ROOT\tdesktop\$($check.File)" -SimpleMatch $check.Text -Quiet)) {
+              throw "Archive responsiveness check failed: $($check.File) -> $($check.Text)"
+            }
+          }
+          $v2431FeatureChecks = @(
+            @{ File = "Telegram\SourceFiles\history\history_item.h"; Text = "bool isAyuRestoredMessage() const" }
+            @{ File = "Telegram\SourceFiles\history\history_item.h"; Text = "isRegular() || isEphemeral() || isAyuRestoredMessage()" }
+            @{ File = "Telegram\SourceFiles\history\history_inner_widget.cpp"; Text = "|| item->isAyuRestoredMessage()" }
+            @{ File = "Telegram\SourceFiles\history\history_inner_widget.cpp"; Text = "_chooseForReportReason && item->isAyuRestoredMessage()" }
+            @{ File = "Telegram\SourceFiles\history\view\history_view_context_menu.cpp"; Text = "&& !item->isAyuRestoredMessage()" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.h"; Text = "std::map<std::string, QString> _groupRemarks" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.h"; Text = "std::map<std::string, std::pair<int64, QString>> _lastGroupTexts" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "void AyuSettings::setGroupRemark(" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "void AyuSettings::rememberGroupText(" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "s._groupRemarks = j.value(" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "s._lastGroupTexts = j.value(" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "return a.first > b.first" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "settings._lastGroupTextsDirty.clear()" }
+            @{ File = "Telegram\SourceFiles\ayu\ui\context_menu\context_menu.cpp"; Text = "tr::ayu_GroupRemark(tr::now)" }
+            @{ File = "Telegram\SourceFiles\ayu\ui\context_menu\context_menu.cpp"; Text = "tr::ayu_ClearGroupRemark(tr::now)" }
+            @{ File = "Telegram\SourceFiles\data\data_peer.cpp"; Text = "const QString &PeerData::ayuDisplayName() const" }
+            @{ File = "Telegram\SourceFiles\data\data_peer.cpp"; Text = "void PeerData::setAyuGroupRemark(" }
+            @{ File = "Telegram\SourceFiles\data\data_peer.cpp"; Text = "appendToIndex(ayuDisplayName())" }
+            @{ File = "Telegram\SourceFiles\history\history.cpp"; Text = "return peer->ayuDisplayName()" }
+            @{ File = "Telegram\SourceFiles\dialogs\dialogs_row.cpp"; Text = "peer->ayuDisplayName()" }
+            @{ File = "Telegram\SourceFiles\info\profile\info_profile_values.cpp"; Text = "return peer->ayuDisplayName()" }
+            @{ File = "Telegram\SourceFiles\history\history_item.cpp"; Text = "void HistoryItem::ayuRememberGroupText(bool persist) const" }
+            @{ File = "Telegram\SourceFiles\history\history_item.cpp"; Text = "const auto messageId = restored ? ayuOriginalMessageId() : id" }
+            @{ File = "Telegram\SourceFiles\history\history_item.cpp"; Text = "ayuRememberGroupText(true)" }
+            @{ File = "Telegram\SourceFiles\history\history_widget.cpp"; Text = "bool HistoryWidget::tryRecallGroupText()" }
+            @{ File = "Telegram\SourceFiles\history\history_widget.cpp"; Text = "_ayuGroupRecallRevision != revision" }
+            @{ File = "Telegram\SourceFiles\history\history_widget.cpp"; Text = "_ayuGroupRecallPendingPeers.emplace(_peer->id).second" }
+            @{ File = "Telegram\SourceFiles\history\history_widget.cpp"; Text = "QEvent::InputMethod" }
+            @{ File = "Telegram\SourceFiles\history\view\controls\history_view_compose_controls.cpp"; Text = "bool ComposeControls::tryRecallGroupText()" }
+            @{ File = "Telegram\SourceFiles\history\view\controls\history_view_compose_controls.cpp"; Text = "ayu/utils/telegram_helpers.h" }
+            @{ File = "Telegram\SourceFiles\history\view\controls\history_view_compose_controls.cpp"; Text = "_ayuGroupRecallPendingPeers.emplace(_history->peer->id).second" }
+            @{ File = "Telegram\SourceFiles\history\view\controls\history_view_compose_controls.cpp"; Text = "_ayuGroupRecallRevision != revision" }
+            @{ File = "Telegram\SourceFiles\ayu\utils\telegram_helpers.cpp"; Text = "void RequestLastGroupTextPage(" }
+            @{ File = "Telegram\SourceFiles\ayu\utils\telegram_helpers.cpp"; Text = "void requestLastGroupText(" }
+            @{ File = "Telegram\SourceFiles\ayu\utils\telegram_helpers.cpp"; Text = "RequestLastGroupTextPage(peer, minId, callback)" }
+            @{ File = "Telegram\SourceFiles\ayu\utils\telegram_helpers.cpp"; Text = "peerFromMTP(data.vpeer_id()) == peer->id" }
+          )
+          foreach ($check in $v2431FeatureChecks) {
+            if (-not (Select-String -Path "$env:BUILD_ROOT\tdesktop\$($check.File)" -SimpleMatch $check.Text -Quiet)) {
+              throw "v25-1-1 feature check failed: $($check.File) -> $($check.Text)"
+            }
+          }
+          $quickInputHistoryChecks = @(
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "bool RememberRecentGroupText(" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "history.resize(3)" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "std::vector<QString> AyuSettings::recentGroupTexts(" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "s._recentGroupTexts.clear()" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.h"; Text = "_recentGroupTexts" }
+            @{ File = "Telegram\SourceFiles\ayu\utils\telegram_helpers.cpp"; Text = "if (cached.size() < 3" }
+            @{ File = "Telegram\SourceFiles\ayu\utils\telegram_helpers.cpp"; Text = "settings.recentGroupTexts(userId, peer->id.value)" }
+            @{ File = "Telegram\SourceFiles\history\history_widget.cpp"; Text = "const auto cycling =" }
+            @{ File = "Telegram\SourceFiles\history\history_widget.cpp"; Text = "_ayuGroupRecallAppliedRevision = _ayuGroupRecallRevision" }
+            @{ File = "Telegram\SourceFiles\history\history_widget.h"; Text = "_ayuGroupRecallAppliedRevision = 0" }
+            @{ File = "Telegram\SourceFiles\history\history_widget.h"; Text = "_ayuGroupRecallSearchedPeers" }
+            @{ File = "Telegram\SourceFiles\history\view\controls\history_view_compose_controls.cpp"; Text = "const auto cycling =" }
+            @{ File = "Telegram\SourceFiles\history\view\controls\history_view_compose_controls.cpp"; Text = "_ayuGroupRecallAppliedRevision = _ayuGroupRecallRevision" }
+            @{ File = "Telegram\SourceFiles\history\view\controls\history_view_compose_controls.h"; Text = "_ayuGroupRecallAppliedRevision = 0" }
+            @{ File = "Telegram\SourceFiles\history\view\controls\history_view_compose_controls.h"; Text = "_ayuGroupRecallSearchedPeers" }
+          )
+          foreach ($check in $quickInputHistoryChecks) {
+            if (-not (Select-String -Path "$env:BUILD_ROOT\tdesktop\$($check.File)" -SimpleMatch $check.Text -Quiet)) {
+              throw "Three-text quick input source check failed: $($check.File) -> $($check.Text)"
+            }
+          }
+          $databaseSchemaForValidation = Get-Content "$env:BUILD_ROOT\tdesktop\Telegram\SourceFiles\ayu\data\ayu_database.cpp" -Raw
+          $deletedPreviewIndexPosition = $databaseSchemaForValidation.IndexOf('make_index("idx_deleted_message_preview"')
+          $deletedMessageTablePosition = $databaseSchemaForValidation.IndexOf('make_table<DeletedMessage>(')
+          if ($deletedPreviewIndexPosition -lt 0 -or $deletedMessageTablePosition -lt 0 -or $deletedPreviewIndexPosition -ge $deletedMessageTablePosition) {
+            throw "DeletedMessage preview index order would break a fresh database."
+          }
+
+          $loaderForAlbums = Get-Content "$env:BUILD_ROOT\tdesktop\Telegram\SourceFiles\storage\localimageloader.cpp" -Raw
+          $fingerprintStart = $loaderForAlbums.IndexOf("const auto reusableSend = reusableType")
+          $fingerprintEnd = $loaderForAlbums.IndexOf("if (reusableSend)", $fingerprintStart)
+          if ($fingerprintStart -lt 0 -or $fingerprintEnd -le $fingerprintStart) {
+            throw "Could not isolate upload fingerprint eligibility."
+          }
+          $fingerprintEligibility = $loaderForAlbums.Substring($fingerprintStart, $fingerprintEnd - $fingerprintStart)
+          if ($fingerprintEligibility.Contains("!_album")) {
+            throw "Album photos are still excluded from fingerprint generation."
+          }
+
+          $reuseStorage = Get-Content "$env:BUILD_ROOT\tdesktop\Telegram\SourceFiles\ayu\data\messages_storage.cpp" -Raw
+          if ($reuseStorage.Contains(".inputSerialized = SerializeMtp(input)")) {
+            throw "Upload references are still serialized without their constructor identifiers."
+          }
+
+          $requiredFiles = @(
+            "Telegram\SourceFiles\ayu\ui\settings\settings_self_destruct.cpp"
+            "Telegram\SourceFiles\ayu\ui\settings\settings_self_destruct.h"
+          )
+          foreach ($relative in $requiredFiles) {
+            if (-not (Test-Path "$env:BUILD_ROOT\tdesktop\$relative")) {
+              throw "Required patched file is missing: $relative"
+            }
+          }
+          $sourceChecks = @(
+            @{ File = "Telegram\SourceFiles\storage\download_manager_mtproto.cpp"; Text = "MTP::kBaseDownloadDcShift" }
+            @{ File = "Telegram\SourceFiles\storage\download_manager_mtproto.cpp"; Text = "Ayu download timeout:" }
+            @{ File = "Telegram\SourceFiles\storage\download_manager_mtproto.cpp"; Text = "Ayu download failure:" }
+            @{ File = "Telegram\SourceFiles\ayu\data\ayu_database.cpp"; Text = "&AyuUploadReuse::sourcePeerId, default_value(0)" }
+            @{ File = "Telegram\SourceFiles\ayu\data\ayu_database.cpp"; Text = "&AyuUploadReuse::sourceAccessHash, default_value(0)" }
+            @{ File = "Telegram\SourceFiles\ayu\data\ayu_database.cpp"; Text = "&AyuUploadReuse::sourceMessageId, default_value(0)" }
+            @{ File = "Telegram\SourceFiles\ayu\data\entities.h"; Text = "ID sourcePeerId = 0;" }
+            @{ File = "Telegram\SourceFiles\ayu\data\entities.h"; Text = "int sourceMessageId = 0;" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.h"; Text = "std::optional<AyuUploadReuse> reusableUploadSource(" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.h"; Text = "bool refreshReusableUpload(" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "previous->sourceMessageId > 0" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "targetId = data.vid().v;" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "peerFromMTP(message.c_message().vpeer_id()) == sourcePeer->id" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "entry->inputSerialized == input->inputSerialized" }
+            @{ File = "Telegram\SourceFiles\apiwrap.h"; Text = "bool recoverAyuReusableMedia(" }
+            @{ File = "Telegram\SourceFiles\apiwrap.cpp"; Text = "if (referenceError && !refreshed)" }
+            @{ File = "Telegram\SourceFiles\apiwrap.cpp"; Text = "MTP_inputMessageID(MTP_int(source->sourceMessageId))" }
+            @{ File = "Telegram\SourceFiles\apiwrap.cpp"; Text = "MTP_long(source->sourceAccessHash)" }
+            @{ File = "Telegram\SourceFiles\apiwrap.cpp"; Text = "source refreshed, retrying without upload." }
+            @{ File = "Telegram\SourceFiles\apiwrap.cpp"; Text = "error.code() == 401 || error.code() == 420" }
+            @{ File = "Telegram\SourceFiles\data\data_histories.cpp"; Text = "|| IsServerMsgId(item->ayuOriginalMessageId())" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "bool ReadSettingsFile(" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "bool WriteSettingsFile(" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "auto file = QSaveFile(path);" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "file.write(data) != data.size()" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "loaded settings backup" }
+            @{ File = "Telegram\SourceFiles\boxes\send_files_box.cpp"; Text = "ayu_SendSelfDestructMedia" }
+            @{ File = "Telegram\SourceFiles\apiwrap.cpp"; Text = "action.options.ttlSeconds > 0" }
+            @{ File = "Telegram\SourceFiles\api\api_sending.cpp"; Text = "f_ttl_seconds" }
+            @{ File = "Telegram\SourceFiles\api\api_sending.cpp"; Text = "MessageFlag::MediaIsUnread" }
+            @{ File = "Telegram\SourceFiles\api\api_media.cpp"; Text = "MTP_inputMediaUploadedDocument" }
+            @{ File = "Telegram\SourceFiles\api\api_media.cpp"; Text = "MTP_inputMediaUploadedPhoto" }
+            @{ File = "Telegram\SourceFiles\data\data_media_types.cpp"; Text = "crl::time MediaPhoto::ttlSeconds() const" }
+            @{ File = "Telegram\SourceFiles\data\data_media_types.h"; Text = "crl::time _ttlSeconds = 0" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "requestManualSelfDestruct" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "PendingSelfDestructRequests" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "changeDeletedMessageId" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "MTP_messageMediaEmpty" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "IsExpiredMediaPlaceholder" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "LoadedServerRange" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "LoadedRangeCovers" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "history->minMsgId()" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "history->maxMsgId()" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "isOutgoingSelfDestructingMedia" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "existing->destroy();" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "injected->destroy();" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "message.mediaPath.empty()" }
+            @{ File = "Telegram\SourceFiles\ayu\ui\context_menu\context_menu.cpp"; Text = "history->clientSideMessages()" }
+            @{ File = "Telegram\SourceFiles\ayu\utils\telegram_helpers.cpp"; Text = "isOutgoingSelfDestructingMedia" }
+            @{ File = "Telegram\SourceFiles\ayu\data\ayu_database.cpp"; Text = "make_table<AyuUploadReuse>" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "reusableUploadMedia" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "rememberReusableUpload" }
+            @{ File = "Telegram\SourceFiles\api\api_sending.cpp"; Text = "preparePermanentMedia(localItem)" }
+            @{ File = "Telegram\SourceFiles\api\api_sending.cpp"; Text = "sendAyuReusableMedia" }
+            @{ File = "Telegram\SourceFiles\api\api_updates.cpp"; Text = "AyuMessages::expireOutgoingMedia(item);" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "ttlSeconds > 0 ? Flag::f_ttl_seconds" }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "persistentGroupKeys" }
+            @{ File = "Telegram\SourceFiles\ayu\ui\context_menu\context_menu.cpp"; Text = "ayu_EnableGroupPersistence" }
+            @{ File = "Telegram\SourceFiles\history\history.cpp"; Text = "AyuMessages::reinjectPermanentMedia(this);" }
+            @{ File = "Telegram\SourceFiles\history\history_item.cpp"; Text = "AyuMessages::messageIdChanged" }
+            @{ File = "Telegram\SourceFiles\history\history_item.cpp"; Text = "media.vttl_seconds().value_or_empty()" }
+          )
+          foreach ($check in $sourceChecks) {
+            $file = "$env:BUILD_ROOT\tdesktop\$($check.File)"
+            if (-not (Select-String -Path $file -SimpleMatch $check.Text -Quiet)) {
+              throw "Patched source validation failed: $($check.File) -> $($check.Text)"
+            }
+          }
+          $forbiddenChecks = @(
+            @{ File = "Telegram\SourceFiles\storage\download_manager_mtproto.cpp"; Text = "MTP::GetDcIdShift(shiftedDcId));" }
+            @{ File = "Telegram\SourceFiles\data\data_histories.cpp"; Text = "Can't read history till unknown local message." }
+            @{ File = "Telegram\SourceFiles\ayu\ayu_settings.cpp"; Text = "std::ofstream" }
+            @{ File = "Telegram\SourceFiles\apiwrap.cpp"; Text = "outgoingSelfDestructByDefault" }
+            @{ File = "Telegram\SourceFiles\api\api_sending.cpp"; Text = "outgoingSelfDestructByDefault" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "5000" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "if (history->owner().message(peer, serverId))" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "outgoingToPersist" }
+            @{ File = "Telegram\SourceFiles\ayu\data\messages_storage.cpp"; Text = "view->data()->id" }
+            @{ File = "Telegram\SourceFiles\history\history.h"; Text = "_ayuDeletedMessagesReinjected" }
+          )
+          foreach ($check in $forbiddenChecks) {
+            $file = "$env:BUILD_ROOT\tdesktop\$($check.File)"
+            if (Select-String -Path $file -SimpleMatch $check.Text -Quiet) {
+              throw "Forbidden stale source logic found: $($check.File) -> $($check.Text)"
+            }
+          }
+
+          # A document/video class in this old source legitimately keeps the
+          # same diagnostic text. Restrict this regression check to the photo
+          # method whose old TTL rejection caused photos to be sent normally.
+          $mediaTypesPath = "$env:BUILD_ROOT\tdesktop\Telegram\SourceFiles\data\data_media_types.cpp"
+          $mediaTypesSource = Get-Content $mediaTypesPath -Raw
+          $photoUpdateStart = $mediaTypesSource.IndexOf(
+            "bool MediaPhoto::updateSentMedia")
+          if ($photoUpdateStart -lt 0) {
+            throw "Could not find MediaPhoto::updateSentMedia for validation."
+          }
+          $mediaFileStart = $mediaTypesSource.IndexOf(
+            "MediaFile::MediaFile",
+            $photoUpdateStart)
+          if ($mediaFileStart -le $photoUpdateStart) {
+            throw "Could not isolate MediaPhoto::updateSentMedia for validation."
+          }
+          $photoUpdateRegion = $mediaTypesSource.Substring(
+            $photoUpdateStart,
+            $mediaFileStart - $photoUpdateStart)
+          $photoRejectsTtl = $photoUpdateRegion.Contains("mediaPhoto.vttl_seconds()") -or $photoUpdateRegion.Contains("or with ttl_seconds in updateSentMedia()")
+          if ($photoRejectsTtl) {
+            throw "MediaPhoto still rejects a valid TTL server response."
+          }
+
+          # The durable record must be committed before Telegram is asked to
+          # start the countdown, otherwise a quick close can lose the record.
+          $storagePath = "$env:BUILD_ROOT\tdesktop\Telegram\SourceFiles\ayu\data\messages_storage.cpp"
+          $storageSource = Get-Content $storagePath -Raw
+          $archiveStart = $storageSource.IndexOf("void archivePermanentMedia")
+          if ($archiveStart -lt 0) {
+            throw "Could not find archivePermanentMedia for validation."
+          }
+          $prepareStart = $storageSource.IndexOf(
+            "void preparePermanentMedia",
+            $archiveStart)
+          if ($prepareStart -le $archiveStart) {
+            throw "Could not isolate archivePermanentMedia for validation."
+          }
+          $archiveRegion = $storageSource.Substring(
+            $archiveStart,
+            $prepareStart - $archiveStart)
+          $databaseWrite = $archiveRegion.IndexOf(
+            "AyuDatabase::addDeletedMessage(message);")
+          $startCountdown = $archiveRegion.IndexOf(
+            "StartSelfDestructAfterArchive(item, manuallyRequested);")
+          $invalidArchiveOrder = ($databaseWrite -lt 0) -or ($startCountdown -lt 0) -or ($databaseWrite -ge $startCountdown)
+          if ($invalidArchiveOrder) {
+            throw "Permanent record is not written before self-destruct starts."
+          }
+
+          # Restart recovery must be repeatable and must reconcile only IDs
+          # covered by the currently loaded server history range.
+          $reinjectStart = $storageSource.IndexOf(
+            "void reinjectPermanentMedia")
+          $removeStart = $storageSource.IndexOf(
+            "void removeDeletedMessage",
+            $reinjectStart)
+          if ($reinjectStart -lt 0 -or $removeStart -le $reinjectStart) {
+            throw "Could not isolate reinjectPermanentMedia for validation."
+          }
+          $reinjectRegion = $storageSource.Substring(
+            $reinjectStart,
+            $removeStart - $reinjectStart)
+          $rangeStart = $storageSource.IndexOf(
+            "LoadedServerRange ComputeLoadedServerRange")
+          $rangeEnd = $storageSource.IndexOf(
+            "bool LoadedRangeCovers",
+            $rangeStart)
+          if ($rangeStart -lt 0 -or $rangeEnd -le $rangeStart) {
+            throw "Could not isolate ComputeLoadedServerRange for validation."
+          }
+          $rangeRegion = $storageSource.Substring(
+            $rangeStart,
+            $rangeEnd - $rangeStart)
+          if ($rangeRegion.Contains("view->data()") -or -not $rangeRegion.Contains("history->minMsgId()") -or -not $rangeRegion.Contains("history->maxMsgId()")) {
+            throw "Loaded history range still depends on the incomplete view element type."
+          }
+          foreach ($required in @(
+            "ComputeLoadedServerRange(history)"
+            "LoadedRangeCovers(history, range, serverId)"
+            "RestoreArchivedMessage("
+            "history->noteAyuArchiveReconciled"
+          )) {
+            if (-not $reinjectRegion.Contains($required)) {
+              throw "Restart reconciliation is incomplete: $required"
+            }
+          }
+          $restoreStart = $storageSource.IndexOf("HistoryItem *RestoreArchivedMessage(")
+          $restoreEnd = $storageSource.IndexOf("HistoryItem *restoreArchivedLastMessage", $restoreStart)
+          if ($restoreStart -lt 0 -or $restoreEnd -le $restoreStart) {
+            throw "Could not isolate archived message reconciliation."
+          }
+          $restoreRegion = $storageSource.Substring($restoreStart, $restoreEnd - $restoreStart)
+          foreach ($required in @(
+            "injected->destroy();"
+            "existing->destroy();"
+            "confirmedMissing || history->ayuServerHistoryEmpty()"
+            "item->setAyuOriginalMessageId(serverId);"
+          )) {
+            if (-not $restoreRegion.Contains($required)) {
+              throw "Archived message reconciliation is incomplete: $required"
+            }
+          }
+          if ($archiveRegion.Contains("QFile::remove(source)")) {
+            throw "Reusing a video must preserve its previous permanent archive file."
+          }
+
+          $historyPath = "$env:BUILD_ROOT\tdesktop\Telegram\SourceFiles\history\history.cpp"
+          $historySource = Get-Content $historyPath -Raw
+          $checkLocalStart = $historySource.IndexOf(
+            "void History::checkLocalMessages")
+          $checkLocalEnd = $historySource.IndexOf(
+            "HistoryItem *History::joinedMessageInstance",
+            $checkLocalStart)
+          if ($checkLocalStart -lt 0 -or $checkLocalEnd -le $checkLocalStart) {
+            throw "Could not isolate History::checkLocalMessages."
+          }
+          $checkLocalRegion = $historySource.Substring(
+            $checkLocalStart,
+            $checkLocalEnd - $checkLocalStart)
+          $boundaryPosition = $checkLocalRegion.IndexOf("const auto firstDate")
+          $reinjectPosition = $checkLocalRegion.IndexOf(
+            "AyuMessages::reinjectPermanentMedia(this);")
+          $invalidHistoryOrder = ($boundaryPosition -lt 0) -or ($reinjectPosition -lt 0) -or ($boundaryPosition -ge $reinjectPosition)
+          if ($invalidHistoryOrder) {
+            throw "History boundaries are not preserved before reconciliation."
+          }
+
+          # TTL photos must keep their TTL without being converted into a
+          # spoiler. Videos retain their existing protected rendering path.
+          $historyItemPath = "$env:BUILD_ROOT\tdesktop\Telegram\SourceFiles\history\history_item.cpp"
+          $historyItemSource = Get-Content $historyItemPath -Raw
+          $photoMediaStart = $historyItemSource.IndexOf(
+            "const MTPDmessageMediaPhoto &media")
+          $documentMediaStart = $historyItemSource.IndexOf(
+            "const MTPDmessageMediaDocument &media",
+            $photoMediaStart)
+          if ($photoMediaStart -lt 0 -or $documentMediaStart -le $photoMediaStart) {
+            throw "Could not isolate the photo media creation path."
+          }
+          $photoMediaRegion = $historyItemSource.Substring(
+            $photoMediaStart,
+            $documentMediaStart - $photoMediaStart)
+          $photoForcesSpoiler = $photoMediaRegion.Contains(
+            "media.vttl_seconds().has_value()")
+          if ($photoForcesSpoiler -or -not $photoMediaRegion.Contains("media.is_spoiler()")) {
+            throw "TTL photos are still forced behind a spoiler."
+          }
+
+          # Peer opening replaces outgoing media with a retained notice, without a local timer.
+          $updatesPath = "$env:BUILD_ROOT\tdesktop\Telegram\SourceFiles\api\api_updates.cpp"
+          $updatesSource = Get-Content $updatesPath -Raw
+          $readCasePosition = $updatesSource.IndexOf("case mtpc_updateReadMessagesContents")
+          $peerReadPosition = $updatesSource.IndexOf("if (AyuMessages::isOutgoingSelfDestructingMedia(item))", $readCasePosition)
+          $unreadMediaPosition = $updatesSource.IndexOf("if (item->isUnreadMedia()", $peerReadPosition)
+          if ($readCasePosition -lt 0 -or $peerReadPosition -lt 0 -or $unreadMediaPosition -le $peerReadPosition) {
+            throw "Could not isolate the outgoing media read handler."
+          }
+          $peerReadRegion = $updatesSource.Substring($peerReadPosition, $unreadMediaPosition - $peerReadPosition)
+          if (-not $peerReadRegion.Contains("AyuMessages::expireOutgoingMedia(item);") -or $peerReadRegion.Contains("item->destroy();") -or $peerReadRegion.Contains("item->markMediaAndMentionRead();")) {
+            throw "Outgoing media read must retain a notice without a local countdown."
+          }
+
+          $loaderPath = "$env:BUILD_ROOT\tdesktop\Telegram\SourceFiles\storage\localimageloader.cpp"
+          $loaderSource = Get-Content $loaderPath -Raw
+          foreach ($required in @(
+            "QCryptographicHash::Sha256"
+            "ayuReuseFingerprint = hash.result().toHex()"
+            "!_result->to.replaceMediaOf"
+          )) {
+            if (-not $loaderSource.Contains($required)) {
+              throw "Upload fingerprint validation failed: $required"
+            }
+          }
+          if ($loaderSource.Contains("&& !_result->to.options.ttlSeconds")) {
+            throw "TTL media is still excluded from fingerprint generation."
+          }
+
+          $sendingPath = "$env:BUILD_ROOT\tdesktop\Telegram\SourceFiles\api\api_sending.cpp"
+          $sendingSource = Get-Content $sendingPath -Raw
+          $reuseLookupPosition = $sendingSource.IndexOf(
+            "AyuMessages::reusableUploadMedia")
+          $reusePreparePosition = $sendingSource.IndexOf(
+            "prepareLocalMedia(file, false)",
+            $reuseLookupPosition)
+          $reuseSendPosition = $sendingSource.IndexOf(
+            "sendAyuReusableMedia",
+            $reusePreparePosition)
+          if ($reuseLookupPosition -lt 0 -or $reusePreparePosition -lt 0 -or $reuseSendPosition -lt 0) {
+            throw "Server-media reuse is not connected to the confirmed-file send path."
+          }
+
+          $databasePath = "$env:BUILD_ROOT\tdesktop\Telegram\SourceFiles\ayu\data\ayu_database.cpp"
+          $databaseSource = Get-Content $databasePath -Raw
+          if (-not $databaseSource.Contains("make_table<AyuUploadReuse>") -or -not $databaseSource.Contains("storage.replace(entry)")) {
+            throw "Persistent upload-reuse table is missing."
+          }
+
+          $uploadPath = "$env:BUILD_ROOT\tdesktop\Telegram\SourceFiles\storage\file_upload.cpp"
+          $uploadSource = Get-Content $uploadPath -Raw
+          if (-not $uploadSource.Contains(".ayuReuseFingerprint = entry.file->ayuReuseFingerprint")) {
+            throw "The successful-upload fingerprint is not propagated."
+          }
+
+          if (-not $historySource.Contains("beforeOrderId <= originalId")) {
+            throw "Restored messages do not use stable same-second ordering."
+          }
+
+          # Ninja uses per-source language-key subsets. AyuGram's pinned
+          # code generator scans lng_* keys only, so teach it about ayu_* too.
+          $langPatch = "$env:RUNNER_TEMP\ninja-lang-subsets-ayu.patch"
+          $langPatchBase64 = @'
+          ZGlmZiAtLWdpdCBhL2NvZGVnZW4vbGFuZy9zdWJzZXRzLmNwcCBiL2NvZGVnZW4vbGFuZy9zdWJz
+          ZXRzLmNwcAppbmRleCBmZGE5MjZiLi44MTEwYjUyIDEwMDY0NAotLS0gYS9jb2RlZ2VuL2xhbmcv
+          c3Vic2V0cy5jcHAKKysrIGIvY29kZWdlbi9sYW5nL3N1YnNldHMuY3BwCkBAIC0xNzIsMTEgKzE3
+          MiwxNiBAQCB2b2lkIFNjYW4oY29uc3QgUUJ5dGVBcnJheSAmY29udGVudCwgU2Nhbm5lZCAmcmVz
+          dWx0KSB7CiAJY29uc3QgYXV0byBkYXRhID0gY29udGVudC5jb25zdERhdGEoKTsKIAljb25zdCBh
+          dXRvIHNpemUgPSBjb250ZW50LnNpemUoKTsKIAlmb3IgKGF1dG8gaSA9IHFzaXpldHlwZSgwKTsg
+          aSArIDQgPCBzaXplOyArK2kpIHsKLQkJaWYgKGRhdGFbaV0gIT0gJ2wnCi0JCQl8fCBkYXRhW2kg
+          KyAxXSAhPSAnbicKLQkJCXx8IGRhdGFbaSArIDJdICE9ICdnJwotCQkJfHwgZGF0YVtpICsgM10g
+          IT0gJ18nCi0JCQl8fCAoaSA+IDAgJiYgSXNJZGVudGlmaWVyQ2hhcihkYXRhW2kgLSAxXSkpKSB7
+          CisJCWNvbnN0IGF1dG8gaXNUZWxlZ3JhbUtleSA9IGRhdGFbaV0gPT0gJ2wnCisJCQkmJiBkYXRh
+          W2kgKyAxXSA9PSAnbicKKwkJCSYmIGRhdGFbaSArIDJdID09ICdnJworCQkJJiYgZGF0YVtpICsg
+          M10gPT0gJ18nOworCQljb25zdCBhdXRvIGlzQXl1R3JhbUtleSA9IGRhdGFbaV0gPT0gJ2EnCisJ
+          CQkmJiBkYXRhW2kgKyAxXSA9PSAneScKKwkJCSYmIGRhdGFbaSArIDJdID09ICd1JworCQkJJiYg
+          ZGF0YVtpICsgM10gPT0gJ18nOworCQlpZiAoKCFpc1RlbGVncmFtS2V5ICYmICFpc0F5dUdyYW1L
+          ZXkpCisJCQkJfHwgKGkgPiAwICYmIElzSWRlbnRpZmllckNoYXIoZGF0YVtpIC0gMV0pKSkgewog
+          CQkJY29udGludWU7CiAJCX0KIAkJYXV0byB0aWxsID0gaSArIDQ7Cg==
+          '@
+          [IO.File]::WriteAllBytes($langPatch, [Convert]::FromBase64String(($langPatchBase64 -replace '\s', '')))
+          git -C "$env:BUILD_ROOT\tdesktop\Telegram\codegen" apply --check $langPatch
+          if ($LASTEXITCODE -ne 0) { throw "Patch application or whitespace validation failed." }
+          git -C "$env:BUILD_ROOT\tdesktop\Telegram\codegen" apply $langPatch
+          if ($LASTEXITCODE -ne 0) { throw "Patch application or whitespace validation failed." }
+          git -C "$env:BUILD_ROOT\tdesktop\Telegram\codegen" diff --check
+          if ($LASTEXITCODE -ne 0) { throw "Patch application or whitespace validation failed." }
+
+          $ayuBuildRecipe = @'
+          call "%VSDEVCMD%" -vcvars_ver=14.44
+          if errorlevel 1 exit /b 1
+          rem Use VideoLAN's official GitHub mirror if code.videolan.org is unreachable.
+          git config --global url.https://github.com/videolan/.insteadOf https://code.videolan.org/videolan/
+          cd /d "%BUILD_ROOT%"
+          call tdesktop\Telegram\build\prepare\win.bat
+          if errorlevel 1 exit /b 1
+          cd /d "%BUILD_ROOT%\tdesktop\Telegram"
+          where ninja
+          if errorlevel 1 exit /b 1
+          set CMAKE_BUILD_PARALLEL_LEVEL=2
+          set _CL_=/MP1
+          rem Omit release debug symbols so the final link does not exhaust runner memory.
+          call configure.bat "-GNinja Multi-Config" -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT:STRING= -D TDESKTOP_API_ID=2040 -D TDESKTOP_API_HASH=b18441a1ff607e10a989891a5462e627
+          if errorlevel 1 exit /b 1
+          cmake --build ..\out --config Release --target Telegram --parallel 2
+          if errorlevel 1 exit /b 1
+          if not exist "%BUILD_ROOT%\tdesktop\out\Release\AyuGram.exe" exit /b 1
+          '@
+          $ayuBuildRecipePath = "$env:RUNNER_TEMP\ayu-main-build-v25-1-1.cmd"
+          $ayuBuildRecipe = "@echo off`r`n" + $ayuBuildRecipe.Replace("`r`n", "`n").Replace("`n", "`r`n") + "`r`n"
+          [IO.File]::WriteAllText($ayuBuildRecipePath, $ayuBuildRecipe, [Text.ASCIIEncoding]::new())
+          $ayuBuildMonitor = @'
+          """Run the unchanged Windows build batch, retaining a bounded error report."""
+          from collections import deque
+          from pathlib import Path
+          import os
+          import re
+          import subprocess
+          import sys
+          
+          ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+          ERROR = re.compile(r'\berror(?:\s+[A-Z]\d+\s*:|\s*:)|\bfatal\s+error\b', re.I)
+          FAILED = re.compile(r'^\s*FAILED:')
+          SCRIPT_ECHO = re.compile(r'^\s*@?echo(?:\s|$)', re.I)
+          
+          
+          def escape_annotation(value):
+              return value.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          
+          
+          def run_build(command, report):
+              report = Path(report)
+              report.parent.mkdir(parents=True, exist_ok=True)
+              report.write_text('Build started; detailed output is in the job log.\n', encoding='utf-8')
+              tail = deque(maxlen=200)
+              first_error = []
+              remaining = 0
+              annotations = set()
+              # Runtime credentials never belong in diagnostic artifacts or annotations.
+              secrets = [value for key, value in os.environ.items()
+                         if re.search(r'TOKEN|SECRET|PASSWORD|API_KEY', key, re.I) and len(value) >= 8]
+          
+              def redact(text):
+                  for value in secrets:
+                      text = text.replace(value, '***')
+                  return ANSI.sub('', text)
+          
+              try:
+                  process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                  for raw in iter(process.stdout.readline, b''):
+                      # Keep live build progress and GitHub's ordinary masking behavior.
+                      sys.stdout.buffer.write(raw)
+                      sys.stdout.buffer.flush()
+                      line = redact(raw.decode('utf-8', errors='replace').rstrip('\r\n'))[:4000]
+                      is_error = bool(ERROR.search(line)) and not SCRIPT_ECHO.search(line)
+                      if not first_error and (is_error or FAILED.search(line)):
+                          first_error = list(tail)[-8:] + [line]
+                          remaining = 24
+                      elif remaining:
+                          first_error.append(line)
+                          remaining -= 1
+                      tail.append(line)
+                      if is_error and line not in annotations and len(annotations) < 8:
+                          annotations.add(line)
+                  process.stdout.close()
+                  code = process.wait()
+              except OSError as error:
+                  code = 1
+                  first_error = [redact(str(error))]
+                  tail.append(first_error[0])
+                  print('::error title=AyuGram build launch error::' + escape_annotation(first_error[0]), flush=True)
+              first = '\n'.join(first_error)[:64 * 1024]
+              last = '\n'.join(tail)[-128 * 1024:]
+              content = (f'Build exit code: {code}\n\n'
+                         'First error and surrounding output:\n' + first + '\n\n'
+                         'Last 200 build output lines:\n' + last + '\n')
+              report.write_text(content, encoding='utf-8')
+              if code:
+                  for line in sorted(annotations):
+                      print('::error title=AyuGram build error::' + escape_annotation(line[:1200]), flush=True)
+              if code and not annotations:
+                  print('::error title=AyuGram build failed::Build exited with code '
+                        + str(code) + '; see the build-errors artifact.', flush=True)
+              summary = os.environ.get('GITHUB_STEP_SUMMARY')
+              if summary and code:
+                  with open(summary, 'a', encoding='utf-8') as stream:
+                      stream.write('### AyuGram build failure\n\n')
+                      stream.write(f'Exit code: `{code}`. The build-errors artifact contains the first error context and last 200 lines.\n\n')
+                      if first_error:
+                          stream.write('```text\n' + first[:12000].replace('```', "'''") + '\n```\n')
+              return code if code >= 0 else 1
+          
+          
+          def main():
+              if len(sys.argv) != 3:
+                  raise SystemExit('Expected the Windows batch path and diagnostic report path.')
+              if os.name != 'nt':
+                  raise SystemExit('The actual AyuGram build is restricted to the Windows CI runner.')
+              batch = Path(sys.argv[1]).resolve()
+              comspec = os.environ.get('COMSPEC', r'C:\Windows\System32\cmd.exe')
+              # /s /c strips the outer pair, retaining quotes around a batch path with spaces.
+              command = f'"{comspec}" /d /s /c ""{batch}""'
+              raise SystemExit(run_build(command, Path(sys.argv[2])))
+          
+          
+          if __name__ == '__main__':
+              main()
+          '@
+          $ayuBuildMonitorPath = "$env:RUNNER_TEMP\ayu-build-diagnostics-v25-1-1.py"
+          [IO.File]::WriteAllText($ayuBuildMonitorPath, $ayuBuildMonitor, [Text.UTF8Encoding]::new($false))
+
+      - name: Find Visual Studio
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) {
+            throw "Visual Studio C++ tools were not found."
+          }
+          $devcmd = "$vs\VC\Auxiliary\Build\vcvars64.bat"
+          "VSINSTALLPATH=$vs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VSDEVCMD=$devcmd" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install ATL and MFC for the v14.44 toolset
+        shell: pwsh
+        run: |
+          $setup = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $arguments = @(
+            "modify"
+            "--installPath `"$env:VSINSTALLPATH`""
+            "--add Microsoft.VisualStudio.Component.VC.14.44.17.14.ATL"
+            "--add Microsoft.VisualStudio.Component.VC.14.44.17.14.MFC"
+            "--quiet"
+            "--norestart"
+            "--nocache"
+          )
+          $process = Start-Process -FilePath $setup -ArgumentList $arguments -Wait -PassThru
+          $exitCode = $process.ExitCode
+          if ($exitCode -notin @(0, 3010)) {
+            throw "Visual Studio component installation failed with exit code $exitCode."
+          }
+          $toolset = Get-ChildItem "$env:VSINSTALLPATH\VC\Tools\MSVC" -Directory |
+            Where-Object Name -Like "14.44.*" |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+          if (-not $toolset -or -not (Test-Path "$($toolset.FullName)\atlmfc\include\atlbase.h")) {
+            throw "The v14.44 ATL/MFC headers were not installed."
+          }
+          Write-Host "Using ATL/MFC from $($toolset.FullName)."
+
+      - name: Prepare libraries and build AyuGram
+        shell: cmd
+        run: |
+          python "%RUNNER_TEMP%\ayu-build-diagnostics-v25-1-1.py" "%RUNNER_TEMP%\ayu-main-build-v25-1-1.cmd" "%RUNNER_TEMP%\ayu-build-errors-v25-1-1.txt"
+
+      - name: Create the portable ZIP
+        shell: pwsh
+        run: |
+          $output = "$env:GITHUB_WORKSPACE\output"
+          $official = "$output\official.zip"
+          $package = "$output\package"
+          New-Item -ItemType Directory -Force -Path $output | Out-Null
+          Invoke-WebRequest -Uri $env:OFFICIAL_ZIP_URL -OutFile $official
+          $actual = (Get-FileHash $official -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:OFFICIAL_ZIP_SHA256) {
+            throw "Official ZIP checksum mismatch: $actual"
+          }
+          Expand-Archive -Path $official -DestinationPath $package
+          Copy-Item "$env:BUILD_ROOT\tdesktop\out\Release\AyuGram.exe" "$package\AyuGram.exe" -Force
+          @"
+          AyuGram v7.0.9 定制版（阅后即焚、永久保留与媒体秒发 v25-1-1）
+
+          设置位置：AyuGram 设置 -> 阅后即焚与保留
+          默认自毁时间：3 秒，可设置 1–60 秒。
+          发送照片或视频时，发送窗口会显示“阅后即焚”复选框。
+          改变复选框后可勾选“记住此选择”，下次会沿用，直到再次改变并记住。
+          多个媒体会拆开逐个发送。定时发送、机器人、群组、频道、收藏夹和“作为文件”不受影响。
+          照片的自毁时间会贯穿本地消息、上传和最终发送请求。阅后即焚照片不再默认显示马赛克；视频继续保持原来的遮罩显示。
+
+          收到的私聊照片和视频会先自动下载到：
+          tdata\AyuPermanentMedia\账号编号\聊天编号_用户名
+          “下载完成后自动启动自毁”开启时，保存成功后自动启动倒计时；关闭时需右键手动启动。
+          对方或服务器删除、阅后即焚以及重启软件后，文本、已下载照片和视频仍会重新显示。
+          启动时先显示已保存的本地聊天记录，联网后再同步并按需载入；离线能看到部分记录属于正常行为。
+          v25-1-1 消息保留：收到或载入消息、普通消息发送确认后，先将原消息快照写入本地数据库。
+          对方删除消息或双向清空聊天时，保留原文、原编号、回复关系和已经下载的媒体。
+          修复双清时最后一条被空占位消息覆盖，以及重启后同秒消息漏显示、排序或聊天摘要错误。
+          重复发送同一视频会保留旧归档文件；媒体查找按账号、聊天和原编号隔离。
+          兼容旧版已经保存的记录。升级前请退出软件并备份整个 tdata，保留原 tdata 使用。
+          软件从未收到、未写入数据库的历史消息不能补救；媒体需要实际完成本地下载。
+          我方阅后即焚照片和视频不写入永久缓存；对方读取后开始本机自毁倒计时，倒计时结束后显示标准的“照片/视频已自毁”提示。
+          普通照片和视频首次成功上传后，会按账号持久保存本地 SHA-256 指纹到 Telegram 服务器媒体引用的映射；之后普通发送或阅后即焚发送同一文件都会跳过分块上传。
+          相册媒体秒发：普通相册中每张照片/视频会生成独立指纹，并在发送成功后按对应 random_id 保存服务器媒体引用。之后单独重发其中任意一张，可命中媒体秒发缓存。相册自身的再次发送仍走原上传路径；编辑、定时、快捷回复和付费媒体仍排除。
+          v19 已发送的相册不会自动补建指纹映射，升级后请先向收藏夹再发送一次相册。
+          每次加载历史片段都会按服务器范围重新核对，并按原消息编号稳定排序，避免重复、漏恢复和同秒消息顺序混乱。
+          删除到达但媒体尚未落盘时会继续后台下载；清空已删除消息也会清理尚未显示的恢复项。
+          使用 AyuGram 菜单中的“清空已删除消息”，会同时删除对应记录和文件。
+          群组默认不保存；在目标群聊右上角菜单选择 AyuGram → 永久保存此群，可单独启用普通群或超级群。频道和机器人仍不处理；长期使用会占用磁盘空间。
+
+          群组内存缓存：AyuGram 设置 -> 阅后即焚与保留 -> 一键清理所有群组内存缓存。
+          处理所有已登录账号中的已加载普通群和超级群，跳过私聊、频道及已启用永久保存的群组。
+          清理聊天视图、历史消息对象和历史索引缓存，保留发送/下载任务、通知、置顶消息、草稿引用及必要的聊天列表摘要。
+          不调用服务器删除接口，不删除手工下载的文件、磁盘媒体缓存或永久保存目录。再次进入群聊会按需重新加载。
+          清理的是群组可释放的内存缓存，不能保证消除其他模块的内存增长，也不能保证任务管理器数值立即回落。
+
+          私聊录屏：点击私聊顶部搜索按钮旁的眼睛图标，可一键隐藏/恢复自己的消息。
+          隐藏时，我方消息内容（包括媒体）显示为不含原文的马赛克；聊天内已解析的我方消息引用也会被遮住。
+          每个对话独立开关，同一对话的多个窗口同步；新发送和重新加载的消息自动遵循该开关。重启后默认恢复显示。
+          此功能只改变聊天内消息的显示，不改变发送内容。输入框草稿、左侧聊天摘要、通知、导出和独立媒体查看器不属于遮罩范围。
+
+          v25-1-1 媒体下载超时恢复：
+          下载连接编号包含从 16 开始的偏移，队列使用从 0 开始的序号；现已正确换算。
+          修复网络超时通知被误判越界并忽略，恢复原有的下载连接降级及未完成请求重分派。
+          下载失败和超时现在写入普通日志，不记录聊天文本、图片内容、文件引用或登录密钥。
+          仅修改下载管理器；v25-1 发送秒发、引用刷新、永久记录、媒体归档、遮罩等源码保持原样。
+          修复经过 175 种连接组合和实际回调代码的针对性检查；完整 Windows 构建由本工作流验证。
+          原故障日志没有完整下载状态，尚不能确认此修复覆盖当次无法下载的全部原因；仍需运行验证。
+          此版本需要在关闭旧程序后替换并重新启动才能生效，不能在线修补已经运行的旧进程。
+          无需删除或重建 tdata，也不清理缓存和永久保存文件；请保留原数据目录使用。
+
+          v25-1-1 照片/视频复用修复：
+          普通媒体缓存记录来源聊天、来源消息编号及频道访问信息，软件重启后仍可使用。
+          优先保留收藏夹中的普通媒体来源；发送闪图不会用闪图覆盖它。
+          相册中的每一张照片/视频按自己的 random_id 对应服务器消息，之后可以单独复用。
+          文件引用过期时读取一条来源消息并刷新引用，不要求事先打开收藏夹或来源聊天。
+          刷新后沿用相同发送标识重试一次，保持闪图时长、剧透设置和原来的发送选项。
+          来源不可用、媒体已更换或刷新后仍被拒绝时，正常上传当前消息；不循环刷新。
+          取消或删除待发送消息后忽略刷新结果；限流及登录错误按原有错误流程处理。
+          旧版缓存没有来源编号：升级后请把常用照片以普通照片/相册重新发送到收藏夹一次。
+          收藏夹中的普通来源需要继续保留，删除后失去刷新来源时仍需重新上传。
+          本地已验证旧数据库升级与新目录启动、重启保存及缓存刷新回退；完整 Windows 编译由此工作流执行。
+
+          v25-1-1 已读和设置保存修复：
+          本地提示消息之前的恢复消息会按原编号批量标记已读；纯本地提示不再报未知消息错误。
+          主设置写入临时文件，完整写入并提交后才替换原文件；保存成功后更新同目录 .bak 备份。
+          主配置缺失、JSON 损坏或无法解析时尝试读取备份；旧配置字段和旧版迁移逻辑保留。
+          修正媒体异常日志措辞，不再未经检查就声称缺少 ttl_seconds。
+          保留双清消息、媒体持久保存、末条保护、遮罩、群组备注、三条去重快捷输入及新目录启动。
+
+          v25-1-1 全新目录启动修复：
+          数据库同步时先建消息表，再创建依赖这些表的索引。
+          修复全新 tdata 目录因 DeletedMessage 表尚未创建而无法进入软件的问题。
+          新目录自动创建数据库，可用于新账号；已有目录继续使用原数据库和已保存记录。
+          保留群聊最近三条不同文本、重复文本去重、连续 ↑ 循环调取和重启保存。
+
+          v25-1-1 运行修复：归档消息按原编号批量标记已读，纯本地记录不向服务器发送本地编号。
+          归档校对按账号和聊天隔离，其他聊天的新消息不会反复触发当前归档的整段读取。
+          已确认删除的记录不重复标记，校对结果使用完成后的变更编号；聊天摘要查询增加索引。
+          保留 v24 消息保存、双清末条保护、媒体保存，以及以下消息遮罩功能。
+
+          v25-1-1 选中消息遮罩：
+          选中一条或多条消息，在顶部“转发 / 删除 / SHOT”旁点击“遮罩”。
+          我方、对方以及混合选中的消息均可遮罩，文本和媒体一起隐藏；相册中单独选中的媒体可以单独遮罩。
+          选中的消息全部已遮罩时，按钮显示“取消遮罩”，点击恢复；混合选中时点击“遮罩”会统一遮住。
+          聊天内已经解析的被遮罩消息引用也会遮住，遮罩区域不会因鼠标悬停或点击而打开内容。
+          滚动重新加载、切换对话和同一账号的多个窗口共享遮罩状态；发送确认后消息编号变化也会保留遮罩。
+          支持主聊天、评论/回复、置顶消息和定时消息的选中操作栏。
+          遮罩用于当前录屏过程，重启软件后恢复显示。
+          顶部眼睛图标的“隐藏我方发言”和单条遮罩分别生效；开启全体我方隐藏时，取消单条遮罩后仍需关闭眼睛开关才能显示我方消息。
+          只改变聊天中的显示，发送、转发、消息原文和媒体文件保持原样。通知、左侧聊天摘要、导出及独立媒体查看器不属于遮罩范围。
+
+          v25-1-1 新增和优化：
+          1. 双清恢复消息遮罩：重启后恢复到聊天内的双清消息，右键菜单可选择消息；也支持与普通消息混合选择。
+          选中后点击顶部“遮罩”，再次点击“取消遮罩”恢复；我方和对方、文字和图片/视频均可使用。
+          恢复消息按原始消息 ID 遮罩；不会把本地恢复消息的编号提交到服务器转发、删除或举报。
+          遮罩继续只在当前运行期间生效，重启后恢复显示。
+
+          2. 群组备注：群组右键菜单或聊天右上角菜单 → AyuGram → 设置群组备注（仅自己可见）。
+          设置后在聊天列表、聊天顶部、资料页和搜索结果显示；可以用原群名或备注搜索本地聊天。
+          选择“清除群组备注”可恢复原群名；备注在重启后保留，按账号和群组分别保存。
+          备注仅用于本机显示，不修改服务器群名，也不要求管理员权限。
+
+          3. 群聊快捷输入：按账号和群组保存最近三条不同的我方文本，重复发送的同一文本只占一条，并移到最新位置。
+          输入框为空时按 ↑ 调出最新一条；保持文本未编辑并连续按 ↑，依次调出第二条、第三条，再回到最新一条。
+          文本可包含多行、中文、表情和媒体说明文字；可以修改，确认后自行发送，不会自动发送或进入编辑旧消息模式。
+          手动输入或修改文本后，↑ 恢复普通光标操作；清空输入框后可重新调取。
+          私聊、频道、未由快捷输入填入的草稿、正在编辑消息、按组合键或中文输入法选词时保留原有行为。
+          同一个群组的回复/话题输入框也可使用；按群组保存，不按单个话题分别保存。
+          最近三条不同文本会保存到本地，重启后也可调出；旧版保存的上一条会自动迁移，并由加载的聊天或双清保存记录补全。
+          本地不足三条时，按 ↑ 会在后台补查本账号在该群的发言并去重；已有缓存立即可用。
+          没有发言或查询失败时保留当前输入框，可稍后重试；该群不足三条不同文本时只调取现有条数。
+          查询期间切换群组、输入或清空草稿、改变输入焦点后，旧查询结果不会覆盖当前输入框。
+
+          本程序没有官方数字签名。首次启动时 Windows 可能显示安全提示。
+          "@ | Set-Content -Path "$package\使用说明.txt" -Encoding utf8
+          $zip = "$output\AyuGram-v7.0.9-self-destruct-persistence-reuse-v25-1-1.zip"
+          Compress-Archive -Path "$package\*" -DestinationPath $zip -CompressionLevel Optimal
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  AyuGram-v7.0.9-self-destruct-persistence-reuse-v25-1-1.zip" | Set-Content "$zip.sha256" -Encoding ascii
+
+      - name: Upload the finished program
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: AyuGram-v7.0.9-self-destruct-persistence-reuse-v25-1-1
+          path: |
+            output/AyuGram-v7.0.9-self-destruct-persistence-reuse-v25-1-1.zip
+            output/AyuGram-v7.0.9-self-destruct-persistence-reuse-v25-1-1.zip.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload build error diagnostics
+        if: failure() && !cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: AyuGram-build-errors-v25-1-1
+          path: ${{ runner.temp }}/ayu-build-errors-v25-1-1.txt
+          if-no-files-found: ignore
+          retention-days: 7
