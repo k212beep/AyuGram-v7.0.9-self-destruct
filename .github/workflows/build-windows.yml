@@ -1,925 +1,1132 @@
-name: Build AyuGram v7.0.9 custom
+# Upload this single file as .github/workflows/build-windows.yml
+# It embeds all source and uses no real recipient data, Secrets, or account logins.
+name: Build Windows Demo
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - main
     paths:
-      - .github/workflows/build-windows.yml
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ayugram-v7.0.9-custom
+  group: windows-demo-${{ github.ref }}
   cancel-in-progress: false
-
-env:
-  SOURCE_REPOSITORY: https://github.com/AyuGram/AyuGramDesktop.git
-  SOURCE_TAG: v7.0.9
-  SOURCE_SHA: 032ad328549cff9f612d106d8660fbc03eb43130
-  OFFICIAL_ZIP_URL: https://github.com/AyuGram/AyuGramDesktop/releases/download/v7.0.9/AyuGram.zip
-  OFFICIAL_ZIP_SHA256: 5360e93f71a5acb4938ade03872dc7ce556c41853d63c0144f26ddbda74768c3
 
 jobs:
   build:
-    runs-on: windows-2025
-    timeout-minutes: 360
-
+    runs-on: windows-2022
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
     steps:
-      - name: Checkout build recipe
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-
-      - name: Select a drive with enough free space
-        shell: pwsh
-        run: |
-          $minimum = 45GB
-          $selected = $null
-          foreach ($name in @("D", "C")) {
-            $drive = Get-PSDrive -Name $name -ErrorAction SilentlyContinue
-            if ($drive -and $drive.Free -ge $minimum) {
-              $selected = $drive
-              break
-            }
-          }
-          if (-not $selected) {
-            Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
-            throw "The runner has less than 45 GB free. Retry the workflow later."
-          }
-          $root = "$($selected.Name):\AyuBuild"
-          New-Item -ItemType Directory -Force -Path $root | Out-Null
-          "BUILD_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Using $root with $([math]::Round($selected.Free / 1GB, 1)) GB free."
-
-      - name: Set up Python 3.10
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      - name: Set up Python 3.12 x64
+        uses: actions/setup-python@v7
         with:
-          python-version: "3.10"
+          python-version: '3.12'
+          architecture: x64
 
-      - name: Clone the fixed source and apply the patch
-        shell: pwsh
+
+      - name: Write embedded app.py (1/4)
         run: |
-          git config --global core.longpaths true
-          git clone --branch $env:SOURCE_TAG --depth 1 --recurse-submodules --shallow-submodules $env:SOURCE_REPOSITORY "$env:BUILD_ROOT\tdesktop"
-          $actual = (git -C "$env:BUILD_ROOT\tdesktop" rev-parse HEAD).Trim()
-          if ($actual -ne $env:SOURCE_SHA) {
-            throw "Unexpected source commit: $actual"
+          $payload = @'
+          """Windows desktop UI demo. All send actions are local simulations."""
+          from __future__ import annotations
+
+          import argparse
+          import csv
+          import json
+          import math
+          import os
+          import re
+          import sys
+          import time
+          import traceback
+          from dataclasses import dataclass, field
+          from datetime import datetime
+          from pathlib import Path
+
+
+          APP_NAME = "抖音群发工作台 · 演示版"
+          VERSION = "1.0.0"
+          MAX_FILE_BYTES = 5 * 1024 * 1024
+          MAX_RECIPIENTS = 20000
+          MAX_MESSAGE = 2000
+          ID_RE = re.compile(r"(?=[A-Za-z0-9_.-]*[A-Za-z0-9])[A-Za-z0-9_.-]{1,64}\Z")
+          LABELED_ID = re.compile(r"(?:抖音号|抖音ID|douyin[_ ]?id)\s*[:：=]?\s*([^\s,，;；]+)", re.I)
+          ID_HEADERS = {"抖音号", "抖音id", "douyin_id", "douyinid", "id", "账号"}
+          NAME_HEADERS = {"昵称", "nickname", "name", "姓名"}
+          SOURCE_HEADERS = {"来源", "source", "分组"}
+          COLORS = {
+              "bg": "#0B1019", "side": "#101722", "card": "#151E2C",
+              "input": "#0E1622", "line": "#263449", "text": "#F0F4FC",
+              "muted": "#92A0B7", "accent": "#53E3C2", "blue": "#7EAAFF",
+              "amber": "#F4C981", "red": "#F595A5", "hover": "#233149",
           }
-          $patch = "$env:RUNNER_TEMP\self-destruct-photo.patch"
-          # Complete patch: self-destruct sending plus restart-safe media.
-          $patchBase64 = @'
-          ZGlmZiAtLWdpdCBhL1RlbGVncmFtL1Jlc291cmNlcy9sYW5ncy9sYW5nLnN0cmluZ3MgYi9UZWxlZ3Jh
-          bS9SZXNvdXJjZXMvbGFuZ3MvbGFuZy5zdHJpbmdzCmluZGV4IDdhZDQzNzkuLjNjZGFlYzEgMTAwNjQ0
-          Ci0tLSBhL1RlbGVncmFtL1Jlc291cmNlcy9sYW5ncy9sYW5nLnN0cmluZ3MKKysrIGIvVGVsZWdyYW0v
-          UmVzb3VyY2VzL2xhbmdzL2xhbmcuc3RyaW5ncwpAQCAtODc3Nyw2ICs4Nzc3LDggQEAgaHR0cHM6Ly9n
-          aXRodWIuY29tL3RlbGVncmFtZGVza3RvcC90ZGVza3RvcC9ibG9iL21hc3Rlci9MRUdBTAogImF5dV9N
-          ZXNzYWdlQnViYmxlUmFkaXVzIiA9ICJNZXNzYWdlIEJ1YmJsZSBSYWRpdXMiOwogImF5dV9TZXR0aW5n
-          c1dpZGVNdWx0aXBsaWVyIiA9ICJXaWRlIE1lc3NhZ2VzIE11bHRpcGxpZXIiOwogImF5dV9TZXR0aW5n
-          c1dpZGVNdWx0aXBsaWVyRGVzY3JpcHRpb24iID0gIllvdSBjYW4gY2hhbmdlIG1lc3NhZ2Ugd2lkdGgg
-          Zm9yIGJldHRlciBkaXNwbGF5IG9uIHdpZGUgbW9uaXRvcnMuIjsKKyJheXVfU2VsZkRlc3RydWN0UGhv
-          dG9UaW1lciIgPSAi6ZiF5ZCO5Y2z54Sa54Wn54mHIjsKKyJheXVfU2VsZkRlc3RydWN0UGhvdG9UaW1l
-          ckRlc2NyaXB0aW9uIiA9ICLorr7nva7kuIDmrKHlkI7vvIznp4HogYrkuK3mraPluLjlj5HpgIHnmoTm
-          iYDmnInnhafniYfpg73kvJrkvb/nlKjov5nkuKroh6rmr4Hml7bpl7TjgILorr7kuLrigJzlhbPpl63i
-          gJ3ljbPlj6/lgZznlKjvvJvkvZzkuLrmlofku7blj5HpgIHjgIHlrprml7blj5HpgIHjgIHnvqTnu4Tj
-          gIHmnLrlmajkurrlkozmlLbol4/lpLnkuI3lj5flvbHlk43jgIIiOwogImF5dV9TZXR0aW5nc1Nwb29m
-          V2Vidmlld0FzQW5kcm9pZCIgPSAiU3Bvb2YgQ2xpZW50IGFzIEFuZHJvaWQiOwogImF5dV9TZXR0aW5n
-          c0JpZ2dlcldpbmRvdyIgPSAiQmlnZ2VyIFdpbmRvdyI7CiAiYXl1X1NldHRpbmdzSW5jcmVhc2VXZWJ2
-          aWV3SGVpZ2h0IiA9ICJJbmNyZWFzZSBDb250ZW50IEhlaWdodCI7CmRpZmYgLS1naXQgYS9UZWxlZ3Jh
-          bS9Tb3VyY2VGaWxlcy9hcGkvYXBpX3NlbmRpbmcuY3BwIGIvVGVsZWdyYW0vU291cmNlRmlsZXMvYXBp
-          L2FwaV9zZW5kaW5nLmNwcAppbmRleCAzM2FmODU3Li5mMDEyMGE0IDEwMDY0NAotLS0gYS9UZWxlZ3Jh
-          bS9Tb3VyY2VGaWxlcy9hcGkvYXBpX3NlbmRpbmcuY3BwCisrKyBiL1RlbGVncmFtL1NvdXJjZUZpbGVz
-          L2FwaS9hcGlfc2VuZGluZy5jcHAKQEAgLTcxNCwxMiArNzE0LDE0IEBAIHZvaWQgU2VuZENvbmZpcm1l
-          ZEZpbGUoCiAJfQogCWNvbnN0IGF1dG8gbWVkaWEgPSBNVFBNZXNzYWdlTWVkaWEoWyZdIHsKIAkJaWYg
-          KGZpbGUtPnR5cGUgPT0gU2VuZE1lZGlhVHlwZTo6UGhvdG8pIHsKKwkJCWNvbnN0IGF1dG8gdHRsU2Vj
-          b25kcyA9IGZpbGUtPnRvLm9wdGlvbnMudHRsU2Vjb25kczsKIAkJCXVzaW5nIEZsYWcgPSBNVFBEbWVz
-          c2FnZU1lZGlhUGhvdG86OkZsYWc7CiAJCQlyZXR1cm4gTVRQX21lc3NhZ2VNZWRpYVBob3RvKAogCQkJ
-          CU1UUF9mbGFncyhGbGFnOjpmX3Bob3RvCisJCQkJCXwgKHR0bFNlY29uZHMgPyBGbGFnOjpmX3R0bF9z
-          ZWNvbmRzIDogRmxhZygpKQogCQkJCQl8IChmaWxlLT5zcG9pbGVyID8gRmxhZzo6Zl9zcG9pbGVyIDog
-          RmxhZygpKSksCiAJCQkJZmlsZS0+cGhvdG8sCi0JCQkJTVRQaW50KCksIC8vIHR0bF9zZWNvbmRzCisJ
-          CQkJTVRQX2ludCh0dGxTZWNvbmRzKSwKIAkJCQlNVFBEb2N1bWVudCgpKTsgLy8gdmlkZW8KIAkJfSBl
-          bHNlIGlmIChmaWxlLT50eXBlID09IFNlbmRNZWRpYVR5cGU6OkZpbGUpIHsKIAkJCXVzaW5nIEZsYWcg
-          PSBNVFBEbWVzc2FnZU1lZGlhRG9jdW1lbnQ6OkZsYWc7CmRpZmYgLS1naXQgYS9UZWxlZ3JhbS9Tb3Vy
-          Y2VGaWxlcy9heXUvYXl1X3NldHRpbmdzLmNwcCBiL1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5dS9heXVf
-          c2V0dGluZ3MuY3BwCmluZGV4IDI3MTFiN2MuLmRmZjZmNjcgMTAwNjQ0Ci0tLSBhL1RlbGVncmFtL1Nv
-          dXJjZUZpbGVzL2F5dS9heXVfc2V0dGluZ3MuY3BwCisrKyBiL1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5
-          dS9heXVfc2V0dGluZ3MuY3BwCkBAIC0yMSw2ICsyMSw3IEBACiAjaW5jbHVkZSAicnBsL2NvbWJpbmUu
-          aCIKICNpbmNsdWRlICJ3aW5kb3cvd2luZG93X2NvbnRyb2xsZXIuaCIKIAorI2luY2x1ZGUgPGFsZ29y
-          aXRobT4KICNpbmNsdWRlIDxmc3RyZWFtPgogI2luY2x1ZGUgPFFBcHBsaWNhdGlvbj4KIApAQCAtMTAx
-          Nyw2ICsxMDE4LDEzIEBAIHZvaWQgQXl1U2V0dGluZ3M6OnNldFJvdW5kQ29uZmlybWF0aW9uKGJvb2wg
-          dmFsKSB7CiAJc2F2ZSgpOwogfQogCit2b2lkIEF5dVNldHRpbmdzOjpzZXRTZWxmRGVzdHJ1Y3RQaG90
-          b1NlY29uZHMoaW50IHZhbCkgeworCXZhbCA9IHN0ZDo6Y2xhbXAodmFsLCAwLCA2MCk7CisJaWYgKF9z
-          ZWxmRGVzdHJ1Y3RQaG90b1NlY29uZHMuY3VycmVudCgpID09IHZhbCkgcmV0dXJuOworCV9zZWxmRGVz
-          dHJ1Y3RQaG90b1NlY29uZHMgPSB2YWw7CisJc2F2ZSgpOworfQorCiB2b2lkIEF5dVNldHRpbmdzOjpz
-          ZXRUcmFuc2xhdGlvblByb3ZpZGVyKFRyYW5zbGF0aW9uUHJvdmlkZXIgdmFsKSB7CiAJaWYgKCh2YWwg
-          PT0gVHJhbnNsYXRpb25Qcm92aWRlcjo6TmF0aXZlKQogCQkmJiAhUGxhdGZvcm06OklzVHJhbnNsYXRl
-          UHJvdmlkZXJBdmFpbGFibGUoKSkgewpAQCAtMTE1OCw2ICsxMTY2LDcgQEAgdm9pZCB0b19qc29uKG5s
-          b2htYW5uOjpqc29uICZqLCBjb25zdCBBeXVTZXR0aW5ncyAmcykgewogCQl7ImdpZkNvbmZpcm1hdGlv
-          biIsIHMuX2dpZkNvbmZpcm1hdGlvbi5jdXJyZW50KCl9LAogCQl7InZvaWNlQ29uZmlybWF0aW9uIiwg
-          cy5fdm9pY2VDb25maXJtYXRpb24uY3VycmVudCgpfSwKIAkJeyJyb3VuZENvbmZpcm1hdGlvbiIsIHMu
-          X3JvdW5kQ29uZmlybWF0aW9uLmN1cnJlbnQoKX0sCisJCXsic2VsZkRlc3RydWN0UGhvdG9TZWNvbmRz
-          Iiwgcy5fc2VsZkRlc3RydWN0UGhvdG9TZWNvbmRzLmN1cnJlbnQoKX0sCiAJCXsidHJhbnNsYXRpb25Q
-          cm92aWRlciIsIHMuX3RyYW5zbGF0aW9uUHJvdmlkZXIuY3VycmVudCgpfSwKIAkJeyJhZGFwdGl2ZUNv
-          dmVyQ29sb3IiLCBzLl9hZGFwdGl2ZUNvdmVyQ29sb3IuY3VycmVudCgpfSwKIAkJeyJpbXByb3ZlTGlu
-          a1ByZXZpZXdzIiwgcy5faW1wcm92ZUxpbmtQcmV2aWV3cy5jdXJyZW50KCl9LApAQCAtMTI2Miw2ICsx
-          MjcxLDEyIEBAIHZvaWQgZnJvbV9qc29uKGNvbnN0IG5sb2htYW5uOjpqc29uICZqLCBBeXVTZXR0aW5n
-          cyAmcykgewogCXMuX2dpZkNvbmZpcm1hdGlvbiA9IGoudmFsdWUoImdpZkNvbmZpcm1hdGlvbiIsIGRl
-          ZmF1bHRzLl9naWZDb25maXJtYXRpb24uY3VycmVudCgpKTsKIAlzLl92b2ljZUNvbmZpcm1hdGlvbiA9
-          IGoudmFsdWUoInZvaWNlQ29uZmlybWF0aW9uIiwgZGVmYXVsdHMuX3ZvaWNlQ29uZmlybWF0aW9uLmN1
-          cnJlbnQoKSk7CiAJcy5fcm91bmRDb25maXJtYXRpb24gPSBqLnZhbHVlKCJyb3VuZENvbmZpcm1hdGlv
-          biIsIGRlZmF1bHRzLl9yb3VuZENvbmZpcm1hdGlvbi5jdXJyZW50KCkpOworCXMuX3NlbGZEZXN0cnVj
-          dFBob3RvU2Vjb25kcyA9IHN0ZDo6Y2xhbXAoCisJCWoudmFsdWUoCisJCQkic2VsZkRlc3RydWN0UGhv
-          dG9TZWNvbmRzIiwKKwkJCWRlZmF1bHRzLl9zZWxmRGVzdHJ1Y3RQaG90b1NlY29uZHMuY3VycmVudCgp
-          KSwKKwkJMCwKKwkJNjApOwogCXMuX3RyYW5zbGF0aW9uUHJvdmlkZXIgPSBqLnZhbHVlKCJ0cmFuc2xh
-          dGlvblByb3ZpZGVyIiwgZGVmYXVsdHMuX3RyYW5zbGF0aW9uUHJvdmlkZXIuY3VycmVudCgpKTsKIAlz
-          Ll9hZGFwdGl2ZUNvdmVyQ29sb3IgPSBqLnZhbHVlKCJhZGFwdGl2ZUNvdmVyQ29sb3IiLCBkZWZhdWx0
-          cy5fYWRhcHRpdmVDb3ZlckNvbG9yLmN1cnJlbnQoKSk7CiAJcy5faW1wcm92ZUxpbmtQcmV2aWV3cyA9
-          IGoudmFsdWUoImltcHJvdmVMaW5rUHJldmlld3MiLCBkZWZhdWx0cy5faW1wcm92ZUxpbmtQcmV2aWV3
-          cy5jdXJyZW50KCkpOwpkaWZmIC0tZ2l0IGEvVGVsZWdyYW0vU291cmNlRmlsZXMvYXl1L2F5dV9zZXR0
-          aW5ncy5oIGIvVGVsZWdyYW0vU291cmNlRmlsZXMvYXl1L2F5dV9zZXR0aW5ncy5oCmluZGV4IDQ5ZTli
-          ZmYuLjZiN2Y3OTggMTAwNjQ0Ci0tLSBhL1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5dS9heXVfc2V0dGlu
-          Z3MuaAorKysgYi9UZWxlZ3JhbS9Tb3VyY2VGaWxlcy9heXUvYXl1X3NldHRpbmdzLmgKQEAgLTM0Niw2
-          ICszNDYsNyBAQCBwdWJsaWM6CiAJW1tub2Rpc2NhcmRdXSBib29sIGdpZkNvbmZpcm1hdGlvbigpIGNv
-          bnN0IHsgcmV0dXJuIF9naWZDb25maXJtYXRpb24uY3VycmVudCgpOyB9CiAJW1tub2Rpc2NhcmRdXSBi
-          b29sIHZvaWNlQ29uZmlybWF0aW9uKCkgY29uc3QgeyByZXR1cm4gX3ZvaWNlQ29uZmlybWF0aW9uLmN1
-          cnJlbnQoKTsgfQogCVtbbm9kaXNjYXJkXV0gYm9vbCByb3VuZENvbmZpcm1hdGlvbigpIGNvbnN0IHsg
-          cmV0dXJuIF9yb3VuZENvbmZpcm1hdGlvbi5jdXJyZW50KCk7IH0KKwlbW25vZGlzY2FyZF1dIGludCBz
-          ZWxmRGVzdHJ1Y3RQaG90b1NlY29uZHMoKSBjb25zdCB7IHJldHVybiBfc2VsZkRlc3RydWN0UGhvdG9T
-          ZWNvbmRzLmN1cnJlbnQoKTsgfQogCVtbbm9kaXNjYXJkXV0gVHJhbnNsYXRpb25Qcm92aWRlciB0cmFu
-          c2xhdGlvblByb3ZpZGVyKCkgY29uc3QgeyByZXR1cm4gX3RyYW5zbGF0aW9uUHJvdmlkZXIuY3VycmVu
-          dCgpOyB9CiAJW1tub2Rpc2NhcmRdXSBib29sIGFkYXB0aXZlQ292ZXJDb2xvcigpIGNvbnN0IHsgcmV0
-          dXJuIF9hZGFwdGl2ZUNvdmVyQ29sb3IuY3VycmVudCgpOyB9CiAJW1tub2Rpc2NhcmRdXSBib29sIGlt
-          cHJvdmVMaW5rUHJldmlld3MoKSBjb25zdCB7IHJldHVybiBfaW1wcm92ZUxpbmtQcmV2aWV3cy5jdXJy
-          ZW50KCk7IH0KQEAgLTQzMyw2ICs0MzQsNyBAQCBwdWJsaWM6CiAJdm9pZCBzZXRHaWZDb25maXJtYXRp
-          b24oYm9vbCB2YWwpOwogCXZvaWQgc2V0Vm9pY2VDb25maXJtYXRpb24oYm9vbCB2YWwpOwogCXZvaWQg
-          c2V0Um91bmRDb25maXJtYXRpb24oYm9vbCB2YWwpOworCXZvaWQgc2V0U2VsZkRlc3RydWN0UGhvdG9T
-          ZWNvbmRzKGludCB2YWwpOwogCXZvaWQgc2V0VHJhbnNsYXRpb25Qcm92aWRlcihUcmFuc2xhdGlvblBy
-          b3ZpZGVyIHZhbCk7CiAJdm9pZCBzZXRBZGFwdGl2ZUNvdmVyQ29sb3IoYm9vbCB2YWwpOwogCXZvaWQg
-          c2V0SW1wcm92ZUxpbmtQcmV2aWV3cyhib29sIHZhbCk7CkBAIC03MDQsNiArNzA2LDcgQEAgcHJpdmF0
-          ZToKIAlycGw6OnZhcmlhYmxlPGJvb2w+IF9naWZDb25maXJtYXRpb24gPSBmYWxzZTsKIAlycGw6OnZh
-          cmlhYmxlPGJvb2w+IF92b2ljZUNvbmZpcm1hdGlvbiA9IGZhbHNlOwogCXJwbDo6dmFyaWFibGU8Ym9v
-          bD4gX3JvdW5kQ29uZmlybWF0aW9uID0gZmFsc2U7CisJcnBsOjp2YXJpYWJsZTxpbnQ+IF9zZWxmRGVz
-          dHJ1Y3RQaG90b1NlY29uZHMgPSAzOwogCXJwbDo6dmFyaWFibGU8VHJhbnNsYXRpb25Qcm92aWRlcj4g
-          X3RyYW5zbGF0aW9uUHJvdmlkZXIgPSBUcmFuc2xhdGlvblByb3ZpZGVyOjpUZWxlZ3JhbTsKIAlycGw6
-          OnZhcmlhYmxlPGJvb2w+IF9hZGFwdGl2ZUNvdmVyQ29sb3IgPSB0cnVlOwogCXJwbDo6dmFyaWFibGU8
-          Ym9vbD4gX2ltcHJvdmVMaW5rUHJldmlld3MgPSBmYWxzZTsKZGlmZiAtLWdpdCBhL1RlbGVncmFtL1Nv
-          dXJjZUZpbGVzL2F5dS9kYXRhL2F5dV9kYXRhYmFzZS5jcHAgYi9UZWxlZ3JhbS9Tb3VyY2VGaWxlcy9h
-          eXUvZGF0YS9heXVfZGF0YWJhc2UuY3BwCmluZGV4IGE2YzA3OTAuLjVhNTY4YmQgMTAwNjQ0Ci0tLSBh
-          L1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5dS9kYXRhL2F5dV9kYXRhYmFzZS5jcHAKKysrIGIvVGVsZWdy
-          YW0vU291cmNlRmlsZXMvYXl1L2RhdGEvYXl1X2RhdGFiYXNlLmNwcApAQCAtMzM5LDYgKzMzOSwyNiBA
-          QCBzdGQ6OnZlY3RvcjxEZWxldGVkTWVzc2FnZT4gZ2V0RGVsZXRlZE1lc3NhZ2VzKElEIHVzZXJJZCwg
-          SUQgZGlhbG9nSWQsIElEIHRvcGljSQogCSk7CiB9CiAKK3N0ZDo6b3B0aW9uYWw8RGVsZXRlZE1lc3Nh
-          Z2U+IGdldERlbGV0ZWRNZXNzYWdlKAorCQlJRCB1c2VySWQsCisJCUlEIGRpYWxvZ0lkLAorCQlJRCBt
-          ZXNzYWdlSWQpIHsKKwl0cnkgeworCQljb25zdCBhdXRvIHJlc3VsdCA9IHN0b3JhZ2UuZ2V0X2FsbDxE
-          ZWxldGVkTWVzc2FnZT4oCisJCQl3aGVyZSgKKwkJCQljb2x1bW48RGVsZXRlZE1lc3NhZ2U+KCZEZWxl
-          dGVkTWVzc2FnZTo6dXNlcklkKSA9PSB1c2VySWQgYW5kCisJCQkJY29sdW1uPERlbGV0ZWRNZXNzYWdl
-          PigmRGVsZXRlZE1lc3NhZ2U6OmRpYWxvZ0lkKSA9PSBkaWFsb2dJZCBhbmQKKwkJCQljb2x1bW48RGVs
-          ZXRlZE1lc3NhZ2U+KCZEZWxldGVkTWVzc2FnZTo6bWVzc2FnZUlkKSA9PSBtZXNzYWdlSWQpLAorCQkJ
-          bGltaXQoMSkpOworCQlyZXR1cm4gcmVzdWx0LmVtcHR5KCkKKwkJCT8gc3RkOjpvcHRpb25hbDxEZWxl
-          dGVkTWVzc2FnZT4oKQorCQkJOiByZXN1bHQuZnJvbnQoKTsKKwl9IGNhdGNoIChzdGQ6OmV4Y2VwdGlv
-          biAmZXgpIHsKKwkJTE9HKCgiRmFpbGVkIHRvIGxvYWQgZGVsZXRlZCBtZXNzYWdlOiAlMSIpLmFyZyhl
-          eC53aGF0KCkpKTsKKwkJcmV0dXJuIHN0ZDo6bnVsbG9wdDsKKwl9Cit9CisKIGJvb2wgaGFzRGVsZXRl
-          ZE1lc3NhZ2VzKElEIHVzZXJJZCwgSUQgZGlhbG9nSWQsIElEIHRvcGljSWQpIHsKIAl0cnkgewogCQly
-          ZXR1cm4gIXN0b3JhZ2Uuc2VsZWN0KApAQCAtMzU2LDYgKzM3NiwyOSBAQCBib29sIGhhc0RlbGV0ZWRN
-          ZXNzYWdlcyhJRCB1c2VySWQsIElEIGRpYWxvZ0lkLCBJRCB0b3BpY0lkKSB7CiAJfQogfQogCit2b2lk
-          IHVwZGF0ZURlbGV0ZWRNZWRpYSgKKwkJSUQgdXNlcklkLAorCQlJRCBkaWFsb2dJZCwKKwkJSUQgbWVz
-          c2FnZUlkLAorCQljb25zdCBzdGQ6OnN0cmluZyAmbWVkaWFQYXRoLAorCQlpbnQgZG9jdW1lbnRUeXBl
-          LAorCQljb25zdCBzdGQ6OnZlY3RvcjxjaGFyPiAmZG9jdW1lbnRBdHRyaWJ1dGVzU2VyaWFsaXplZCwK
-          KwkJY29uc3Qgc3RkOjpzdHJpbmcgJm1pbWVUeXBlKSB7CisJdHJ5IHsKKwkJYXV0byBtZXNzYWdlID0g
-          Z2V0RGVsZXRlZE1lc3NhZ2UodXNlcklkLCBkaWFsb2dJZCwgbWVzc2FnZUlkKTsKKwkJaWYgKCFtZXNz
-          YWdlKSB7CisJCQlyZXR1cm47CisJCX0KKwkJbWVzc2FnZS0+bWVkaWFQYXRoID0gbWVkaWFQYXRoOwor
-          CQltZXNzYWdlLT5kb2N1bWVudFR5cGUgPSBkb2N1bWVudFR5cGU7CisJCW1lc3NhZ2UtPmRvY3VtZW50
-          QXR0cmlidXRlc1NlcmlhbGl6ZWQgPSBkb2N1bWVudEF0dHJpYnV0ZXNTZXJpYWxpemVkOworCQltZXNz
-          YWdlLT5taW1lVHlwZSA9IG1pbWVUeXBlOworCQlzdG9yYWdlLnVwZGF0ZSgqbWVzc2FnZSk7CisJfSBj
-          YXRjaCAoc3RkOjpleGNlcHRpb24gJmV4KSB7CisJCUxPRygoIkZhaWxlZCB0byB1cGRhdGUgZGVsZXRl
-          ZCBtZWRpYTogJTEiKS5hcmcoZXgud2hhdCgpKSk7CisJfQorfQorCiB2b2lkIHJlbW92ZURlbGV0ZWRN
-          ZXNzYWdlKElEIHVzZXJJZCwgSUQgZGlhbG9nSWQsIElEIG1lc3NhZ2VJZCkgewogCXRyeSB7CiAJCXN0
-          b3JhZ2UucmVtb3ZlX2FsbDxEZWxldGVkTWVzc2FnZT4oCmRpZmYgLS1naXQgYS9UZWxlZ3JhbS9Tb3Vy
-          Y2VGaWxlcy9heXUvZGF0YS9heXVfZGF0YWJhc2UuaCBiL1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5dS9k
-          YXRhL2F5dV9kYXRhYmFzZS5oCmluZGV4IDllNmIzNTIuLjZiNzc0MGQgMTAwNjQ0Ci0tLSBhL1RlbGVn
-          cmFtL1NvdXJjZUZpbGVzL2F5dS9kYXRhL2F5dV9kYXRhYmFzZS5oCisrKyBiL1RlbGVncmFtL1NvdXJj
-          ZUZpbGVzL2F5dS9kYXRhL2F5dV9kYXRhYmFzZS5oCkBAIC0yNyw3ICsyNywxOSBAQCBib29sIGhhc1Jl
-          dmlzaW9ucyhJRCB1c2VySWQsIElEIGRpYWxvZ0lkLCBJRCBtZXNzYWdlSWQpOwogCiB2b2lkIGFkZERl
-          bGV0ZWRNZXNzYWdlKGNvbnN0IERlbGV0ZWRNZXNzYWdlICZtZXNzYWdlKTsKIHN0ZDo6dmVjdG9yPERl
-          bGV0ZWRNZXNzYWdlPiBnZXREZWxldGVkTWVzc2FnZXMoSUQgdXNlcklkLCBJRCBkaWFsb2dJZCwgSUQg
-          dG9waWNJZCwgSUQgbWluSWQsIElEIG1heElkLCBpbnQgdG90YWxMaW1pdCwgY29uc3Qgc3RkOjpzdHJp
-          bmcgJnNlYXJjaFF1ZXJ5ID0gIiIpOworc3RkOjpvcHRpb25hbDxEZWxldGVkTWVzc2FnZT4gZ2V0RGVs
-          ZXRlZE1lc3NhZ2UoCisJSUQgdXNlcklkLAorCUlEIGRpYWxvZ0lkLAorCUlEIG1lc3NhZ2VJZCk7CiBi
-          b29sIGhhc0RlbGV0ZWRNZXNzYWdlcyhJRCB1c2VySWQsIElEIGRpYWxvZ0lkLCBJRCB0b3BpY0lkKTsK
-          K3ZvaWQgdXBkYXRlRGVsZXRlZE1lZGlhKAorCUlEIHVzZXJJZCwKKwlJRCBkaWFsb2dJZCwKKwlJRCBt
-          ZXNzYWdlSWQsCisJY29uc3Qgc3RkOjpzdHJpbmcgJm1lZGlhUGF0aCwKKwlpbnQgZG9jdW1lbnRUeXBl
-          LAorCWNvbnN0IHN0ZDo6dmVjdG9yPGNoYXI+ICZkb2N1bWVudEF0dHJpYnV0ZXNTZXJpYWxpemVkLAor
-          CWNvbnN0IHN0ZDo6c3RyaW5nICZtaW1lVHlwZSk7CiB2b2lkIHJlbW92ZURlbGV0ZWRNZXNzYWdlKElE
-          IHVzZXJJZCwgSUQgZGlhbG9nSWQsIElEIG1lc3NhZ2VJZCk7CiB2b2lkIGNsZWFyRGVsZXRlZE1lc3Nh
-          Z2VzKElEIHVzZXJJZCwgSUQgZGlhbG9nSWQsIElEIHRvcGljSWQpOwogCmRpZmYgLS1naXQgYS9UZWxl
-          Z3JhbS9Tb3VyY2VGaWxlcy9heXUvZGF0YS9lbnRpdGllcy5oIGIvVGVsZWdyYW0vU291cmNlRmlsZXMv
-          YXl1L2RhdGEvZW50aXRpZXMuaAppbmRleCAwZTBlOWI3Li45MjVhZjgyIDEwMDY0NAotLS0gYS9UZWxl
-          Z3JhbS9Tb3VyY2VGaWxlcy9heXUvZGF0YS9lbnRpdGllcy5oCisrKyBiL1RlbGVncmFtL1NvdXJjZUZp
-          bGVzL2F5dS9kYXRhL2VudGl0aWVzLmgKQEAgLTEwLDYgKzEwLDEyIEBACiAKIHVzaW5nIElEID0gbG9u
-          ZyBsb25nOwogCitlbnVtIGNsYXNzIEF5dU1lZGlhVHlwZSB7CisJTm9uZSA9IDAsCisJUGhvdG8gPSAx
-          LAorCVZpZGVvID0gMiwKK307CisKIGNsYXNzIEF5dU1lc3NhZ2VCYXNlCiB7CiBwdWJsaWM6CmRpZmYg
-          LS1naXQgYS9UZWxlZ3JhbS9Tb3VyY2VGaWxlcy9heXUvZGF0YS9tZXNzYWdlc19zdG9yYWdlLmNwcCBi
-          L1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5dS9kYXRhL21lc3NhZ2VzX3N0b3JhZ2UuY3BwCmluZGV4IDhh
-          NjU4Y2QuLjhlMTdkMzEgMTAwNjQ0Ci0tLSBhL1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5dS9kYXRhL21l
-          c3NhZ2VzX3N0b3JhZ2UuY3BwCisrKyBiL1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5dS9kYXRhL21lc3Nh
-          Z2VzX3N0b3JhZ2UuY3BwCkBAIC05LDEzICs5LDMyNiBAQAogI2luY2x1ZGUgImF5dS9kYXRhL2F5dV9k
-          YXRhYmFzZS5oIgogI2luY2x1ZGUgImF5dS91dGlscy9heXVfbWFwcGVyLmgiCiAjaW5jbHVkZSAiYXl1
-          L3V0aWxzL3RlbGVncmFtX2hlbHBlcnMuaCIKKyNpbmNsdWRlICJhcGkvYXBpX3RleHRfZW50aXRpZXMu
-          aCIKKyNpbmNsdWRlICJhcGl3cmFwLmgiCisjaW5jbHVkZSAiYmFzZS9yYW5kb20uaCIKICNpbmNsdWRl
-          ICJiYXNlL3VuaXh0aW1lLmgiCisjaW5jbHVkZSAiY29yZS9maWxlX2xvY2F0aW9uLmgiCisjaW5jbHVk
-          ZSAiZGF0YS9kYXRhX2NoYW5uZWwuaCIKKyNpbmNsdWRlICJkYXRhL2RhdGFfY2hhdC5oIgorI2luY2x1
-          ZGUgImRhdGEvZGF0YV9kb2N1bWVudC5oIgorI2luY2x1ZGUgImRhdGEvZGF0YV9kb2N1bWVudF9tZWRp
-          YS5oIgorI2luY2x1ZGUgImRhdGEvZGF0YV9maWxlX29yaWdpbi5oIgogI2luY2x1ZGUgImRhdGEvZGF0
-          YV9mb3J1bV90b3BpYy5oIgorI2luY2x1ZGUgImRhdGEvZGF0YV9tZWRpYV90eXBlcy5oIgorI2luY2x1
-          ZGUgImRhdGEvZGF0YV9waG90by5oIgorI2luY2x1ZGUgImRhdGEvZGF0YV9waG90b19tZWRpYS5oIgog
-          I2luY2x1ZGUgImRhdGEvZGF0YV9zZXNzaW9uLmgiCisjaW5jbHVkZSAiZGF0YS9kYXRhX3VzZXIuaCIK
-          ICNpbmNsdWRlICJoaXN0b3J5L2hpc3RvcnkuaCIKICNpbmNsdWRlICJoaXN0b3J5L2hpc3RvcnlfaXRl
-          bS5oIgogI2luY2x1ZGUgImhpc3RvcnkvaGlzdG9yeV9pdGVtX2NvbXBvbmVudHMuaCIKICNpbmNsdWRl
-          ICJtYWluL21haW5fc2Vzc2lvbi5oIgorI2luY2x1ZGUgInVpL2ltYWdlL2ltYWdlX2xvY2F0aW9uX2Zh
-          Y3RvcnkuaCIKKworI2luY2x1ZGUgPFF0Q29yZS9RRGlyPgorI2luY2x1ZGUgPFF0Q29yZS9RRGlySXRl
-          cmF0b3I+CisjaW5jbHVkZSA8UXRDb3JlL1FGaWxlPgorI2luY2x1ZGUgPFF0Q29yZS9RRmlsZUluZm8+
-          CisjaW5jbHVkZSA8UXRDb3JlL1FTYXZlRmlsZT4KKyNpbmNsdWRlIDxRdEd1aS9RSW1hZ2U+CisKKyNp
-          bmNsdWRlIDxsaW1pdHM+CisjaW5jbHVkZSA8bWFwPgorCituYW1lc3BhY2UgeworCitbW25vZGlzY2Fy
-          ZF1dIFFTdHJpbmcgU2FmZVBhdGhQYXJ0KFFTdHJpbmcgdmFsdWUpIHsKKwlmb3IgKGF1dG8gaSA9IDA7
-          IGkgIT0gdmFsdWUuc2l6ZSgpOyArK2kpIHsKKwkJY29uc3QgYXV0byBjaGFyYWN0ZXIgPSB2YWx1ZS5h
-          dChpKTsKKwkJaWYgKCFjaGFyYWN0ZXIuaXNMZXR0ZXJPck51bWJlcigpCisJCQkmJiBjaGFyYWN0ZXIg
-          IT0gdSdfJworCQkJJiYgY2hhcmFjdGVyICE9IHUnLScpIHsKKwkJCXZhbHVlW2ldID0gdSdfJzsKKwkJ
-          fQorCX0KKwlyZXR1cm4gdmFsdWUuaXNFbXB0eSgpID8gdSJub191c2VybmFtZSJfcSA6IHZhbHVlOwor
-          fQorCitbW25vZGlzY2FyZF1dIFFTdHJpbmcgUGVybWFuZW50TWVkaWFSb290KCkgeworCXJldHVybiBR
-          RGlyOjpjbGVhblBhdGgodSJ0ZGF0YS9BeXVQZXJtYW5lbnRNZWRpYSJfcSk7Cit9CisKK1tbbm9kaXNj
-          YXJkXV0gYm9vbCBJc1Blcm1hbmVudE1lZGlhSXRlbShub3RfbnVsbDxIaXN0b3J5SXRlbSo+IGl0ZW0p
-          IHsKKwljb25zdCBhdXRvIHBlZXIgPSBpdGVtLT5oaXN0b3J5KCktPnBlZXI7CisJY29uc3QgYXV0byB1
-          c2VyID0gcGVlci0+YXNVc2VyKCk7CisJY29uc3QgYXV0byBtZWRpYSA9IGl0ZW0tPm1lZGlhKCk7CisJ
-          aWYgKGl0ZW0tPm91dCgpCisJCXx8ICF1c2VyCisJCXx8IHVzZXItPmlzU2VsZigpCisJCXx8IHVzZXIt
-          PmlzQm90KCkKKwkJfHwgIW1lZGlhKSB7CisJCXJldHVybiBmYWxzZTsKKwl9CisJaWYgKG1lZGlhLT5w
-          aG90bygpKSB7CisJCXJldHVybiB0cnVlOworCX0KKwljb25zdCBhdXRvIGRvY3VtZW50ID0gbWVkaWEt
-          PmRvY3VtZW50KCk7CisJcmV0dXJuIGRvY3VtZW50ICYmIGRvY3VtZW50LT5pc1ZpZGVvRmlsZSgpOwor
-          fQorCitbW25vZGlzY2FyZF1dIFFTdHJpbmcgUGVybWFuZW50TWVkaWFGb2xkZXIobm90X251bGw8SGlz
-          dG9yeUl0ZW0qPiBpdGVtKSB7CisJY29uc3QgYXV0byBwZWVyID0gaXRlbS0+aGlzdG9yeSgpLT5wZWVy
-          OworCWNvbnN0IGF1dG8gYWNjb3VudElkID0gaXRlbS0+aGlzdG9yeSgpLT5zZXNzaW9uKCkudXNlcklk
-          KCkuYmFyZQorCQkmIFBlZXJJZDo6a0NoYXRUeXBlTWFzazsKKwljb25zdCBhdXRvIGRpYWxvZ0lkID0g
-          Z2V0RGlhbG9nSWRGcm9tUGVlcihwZWVyKTsKKwljb25zdCBhdXRvIHVzZXJuYW1lID0gU2FmZVBhdGhQ
-          YXJ0KHBlZXItPnVzZXJuYW1lKCkpOworCXJldHVybiBRRGlyKFBlcm1hbmVudE1lZGlhUm9vdCgpKS5m
-          aWxlUGF0aCgKKwkJUVN0cmluZzo6bnVtYmVyKGFjY291bnRJZCkKKwkJKyB1Jy8nCisJCSsgUVN0cmlu
-          Zzo6bnVtYmVyKGRpYWxvZ0lkKQorCQkrIHUnXycgKyB1c2VybmFtZSk7Cit9CisKK1tbbm9kaXNjYXJk
-          XV0gUVN0cmluZyBTYWZlU3VmZml4KFFTdHJpbmcgc3VmZml4KSB7CisJYXV0byByZXN1bHQgPSBRU3Ry
-          aW5nKCk7CisJZm9yIChjb25zdCBhdXRvIGNoYXJhY3RlciA6IHN1ZmZpeC50b0xvd2VyKCkpIHsKKwkJ
-          aWYgKGNoYXJhY3Rlci5pc0xldHRlck9yTnVtYmVyKCkpIHsKKwkJCXJlc3VsdC5hcHBlbmQoY2hhcmFj
-          dGVyKTsKKwkJfQorCX0KKwlyZXR1cm4gcmVzdWx0LmlzRW1wdHkoKSA/IHUibXA0Il9xIDogcmVzdWx0
-          OworfQorCitbW25vZGlzY2FyZF1dIFFTdHJpbmcgUGVybWFuZW50TWVkaWFGaWxlTmFtZSgKKwkJbm90
-          X251bGw8SGlzdG9yeUl0ZW0qPiBpdGVtKSB7CisJY29uc3QgYXV0byBtZWRpYSA9IGl0ZW0tPm1lZGlh
-          KCk7CisJaWYgKGNvbnN0IGF1dG8gcGhvdG8gPSBtZWRpYSA/IG1lZGlhLT5waG90bygpIDogbnVsbHB0
-          cikgeworCQlyZXR1cm4gdSJwaG90b18iX3EKKwkJCSsgUVN0cmluZzo6bnVtYmVyKGl0ZW0tPmlkLmJh
-          cmUpCisJCQkrIHUnXycgKyBRU3RyaW5nOjpudW1iZXIocGhvdG8tPmlkKQorCQkJKyB1Ii5qcGciX3E7
-          CisJfQorCWlmIChjb25zdCBhdXRvIGRvY3VtZW50ID0gbWVkaWEgPyBtZWRpYS0+ZG9jdW1lbnQoKSA6
-          IG51bGxwdHIpIHsKKwkJcmV0dXJuIHUidmlkZW9fIl9xCisJCQkrIFFTdHJpbmc6Om51bWJlcihpdGVt
-          LT5pZC5iYXJlKQorCQkJKyB1J18nICsgUVN0cmluZzo6bnVtYmVyKGRvY3VtZW50LT5pZCkKKwkJCSsg
-          dScuJyArIFNhZmVTdWZmaXgoUUZpbGVJbmZvKGRvY3VtZW50LT5maWxlbmFtZSgpKS5zdWZmaXgoKSk7
-          CisJfQorCXJldHVybiB7fTsKK30KKworW1tub2Rpc2NhcmRdXSBRU3RyaW5nIFBlcm1hbmVudE1lZGlh
-          UGF0aChub3RfbnVsbDxIaXN0b3J5SXRlbSo+IGl0ZW0pIHsKKwlyZXR1cm4gUURpcihQZXJtYW5lbnRN
-          ZWRpYUZvbGRlcihpdGVtKSkuZmlsZVBhdGgoCisJCVBlcm1hbmVudE1lZGlhRmlsZU5hbWUoaXRlbSkp
-          OworfQorCitbW25vZGlzY2FyZF1dIGJvb2wgR29vZEZpbGUoY29uc3QgUVN0cmluZyAmcGF0aCkgewor
-          CWNvbnN0IGF1dG8gaW5mbyA9IFFGaWxlSW5mbyhwYXRoKTsKKwlyZXR1cm4gaW5mby5pc0ZpbGUoKSAm
-          JiBpbmZvLnNpemUoKSA+IDA7Cit9CisKK1tbbm9kaXNjYXJkXV0gYXV0byAmUGVuZGluZ1Bob3RvVmll
-          d3MoKSB7CisJc3RhdGljIGF1dG8gcmVzdWx0ID0gc3RkOjptYXA8CisJCVBob3RvRGF0YSosCisJCXN0
-          ZDo6c2hhcmVkX3B0cjxEYXRhOjpQaG90b01lZGlhPj4oKTsKKwlyZXR1cm4gcmVzdWx0OworfQorCitb
-          W25vZGlzY2FyZF1dIFFTdHJpbmcgRmluZFBlcm1hbmVudE1lZGlhUGF0aCgKKwkJbm90X251bGw8SGlz
-          dG9yeUl0ZW0qPiBpdGVtKSB7CisJY29uc3QgYXV0byBleGFjdCA9IFBlcm1hbmVudE1lZGlhUGF0aChp
-          dGVtKTsKKwlpZiAoR29vZEZpbGUoZXhhY3QpKSB7CisJCXJldHVybiBleGFjdDsKKwl9CisJY29uc3Qg
-          YXV0byBhY2NvdW50SWQgPSBpdGVtLT5oaXN0b3J5KCktPnNlc3Npb24oKS51c2VySWQoKS5iYXJlCisJ
-          CSYgUGVlcklkOjprQ2hhdFR5cGVNYXNrOworCWNvbnN0IGF1dG8gYWNjb3VudFJvb3QgPSBRRGlyKFBl
-          cm1hbmVudE1lZGlhUm9vdCgpKS5maWxlUGF0aCgKKwkJUVN0cmluZzo6bnVtYmVyKGFjY291bnRJZCkp
-          OworCWNvbnN0IGF1dG8gZmlsZW5hbWUgPSBQZXJtYW5lbnRNZWRpYUZpbGVOYW1lKGl0ZW0pOworCWlm
-          IChmaWxlbmFtZS5pc0VtcHR5KCkpIHsKKwkJcmV0dXJuIHt9OworCX0KKwlhdXRvIGl0ZXJhdG9yID0g
-          UURpckl0ZXJhdG9yKAorCQlhY2NvdW50Um9vdCwKKwkJUVN0cmluZ0xpc3R7IGZpbGVuYW1lIH0sCisJ
-          CVFEaXI6OkZpbGVzLAorCQlRRGlySXRlcmF0b3I6OlN1YmRpcmVjdG9yaWVzKTsKKwl3aGlsZSAoaXRl
-          cmF0b3IuaGFzTmV4dCgpKSB7CisJCWNvbnN0IGF1dG8gY2FuZGlkYXRlID0gaXRlcmF0b3IubmV4dCgp
-          OworCQlpZiAoR29vZEZpbGUoY2FuZGlkYXRlKSkgeworCQkJcmV0dXJuIGNhbmRpZGF0ZTsKKwkJfQor
-          CX0KKwlyZXR1cm4ge307Cit9CisKK1tbbm9kaXNjYXJkXV0gUVZlY3RvcjxNVFBEb2N1bWVudEF0dHJp
-          YnV0ZT4gVmlkZW9BdHRyaWJ1dGVzKAorCQlub3RfbnVsbDxEb2N1bWVudERhdGEqPiBkb2N1bWVudCkg
-          eworCWF1dG8gZmlsZW5hbWUgPSBkb2N1bWVudC0+ZmlsZW5hbWUoKTsKKwlpZiAoZmlsZW5hbWUuaXNF
-          bXB0eSgpKSB7CisJCWZpbGVuYW1lID0gdSJ2aWRlby5tcDQiX3E7CisJfQorCWF1dG8gcmVzdWx0ID0g
-          UVZlY3RvcjxNVFBEb2N1bWVudEF0dHJpYnV0ZT57CisJCU1UUF9kb2N1bWVudEF0dHJpYnV0ZUZpbGVu
-          YW1lKE1UUF9zdHJpbmcoZmlsZW5hbWUpKQorCX07CisJY29uc3QgYXV0byBkaW1lbnNpb25zID0gZG9j
-          dW1lbnQtPmRpbWVuc2lvbnM7CisJYXV0byBmbGFncyA9IE1UUERkb2N1bWVudEF0dHJpYnV0ZVZpZGVv
-          OjpGbGFncygwKTsKKwlpZiAoZG9jdW1lbnQtPmlzVmlkZW9NZXNzYWdlKCkpIHsKKwkJZmxhZ3MgfD0g
-          TVRQRGRvY3VtZW50QXR0cmlidXRlVmlkZW86OkZsYWc6OmZfcm91bmRfbWVzc2FnZTsKKwl9CisJaWYg
-          KGRvY3VtZW50LT5zdXBwb3J0c1N0cmVhbWluZygpKSB7CisJCWZsYWdzIHw9IE1UUERkb2N1bWVudEF0
-          dHJpYnV0ZVZpZGVvOjpGbGFnOjpmX3N1cHBvcnRzX3N0cmVhbWluZzsKKwl9CisJcmVzdWx0LnB1c2hf
-          YmFjayhNVFBfZG9jdW1lbnRBdHRyaWJ1dGVWaWRlbygKKwkJTVRQX2ZsYWdzKGZsYWdzKSwKKwkJTVRQ
-          X2RvdWJsZShkb2N1bWVudC0+aGFzRHVyYXRpb24oKQorCQkJPyBkb2N1bWVudC0+ZHVyYXRpb24oKSAv
-          IDEwMDAuCisJCQk6IDAuKSwKKwkJTVRQX2ludChkaW1lbnNpb25zLndpZHRoKCkgPiAwID8gZGltZW5z
-          aW9ucy53aWR0aCgpIDogMSksCisJCU1UUF9pbnQoZGltZW5zaW9ucy5oZWlnaHQoKSA+IDAgPyBkaW1l
-          bnNpb25zLmhlaWdodCgpIDogMSksCisJCU1UUGludCgpLAorCQlNVFBkb3VibGUoKSwKKwkJTVRQc3Ry
-          aW5nKCkpKTsKKwlyZXR1cm4gcmVzdWx0OworfQorCit0ZW1wbGF0ZSA8dHlwZW5hbWUgTVRQT2JqZWN0
-          PgorW1tub2Rpc2NhcmRdXSBzdGQ6OnZlY3RvcjxjaGFyPiBTZXJpYWxpemVNdHAoTVRQT2JqZWN0IG9i
-          amVjdCkgeworCWF1dG8gYnVmZmVyID0gbXRwQnVmZmVyKCk7CisJb2JqZWN0LndyaXRlKGJ1ZmZlcik7
-          CisJY29uc3QgYXV0byBiZWdpbiA9IHJlaW50ZXJwcmV0X2Nhc3Q8Y29uc3QgY2hhcio+KGJ1ZmZlci5k
-          YXRhKCkpOworCXJldHVybiBzdGQ6OnZlY3RvcjxjaGFyPigKKwkJYmVnaW4sCisJCWJlZ2luICsgYnVm
-          ZmVyLnNpemUoKSAqIHNpemVvZihtdHBQcmltZSkpOworfQorCitbW25vZGlzY2FyZF1dIFFWZWN0b3I8
-          TVRQRG9jdW1lbnRBdHRyaWJ1dGU+IERlc2VyaWFsaXplQXR0cmlidXRlcygKKwkJY29uc3Qgc3RkOjp2
-          ZWN0b3I8Y2hhcj4gJnNlcmlhbGl6ZWQpIHsKKwlpZiAoc2VyaWFsaXplZC5lbXB0eSgpKSB7CisJCXJl
-          dHVybiB7fTsKKwl9CisJYXV0byBmcm9tID0gcmVpbnRlcnByZXRfY2FzdDxjb25zdCBtdHBQcmltZSo+
-          KHNlcmlhbGl6ZWQuZGF0YSgpKTsKKwljb25zdCBhdXRvIGVuZCA9IGZyb20gKyBzZXJpYWxpemVkLnNp
-          emUoKSAvIHNpemVvZihtdHBQcmltZSk7CisJYXV0byByZXN1bHQgPSBNVFBWZWN0b3I8TVRQRG9jdW1l
-          bnRBdHRyaWJ1dGU+KCk7CisJaWYgKCFyZXN1bHQucmVhZChmcm9tLCBlbmQpKSB7CisJCXJldHVybiB7
-          fTsKKwl9CisJcmV0dXJuIHJlc3VsdC52OworfQorCitbW25vZGlzY2FyZF1dIGJvb2wgQ29weUZpbGUo
-          Y29uc3QgUVN0cmluZyAmc291cmNlLCBjb25zdCBRU3RyaW5nICZ0YXJnZXQpIHsKKwlpZiAoR29vZEZp
-          bGUodGFyZ2V0KSkgeworCQlyZXR1cm4gdHJ1ZTsKKwl9CisJY29uc3QgYXV0byBzb3VyY2VQYXRoID0g
-          UUZpbGVJbmZvKHNvdXJjZSkuYWJzb2x1dGVGaWxlUGF0aCgpOworCWNvbnN0IGF1dG8gdGFyZ2V0UGF0
-          aCA9IFFGaWxlSW5mbyh0YXJnZXQpLmFic29sdXRlRmlsZVBhdGgoKTsKKwlpZiAoc291cmNlUGF0aCA9
-          PSB0YXJnZXRQYXRoKSB7CisJCXJldHVybiBHb29kRmlsZShzb3VyY2UpOworCX0KKwlhdXRvIGlucHV0
-          ID0gUUZpbGUoc291cmNlKTsKKwlhdXRvIG91dHB1dCA9IFFTYXZlRmlsZSh0YXJnZXQpOworCWlmICgh
-          aW5wdXQub3BlbihRSU9EZXZpY2U6OlJlYWRPbmx5KQorCQl8fCAhb3V0cHV0Lm9wZW4oUUlPRGV2aWNl
-          OjpXcml0ZU9ubHkpKSB7CisJCXJldHVybiBmYWxzZTsKKwl9CisJd2hpbGUgKCFpbnB1dC5hdEVuZCgp
-          KSB7CisJCWNvbnN0IGF1dG8gYnl0ZXMgPSBpbnB1dC5yZWFkKDEwMjQgKiAxMDI0KTsKKwkJaWYgKGJ5
-          dGVzLmlzRW1wdHkoKSB8fCBvdXRwdXQud3JpdGUoYnl0ZXMpICE9IGJ5dGVzLnNpemUoKSkgeworCQkJ
-          b3V0cHV0LmNhbmNlbFdyaXRpbmcoKTsKKwkJCXJldHVybiBmYWxzZTsKKwkJfQorCX0KKwlyZXR1cm4g
-          b3V0cHV0LmNvbW1pdCgpOworfQorCitbW25vZGlzY2FyZF1dIGJvb2wgV3JpdGVGaWxlKGNvbnN0IFFC
-          eXRlQXJyYXkgJmJ5dGVzLCBjb25zdCBRU3RyaW5nICZ0YXJnZXQpIHsKKwlpZiAoR29vZEZpbGUodGFy
-          Z2V0KSkgeworCQlyZXR1cm4gdHJ1ZTsKKwl9CisJaWYgKGJ5dGVzLmlzRW1wdHkoKSkgeworCQlyZXR1
-          cm4gZmFsc2U7CisJfQorCWF1dG8gb3V0cHV0ID0gUVNhdmVGaWxlKHRhcmdldCk7CisJcmV0dXJuIG91
-          dHB1dC5vcGVuKFFJT0RldmljZTo6V3JpdGVPbmx5KQorCQkmJiBvdXRwdXQud3JpdGUoYnl0ZXMpID09
-          IGJ5dGVzLnNpemUoKQorCQkmJiBvdXRwdXQuY29tbWl0KCk7Cit9CisKK1tbbm9kaXNjYXJkXV0gYm9v
-          bCBNYW5hZ2VkTWVkaWFQYXRoKGNvbnN0IFFTdHJpbmcgJnBhdGgpIHsKKwljb25zdCBhdXRvIHJvb3Qg
-          PSBRRmlsZUluZm8oUGVybWFuZW50TWVkaWFSb290KCkpLmFic29sdXRlRmlsZVBhdGgoKQorCQkrIFFE
-          aXI6OnNlcGFyYXRvcigpOworCWNvbnN0IGF1dG8gYWJzb2x1dGUgPSBRRmlsZUluZm8ocGF0aCkuYWJz
-          b2x1dGVGaWxlUGF0aCgpOworCXJldHVybiBhYnNvbHV0ZS5zdGFydHNXaXRoKHJvb3QsIFF0OjpDYXNl
-          SW5zZW5zaXRpdmUpOworfQorCit2b2lkIFJlbW92ZVBlcm1hbmVudE1lZGlhKGNvbnN0IFFTdHJpbmcg
-          JnBhdGgpIHsKKwlpZiAoIXBhdGguaXNFbXB0eSgpICYmIE1hbmFnZWRNZWRpYVBhdGgocGF0aCkpIHsK
-          KwkJUUZpbGU6OnJlbW92ZShwYXRoKTsKKwl9Cit9CisKK3ZvaWQgRmlsbE1lZGlhTWV0YWRhdGEoCisJ
-          CW5vdF9udWxsPEhpc3RvcnlJdGVtKj4gaXRlbSwKKwkJQXl1TWVzc2FnZUJhc2UgJm1lc3NhZ2UpIHsK
-          KwltZXNzYWdlLmRvY3VtZW50VHlwZSA9IGludChBeXVNZWRpYVR5cGU6Ok5vbmUpOworCW1lc3NhZ2Uu
-          bWVkaWFQYXRoLmNsZWFyKCk7CisJbWVzc2FnZS5taW1lVHlwZS5jbGVhcigpOworCW1lc3NhZ2UuZG9j
-          dW1lbnRBdHRyaWJ1dGVzU2VyaWFsaXplZC5jbGVhcigpOworCWNvbnN0IGF1dG8gbWVkaWEgPSBpdGVt
-          LT5tZWRpYSgpOworCWlmIChtZWRpYSAmJiBtZWRpYS0+cGhvdG8oKSkgeworCQltZXNzYWdlLmRvY3Vt
-          ZW50VHlwZSA9IGludChBeXVNZWRpYVR5cGU6OlBob3RvKTsKKwkJbWVzc2FnZS5taW1lVHlwZSA9ICJp
-          bWFnZS9qcGVnIjsKKwl9IGVsc2UgaWYgKGNvbnN0IGF1dG8gZG9jdW1lbnQgPSBtZWRpYSA/IG1lZGlh
-          LT5kb2N1bWVudCgpIDogbnVsbHB0cjsKKwkJZG9jdW1lbnQgJiYgZG9jdW1lbnQtPmlzVmlkZW9GaWxl
-          KCkpIHsKKwkJbWVzc2FnZS5kb2N1bWVudFR5cGUgPSBpbnQoQXl1TWVkaWFUeXBlOjpWaWRlbyk7CisJ
-          CW1lc3NhZ2UubWltZVR5cGUgPSBkb2N1bWVudC0+bWltZVN0cmluZygpLnRvU3RkU3RyaW5nKCk7CisJ
-          CW1lc3NhZ2UuZG9jdW1lbnRBdHRyaWJ1dGVzU2VyaWFsaXplZCA9IFNlcmlhbGl6ZU10cCgKKwkJCU1U
-          UF92ZWN0b3I8TVRQRG9jdW1lbnRBdHRyaWJ1dGU+KFZpZGVvQXR0cmlidXRlcyhkb2N1bWVudCkpKTsK
-          Kwl9CisJaWYgKG1lc3NhZ2UuZG9jdW1lbnRUeXBlICE9IGludChBeXVNZWRpYVR5cGU6Ok5vbmUpKSB7
-          CisJCW1lc3NhZ2UubWVkaWFQYXRoID0gRmluZFBlcm1hbmVudE1lZGlhUGF0aChpdGVtKS50b1N0ZFN0
-          cmluZygpOworCX0KK30KKwordm9pZCBTdGFydFNlbGZEZXN0cnVjdEFmdGVyQXJjaGl2ZShub3RfbnVs
-          bDxIaXN0b3J5SXRlbSo+IGl0ZW0pIHsKKwljb25zdCBhdXRvIG1lZGlhID0gaXRlbS0+bWVkaWEoKTsK
-          KwlpZiAoaXRlbS0+aXNEZWxldGVkKCkKKwkJfHwgaXRlbS0+b3V0KCkKKwkJfHwgIWl0ZW0tPmlzUmVn
-          dWxhcigpCisJCXx8ICFtZWRpYQorCQl8fCAobWVkaWEtPnR0bFNlY29uZHMoKSA8PSAwICYmIGl0ZW0t
-          PnVuc3VwcG9ydGVkVFRMKCkgPD0gMCkKKwkJfHwgIWl0ZW0tPmhhc1VucmVhZE1lZGlhRmxhZygpKSB7
-          CisJCXJldHVybjsKKwl9CisJY29uc3QgYXV0byBmdWxsSWQgPSBpdGVtLT5mdWxsSWQoKTsKKwljb25z
-          dCBhdXRvIHBlZXIgPSBpdGVtLT5oaXN0b3J5KCktPnBlZXI7CisJY29uc3QgYXV0byBzZXNzaW9uID0g
-          Jml0ZW0tPmhpc3RvcnkoKS0+c2Vzc2lvbigpOworCXNlc3Npb24tPmFwaSgpLnJlcXVlc3QoTVRQbWVz
-          c2FnZXNfUmVhZE1lc3NhZ2VDb250ZW50cygKKwkJTVRQX3ZlY3RvcjxNVFBpbnQ+KDEsIE1UUF9pbnQo
-          aXRlbS0+aWQpKQorCSkpLmRvbmUoWz1dKGNvbnN0IE1UUG1lc3NhZ2VzX0FmZmVjdGVkTWVzc2FnZXMg
-          JnJlc3VsdCkgeworCQlzZXNzaW9uLT5hcGkoKS5hcHBseUFmZmVjdGVkTWVzc2FnZXMocGVlciwgcmVz
-          dWx0KTsKKwkJaWYgKGNvbnN0IGF1dG8gY3VycmVudCA9IHNlc3Npb24tPmRhdGEoKS5tZXNzYWdlKGZ1
-          bGxJZCkpIHsKKwkJCWN1cnJlbnQtPm1hcmtDb250ZW50c1JlYWQoKTsKKwkJfQorCX0pLnNlbmQoKTsK
-          K30KKworW1tub2Rpc2NhcmRdXSBUZXh0V2l0aEVudGl0aWVzIFN0b3JlZFRleHQoCisJCW5vdF9udWxs
-          PEhpc3RvcnkqPiBoaXN0b3J5LAorCQljb25zdCBBeXVNZXNzYWdlQmFzZSAmbWVzc2FnZSkgeworCWF1
-          dG8gcmVzdWx0ID0gVGV4dFdpdGhFbnRpdGllcyhRU3RyaW5nOjpmcm9tU3RkU3RyaW5nKG1lc3NhZ2Uu
-          dGV4dCkpOworCWlmICghbWVzc2FnZS50ZXh0RW50aXRpZXMuZW1wdHkoKSkgeworCQljb25zdCBhdXRv
-          IGVudGl0aWVzID0gQXl1TWFwcGVyOjpkZXNlcmlhbGl6ZVRleHRXaXRoRW50aXRpZXMoCisJCQltZXNz
-          YWdlLnRleHRFbnRpdGllcyk7CisJCXJlc3VsdC5lbnRpdGllcyA9IEFwaTo6RW50aXRpZXNGcm9tTVRQ
-          KAorCQkJJmhpc3RvcnktPnNlc3Npb24oKSwKKwkJCWVudGl0aWVzLnYpOworCX0KKwlyZXR1cm4gcmVz
-          dWx0OworfQorCit9IC8vIG5hbWVzcGFjZQogCiBuYW1lc3BhY2UgQXl1TWVzc2FnZXMgewogCkBAIC03
-          NCwxNCArMzg3LDcgQEAgdm9pZCBtYXAobm90X251bGw8SGlzdG9yeUl0ZW0qPiBpdGVtLCBBeXVNZXNz
-          YWdlQmFzZSAmbWVzc2FnZSkgewogCW1lc3NhZ2UudGV4dCA9IHNlcmlhbGl6ZWRUZXh0LmZpcnN0Owog
-          CW1lc3NhZ2UudGV4dEVudGl0aWVzID0gc2VyaWFsaXplZFRleHQuc2Vjb25kOwogCi0JLy8gdG9kbzog
-          aW1wbGVtZW50IG1hcHBpbmcKLQltZXNzYWdlLm1lZGlhUGF0aCA9ICIvIjsKLQkvLyBtZXNzYWdlLmhx
-          VGh1bWJQYXRoCi0JbWVzc2FnZS5kb2N1bWVudFR5cGUgPSAwOyAvLyBkb2N1bWVudCB0eXBlIG5vbmUK
-          LQkvLyBtZXNzYWdlLmRvY3VtZW50U2VyaWFsaXplZAotCS8vIG1lc3NhZ2UudGh1bWJzU2VyaWFsaXpl
-          ZAotCS8vIG1lc3NhZ2UuZG9jdW1lbnRBdHRyaWJ1dGVzU2VyaWFsaXplZAotCS8vIG1lc3NhZ2UubWlt
-          ZVR5cGUKKwlGaWxsTWVkaWFNZXRhZGF0YShpdGVtLCBtZXNzYWdlKTsKIH0KIAogdm9pZCBhZGRFZGl0
-          ZWRNZXNzYWdlKG5vdF9udWxsPEhpc3RvcnlJdGVtICo+IGl0ZW0pIHsKQEAgLTExMSwxMSArNDE3LDk4
-          IEBAIGJvb2wgaGFzUmV2aXNpb25zKG5vdF9udWxsPEhpc3RvcnlJdGVtKj4gaXRlbSkgewogCXJldHVy
-          biBBeXVEYXRhYmFzZTo6aGFzUmV2aXNpb25zKHVzZXJJZCwgZGlhbG9nSWQsIG1zZ0lkKTsKIH0KIAor
-          dm9pZCBhcmNoaXZlUGVybWFuZW50TWVkaWEobm90X251bGw8SGlzdG9yeUl0ZW0qPiBpdGVtKSB7CisJ
-          aWYgKCFJc1Blcm1hbmVudE1lZGlhSXRlbShpdGVtKSkgeworCQlyZXR1cm47CisJfQorCWNvbnN0IGF1
-          dG8gcGF0aCA9IFBlcm1hbmVudE1lZGlhUGF0aChpdGVtKTsKKwlRRGlyKCkubWtwYXRoKFFGaWxlSW5m
-          byhwYXRoKS5wYXRoKCkpOworCWNvbnN0IGF1dG8gbWVkaWEgPSBpdGVtLT5tZWRpYSgpOworCWF1dG8g
-          c2F2ZWQgPSBHb29kRmlsZShwYXRoKTsKKwlpZiAoIXNhdmVkKSB7CisJCWlmIChjb25zdCBhdXRvIHBo
-          b3RvID0gbWVkaWEtPnBob3RvKCkpIHsKKwkJCWNvbnN0IGF1dG8gdmlldyA9IHBob3RvLT5hY3RpdmVN
-          ZWRpYVZpZXcoKQorCQkJCT8gcGhvdG8tPmFjdGl2ZU1lZGlhVmlldygpCisJCQkJOiBwaG90by0+Y3Jl
-          YXRlTWVkaWFWaWV3KCk7CisJCQlzYXZlZCA9IHZpZXctPmxvYWRlZCgpICYmIHZpZXctPnNhdmVUb0Zp
-          bGUocGF0aCk7CisJCX0gZWxzZSBpZiAoY29uc3QgYXV0byBkb2N1bWVudCA9IG1lZGlhLT5kb2N1bWVu
-          dCgpKSB7CisJCQljb25zdCBhdXRvIHNvdXJjZSA9IGRvY3VtZW50LT5maWxlcGF0aCh0cnVlKTsKKwkJ
-          CWlmICghc291cmNlLmlzRW1wdHkoKSkgeworCQkJCXNhdmVkID0gQ29weUZpbGUoc291cmNlLCBwYXRo
-          KTsKKwkJCX0gZWxzZSB7CisJCQkJY29uc3QgYXV0byB2aWV3ID0gZG9jdW1lbnQtPmFjdGl2ZU1lZGlh
-          VmlldygpCisJCQkJCT8gZG9jdW1lbnQtPmFjdGl2ZU1lZGlhVmlldygpCisJCQkJCTogZG9jdW1lbnQt
-          PmNyZWF0ZU1lZGlhVmlldygpOworCQkJCXNhdmVkID0gV3JpdGVGaWxlKHZpZXctPmJ5dGVzKCksIHBh
-          dGgpOworCQkJfQorCQl9CisJfQorCWlmIChzYXZlZCkgeworCQlpZiAoY29uc3QgYXV0byBwaG90byA9
-          IG1lZGlhLT5waG90bygpKSB7CisJCQlQZW5kaW5nUGhvdG9WaWV3cygpLmVyYXNlKHBob3RvKTsKKwkJ
-          fQorCQlTdGFydFNlbGZEZXN0cnVjdEFmdGVyQXJjaGl2ZShpdGVtKTsKKwl9CisJaWYgKCFzYXZlZCB8
-          fCAhR29vZEZpbGUocGF0aCkgfHwgIWl0ZW0tPmlzRGVsZXRlZCgpKSB7CisJCXJldHVybjsKKwl9CisJ
-          YXV0byBtZXRhZGF0YSA9IEF5dU1lc3NhZ2VCYXNlKCk7CisJRmlsbE1lZGlhTWV0YWRhdGEoaXRlbSwg
-          bWV0YWRhdGEpOworCWNvbnN0IGF1dG8gcGVlciA9IGl0ZW0tPmhpc3RvcnkoKS0+cGVlcjsKKwljb25z
-          dCBhdXRvIHVzZXJJZCA9IHBlZXItPnNlc3Npb24oKS51c2VySWQoKS5iYXJlCisJCSYgUGVlcklkOjpr
-          Q2hhdFR5cGVNYXNrOworCWNvbnN0IGF1dG8gb3JpZ2luYWxJZCA9IGl0ZW0tPmF5dU9yaWdpbmFsTWVz
-          c2FnZUlkKCk7CisJQXl1RGF0YWJhc2U6OnVwZGF0ZURlbGV0ZWRNZWRpYSgKKwkJdXNlcklkLAorCQln
-          ZXREaWFsb2dJZEZyb21QZWVyKHBlZXIpLAorCQlvcmlnaW5hbElkID8gb3JpZ2luYWxJZC5iYXJlIDog
-          aXRlbS0+aWQuYmFyZSwKKwkJbWV0YWRhdGEubWVkaWFQYXRoLAorCQltZXRhZGF0YS5kb2N1bWVudFR5
-          cGUsCisJCW1ldGFkYXRhLmRvY3VtZW50QXR0cmlidXRlc1NlcmlhbGl6ZWQsCisJCW1ldGFkYXRhLm1p
-          bWVUeXBlKTsKK30KKwordm9pZCBwcmVwYXJlUGVybWFuZW50TWVkaWEobm90X251bGw8SGlzdG9yeUl0
-          ZW0qPiBpdGVtKSB7CisJaWYgKCFJc1Blcm1hbmVudE1lZGlhSXRlbShpdGVtKSkgeworCQlyZXR1cm47
-          CisJfQorCWFyY2hpdmVQZXJtYW5lbnRNZWRpYShpdGVtKTsKKwlpZiAoR29vZEZpbGUoRmluZFBlcm1h
-          bmVudE1lZGlhUGF0aChpdGVtKSkpIHsKKwkJcmV0dXJuOworCX0KKwljb25zdCBhdXRvIHBhdGggPSBQ
-          ZXJtYW5lbnRNZWRpYVBhdGgoaXRlbSk7CisJUURpcigpLm1rcGF0aChRRmlsZUluZm8ocGF0aCkucGF0
-          aCgpKTsKKwljb25zdCBhdXRvIG1lZGlhID0gaXRlbS0+bWVkaWEoKTsKKwljb25zdCBhdXRvIG9yaWdp
-          biA9IERhdGE6OkZpbGVPcmlnaW4oaXRlbS0+ZnVsbElkKCkpOworCWlmIChjb25zdCBhdXRvIHBob3Rv
-          ID0gbWVkaWEtPnBob3RvKCkpIHsKKwkJUGVuZGluZ1Bob3RvVmlld3MoKVtwaG90b10gPSBwaG90by0+
-          YWN0aXZlTWVkaWFWaWV3KCkKKwkJCT8gcGhvdG8tPmFjdGl2ZU1lZGlhVmlldygpCisJCQk6IHBob3Rv
-          LT5jcmVhdGVNZWRpYVZpZXcoKTsKKwkJaWYgKCFwaG90by0+bG9hZGluZyhEYXRhOjpQaG90b1NpemU6
-          OkxhcmdlKSkgeworCQkJcGhvdG8tPmxvYWQoCisJCQkJRGF0YTo6UGhvdG9TaXplOjpMYXJnZSwKKwkJ
-          CQlvcmlnaW4sCisJCQkJTG9hZEZyb21DbG91ZE9yTG9jYWwsCisJCQkJZmFsc2UpOworCQl9CisJfSBl
-          bHNlIGlmIChjb25zdCBhdXRvIGRvY3VtZW50ID0gbWVkaWEtPmRvY3VtZW50KCkpIHsKKwkJaWYgKCFk
-          b2N1bWVudC0+bG9hZGluZygpKSB7CisJCQlkb2N1bWVudC0+c2F2ZShvcmlnaW4sIHBhdGgsIExvYWRG
-          cm9tQ2xvdWRPckxvY2FsLCBmYWxzZSk7CisJCX0KKwl9Cit9CisKK3ZvaWQgcmVsZWFzZVBlcm1hbmVu
-          dFBob3RvTG9hZChub3RfbnVsbDxQaG90b0RhdGEqPiBwaG90bykgeworCVBlbmRpbmdQaG90b1ZpZXdz
-          KCkuZXJhc2UocGhvdG8pOworfQorCiB2b2lkIGFkZERlbGV0ZWRNZXNzYWdlKG5vdF9udWxsPEhpc3Rv
-          cnlJdGVtKj4gaXRlbSkgeworCWFyY2hpdmVQZXJtYW5lbnRNZWRpYShpdGVtKTsKIAlEZWxldGVkTWVz
-          c2FnZSBtZXNzYWdlOwogCW1hcChpdGVtLCBtZXNzYWdlKTsKIAotCWlmIChtZXNzYWdlLnRleHQuZW1w
-          dHkoKSkgeworCWlmIChtZXNzYWdlLnRleHQuZW1wdHkoKQorCQkmJiBtZXNzYWdlLmRvY3VtZW50VHlw
-          ZSA9PSBpbnQoQXl1TWVkaWFUeXBlOjpOb25lKSkgewogCQlyZXR1cm47CiAJfQogCkBAIC0xMzQsMTUg
-          KzUyNywyMTIgQEAgYm9vbCBoYXNEZWxldGVkTWVzc2FnZXMobm90X251bGw8UGVlckRhdGEqPiBwZWVy
-          LCBJRCB0b3BpY0lkKSB7CiAJcmV0dXJuIEF5dURhdGFiYXNlOjpoYXNEZWxldGVkTWVzc2FnZXModXNl
-          cklkLCBnZXREaWFsb2dJZEZyb21QZWVyKHBlZXIpLCB0b3BpY0lkKTsKIH0KIAorYm9vbCBzaG91bGRL
-          ZWVwUGVybWFuZW50TWVkaWEobm90X251bGw8SGlzdG9yeUl0ZW0qPiBpdGVtKSB7CisJcmV0dXJuIElz
-          UGVybWFuZW50TWVkaWFJdGVtKGl0ZW0pOworfQorCitBeXVSZXN0b3JlZE1lZGlhIHJlc3RvcmVQZXJt
-          YW5lbnRNZWRpYSgKKwkJbm90X251bGw8SGlzdG9yeSo+IGhpc3RvcnksCisJCWNvbnN0IEF5dU1lc3Nh
-          Z2VCYXNlICZtZXNzYWdlKSB7CisJY29uc3QgYXV0byBwYXRoID0gUVN0cmluZzo6ZnJvbVN0ZFN0cmlu
-          ZyhtZXNzYWdlLm1lZGlhUGF0aCk7CisJaWYgKCFHb29kRmlsZShwYXRoKSkgeworCQlyZXR1cm4ge307
-          CisJfQorCWlmIChtZXNzYWdlLmRvY3VtZW50VHlwZSA9PSBpbnQoQXl1TWVkaWFUeXBlOjpQaG90bykp
-          IHsKKwkJYXV0byBmaWxlID0gUUZpbGUocGF0aCk7CisJCWlmICghZmlsZS5vcGVuKFFJT0RldmljZTo6
-          UmVhZE9ubHkpKSB7CisJCQlyZXR1cm4ge307CisJCX0KKwkJY29uc3QgYXV0byBieXRlcyA9IGZpbGUu
-          cmVhZEFsbCgpOworCQljb25zdCBhdXRvIGltYWdlID0gUUltYWdlOjpmcm9tRGF0YShieXRlcyk7CisJ
-          CWlmIChpbWFnZS5pc051bGwoKSkgeworCQkJcmV0dXJuIHt9OworCQl9CisJCWF1dG8gJm93bmVyID0g
-          aGlzdG9yeS0+b3duZXIoKTsKKwkJY29uc3QgYXV0byBwaG90byA9IG93bmVyLnBob3RvKAorCQkJYmFz
-          ZTo6UmFuZG9tVmFsdWU8UGhvdG9JZD4oKSwKKwkJCTAsCisJCQlRQnl0ZUFycmF5KCksCisJCQltZXNz
-          YWdlLmRhdGUsCisJCQkwLAorCQkJZmFsc2UsCisJCQlRQnl0ZUFycmF5KCksCisJCQlJbWFnZVdpdGhM
-          b2NhdGlvbigpLAorCQkJSW1hZ2VXaXRoTG9jYXRpb24oKSwKKwkJCUltYWdlczo6RnJvbUltYWdlSW5N
-          ZW1vcnkoaW1hZ2UsICJKUEciLCBieXRlcyksCisJCQlJbWFnZVdpdGhMb2NhdGlvbigpLAorCQkJSW1h
-          Z2VXaXRoTG9jYXRpb24oKSwKKwkJCWNybDo6dGltZSgwKSk7CisJCWNvbnN0IGF1dG8gdmlldyA9IHBo
-          b3RvLT5jcmVhdGVNZWRpYVZpZXcoKTsKKwkJdmlldy0+c2V0KAorCQkJRGF0YTo6UGhvdG9TaXplOjpM
-          YXJnZSwKKwkJCURhdGE6OlBob3RvU2l6ZTo6TGFyZ2UsCisJCQlpbWFnZSwKKwkJCWJ5dGVzKTsKKwkJ
-          b3duZXIua2VlcEFsaXZlKHZpZXcpOworCQlyZXR1cm4geyAucGhvdG8gPSBwaG90byB9OworCX0KKwlp
-          ZiAobWVzc2FnZS5kb2N1bWVudFR5cGUgPT0gaW50KEF5dU1lZGlhVHlwZTo6VmlkZW8pKSB7CisJCWF1
-          dG8gYXR0cmlidXRlcyA9IERlc2VyaWFsaXplQXR0cmlidXRlcygKKwkJCW1lc3NhZ2UuZG9jdW1lbnRB
-          dHRyaWJ1dGVzU2VyaWFsaXplZCk7CisJCWlmIChhdHRyaWJ1dGVzLmVtcHR5KCkpIHsKKwkJCWF0dHJp
-          YnV0ZXMucHVzaF9iYWNrKE1UUF9kb2N1bWVudEF0dHJpYnV0ZUZpbGVuYW1lKAorCQkJCU1UUF9zdHJp
-          bmcoUUZpbGVJbmZvKHBhdGgpLmZpbGVOYW1lKCkpKSk7CisJCQljb25zdCBhdXRvIGZsYWdzID0gTVRQ
-          RGRvY3VtZW50QXR0cmlidXRlVmlkZW86OkZsYWdzKAorCQkJCU1UUERkb2N1bWVudEF0dHJpYnV0ZVZp
-          ZGVvOjpGbGFnOjpmX3N1cHBvcnRzX3N0cmVhbWluZyk7CisJCQlhdHRyaWJ1dGVzLnB1c2hfYmFjayhN
-          VFBfZG9jdW1lbnRBdHRyaWJ1dGVWaWRlbygKKwkJCQlNVFBfZmxhZ3MoZmxhZ3MpLAorCQkJCU1UUF9k
-          b3VibGUoMC4pLAorCQkJCU1UUF9pbnQoMSksCisJCQkJTVRQX2ludCgxKSwKKwkJCQlNVFBpbnQoKSwK
-          KwkJCQlNVFBkb3VibGUoKSwKKwkJCQlNVFBzdHJpbmcoKSkpOworCQl9CisJCWNvbnN0IGF1dG8gaW5m
-          byA9IFFGaWxlSW5mbyhwYXRoKTsKKwkJY29uc3QgYXV0byBtaW1lID0gbWVzc2FnZS5taW1lVHlwZS5l
-          bXB0eSgpCisJCQk/IHUidmlkZW8vbXA0Il9xCisJCQk6IFFTdHJpbmc6OmZyb21TdGRTdHJpbmcobWVz
-          c2FnZS5taW1lVHlwZSk7CisJCWNvbnN0IGF1dG8gZG9jdW1lbnQgPSBoaXN0b3J5LT5vd25lcigpLmRv
-          Y3VtZW50KAorCQkJYmFzZTo6UmFuZG9tVmFsdWU8RG9jdW1lbnRJZD4oKSwKKwkJCTAsCisJCQlRQnl0
-          ZUFycmF5KCksCisJCQltZXNzYWdlLmRhdGUsCisJCQlhdHRyaWJ1dGVzLAorCQkJbWltZSwKKwkJCUlu
-          bGluZUltYWdlTG9jYXRpb24oKSwKKwkJCUltYWdlV2l0aExvY2F0aW9uKCksCisJCQlJbWFnZVdpdGhM
-          b2NhdGlvbigpLAorCQkJZmFsc2UsCisJCQkwLAorCQkJaW5mby5zaXplKCkpOworCQlkb2N1bWVudC0+
-          c2V0TG9jYXRpb24oQ29yZTo6RmlsZUxvY2F0aW9uKGluZm8pKTsKKwkJcmV0dXJuIHsgLmRvY3VtZW50
-          ID0gZG9jdW1lbnQgfTsKKwl9CisJcmV0dXJuIHt9OworfQorCit2b2lkIHJlaW5qZWN0UGVybWFuZW50
-          TWVkaWEobm90X251bGw8SGlzdG9yeSo+IGhpc3RvcnkpIHsKKwljb25zdCBhdXRvIHBlZXIgPSBoaXN0
-          b3J5LT5wZWVyOworCWNvbnN0IGF1dG8gdXNlciA9IHBlZXItPmFzVXNlcigpOworCWlmICghdXNlciB8
-          fCB1c2VyLT5pc1NlbGYoKSB8fCB1c2VyLT5pc0JvdCgpKSB7CisJCXJldHVybjsKKwl9CisJY29uc3Qg
-          YXV0byB1c2VySWQgPSBwZWVyLT5zZXNzaW9uKCkudXNlcklkKCkuYmFyZQorCQkmIFBlZXJJZDo6a0No
-          YXRUeXBlTWFzazsKKwljb25zdCBhdXRvIG1lc3NhZ2VzID0gQXl1RGF0YWJhc2U6OmdldERlbGV0ZWRN
-          ZXNzYWdlcygKKwkJdXNlcklkLAorCQlnZXREaWFsb2dJZEZyb21QZWVyKHBlZXIpLAorCQkwLAorCQkw
-          LAorCQkwLAorCQk1MDAwLAorCQkiIik7CisJZm9yIChjb25zdCBhdXRvICZtZXNzYWdlIDogbWVzc2Fn
-          ZXMpIHsKKwkJaWYgKG1lc3NhZ2UuZG9jdW1lbnRUeXBlID09IGludChBeXVNZWRpYVR5cGU6Ok5vbmUp
-          CisJCQl8fCAhR29vZEZpbGUoUVN0cmluZzo6ZnJvbVN0ZFN0cmluZyhtZXNzYWdlLm1lZGlhUGF0aCkp
-          KSB7CisJCQljb250aW51ZTsKKwkJfQorCQljb25zdCBhdXRvIHNlcnZlcklkID0gTXNnSWQobWVzc2Fn
-          ZS5tZXNzYWdlSWQpOworCQlpZiAoY29uc3QgYXV0byBleGlzdGluZyA9IGhpc3RvcnktPm93bmVyKCku
-          bWVzc2FnZShwZWVyLCBzZXJ2ZXJJZCkpIHsKKwkJCWlmICghZXhpc3RpbmctPmlzRGVsZXRlZCgpCisJ
-          CQkJfHwgIWV4aXN0aW5nLT5heXVPcmlnaW5hbE1lc3NhZ2VJZCgpKSB7CisJCQkJY29udGludWU7CisJ
-          CQl9CisJCX0KKwkJY29uc3QgYXV0byBhbHJlYWR5SW5qZWN0ZWQgPSByYW5nZXM6OmFueV9vZigKKwkJ
-          CWhpc3RvcnktPmNsaWVudFNpZGVNZXNzYWdlcygpLAorCQkJWyZdKG5vdF9udWxsPEhpc3RvcnlJdGVt
-          Kj4gaXRlbSkgeworCQkJCXJldHVybiBpdGVtLT5heXVPcmlnaW5hbE1lc3NhZ2VJZCgpID09IHNlcnZl
-          cklkOworCQkJfSk7CisJCWlmIChhbHJlYWR5SW5qZWN0ZWQpIHsKKwkJCWNvbnRpbnVlOworCQl9CisJ
-          CWNvbnN0IGF1dG8gcmVzdG9yZWQgPSByZXN0b3JlUGVybWFuZW50TWVkaWEoaGlzdG9yeSwgbWVzc2Fn
-          ZSk7CisJCWlmICghcmVzdG9yZWQucGhvdG8gJiYgIXJlc3RvcmVkLmRvY3VtZW50KSB7CisJCQljb250
-          aW51ZTsKKwkJfQorCQlQZWVyRGF0YSAqZnJvbSA9IGhpc3RvcnktPm93bmVyKCkudXNlckxvYWRlZCht
-          ZXNzYWdlLmZyb21JZCk7CisJCWlmICghZnJvbSkgeworCQkJZnJvbSA9IGhpc3RvcnktPm93bmVyKCku
-          Y2hhbm5lbExvYWRlZChtZXNzYWdlLmZyb21JZCk7CisJCX0KKwkJaWYgKCFmcm9tKSB7CisJCQlmcm9t
-          ID0gaGlzdG9yeS0+b3duZXIoKS5jaGF0TG9hZGVkKG1lc3NhZ2UuZnJvbUlkKTsKKwkJfQorCQljb25z
-          dCBhdXRvIGN1cnJlbnRVc2VySWQgPSBwZWVyLT5zZXNzaW9uKCkudXNlcklkKCkuYmFyZQorCQkJJiBQ
-          ZWVySWQ6OmtDaGF0VHlwZU1hc2s7CisJCWF1dG8gZmxhZ3MgPSBNZXNzYWdlRmxhZzo6TG9jYWwgfCBN
-          ZXNzYWdlRmxhZzo6SGlzdG9yeUVudHJ5OworCQlpZiAobWVzc2FnZS5mcm9tSWQgPT0gY3VycmVudFVz
-          ZXJJZCAmJiAhcGVlci0+aXNTZWxmKCkpIHsKKwkJCWZsYWdzIHw9IE1lc3NhZ2VGbGFnOjpPdXRnb2lu
-          ZzsKKwkJfQorCQlpZiAoZnJvbSkgeworCQkJZmxhZ3MgfD0gTWVzc2FnZUZsYWc6Okhhc0Zyb21JZDsK
-          KwkJfQorCQlpZiAoIW1lc3NhZ2UucG9zdEF1dGhvci5lbXB0eSgpKSB7CisJCQlmbGFncyB8PSBNZXNz
-          YWdlRmxhZzo6SGFzUG9zdEF1dGhvcjsKKwkJfQorCQlhdXRvIGZpZWxkcyA9IEhpc3RvcnlJdGVtQ29t
-          bW9uRmllbGRzeworCQkJLmlkID0gaGlzdG9yeS0+b3duZXIoKS5uZXh0TG9jYWxNZXNzYWdlSWQoKSwK
-          KwkJCS5mbGFncyA9IGZsYWdzLAorCQkJLmZyb20gPSBmcm9tID8gZnJvbS0+aWQgOiBQZWVySWQoKSwK
-          KwkJCS5kYXRlID0gbWVzc2FnZS5kYXRlLAorCQkJLnBvc3RBdXRob3IgPSBRU3RyaW5nOjpmcm9tU3Rk
-          U3RyaW5nKG1lc3NhZ2UucG9zdEF1dGhvciksCisJCX07CisJCWNvbnN0IGF1dG8gdGV4dCA9IFN0b3Jl
-          ZFRleHQoaGlzdG9yeSwgbWVzc2FnZSk7CisJCWNvbnN0IGF1dG8gaXRlbSA9IHJlc3RvcmVkLnBob3Rv
-          CisJCQk/IGhpc3RvcnktPm1ha2VNZXNzYWdlKAorCQkJCXN0ZDo6bW92ZShmaWVsZHMpLAorCQkJCW5v
-          dF9udWxsPFBob3RvRGF0YSo+KHJlc3RvcmVkLnBob3RvKSwKKwkJCQl0ZXh0KQorCQkJOiBoaXN0b3J5
-          LT5tYWtlTWVzc2FnZSgKKwkJCQlzdGQ6Om1vdmUoZmllbGRzKSwKKwkJCQlub3RfbnVsbDxEb2N1bWVu
-          dERhdGEqPihyZXN0b3JlZC5kb2N1bWVudCksCisJCQkJdGV4dCk7CisJCWl0ZW0tPnNldEF5dU9yaWdp
-          bmFsTWVzc2FnZUlkKHNlcnZlcklkKTsKKwkJaXRlbS0+c2V0RGVsZXRlZCgpOworCX0KK30KKwogdm9p
-          ZCByZW1vdmVEZWxldGVkTWVzc2FnZShub3RfbnVsbDxIaXN0b3J5SXRlbSo+IGl0ZW0pIHsKIAljb25z
-          dCBhdXRvIHBlZXIgPSBpdGVtLT5oaXN0b3J5KCktPnBlZXI7CiAJY29uc3QgSUQgdXNlcklkID0gcGVl
-          ci0+c2Vzc2lvbigpLnVzZXJJZCgpLmJhcmUgJiBQZWVySWQ6OmtDaGF0VHlwZU1hc2s7Ci0JQXl1RGF0
-          YWJhc2U6OnJlbW92ZURlbGV0ZWRNZXNzYWdlKHVzZXJJZCwgZ2V0RGlhbG9nSWRGcm9tUGVlcihwZWVy
-          KSwgaXRlbS0+aWQuYmFyZSk7CisJY29uc3QgYXV0byBvcmlnaW5hbElkID0gaXRlbS0+YXl1T3JpZ2lu
-          YWxNZXNzYWdlSWQoKTsKKwljb25zdCBhdXRvIG1lc3NhZ2VJZCA9IG9yaWdpbmFsSWQgPyBvcmlnaW5h
-          bElkLmJhcmUgOiBpdGVtLT5pZC5iYXJlOworCWNvbnN0IGF1dG8gZGlhbG9nSWQgPSBnZXREaWFsb2dJ
-          ZEZyb21QZWVyKHBlZXIpOworCWlmIChJc1Blcm1hbmVudE1lZGlhSXRlbShpdGVtKSkgeworCQljb25z
-          dCBhdXRvIG1lZGlhID0gaXRlbS0+bWVkaWEoKTsKKwkJaWYgKGNvbnN0IGF1dG8gcGhvdG8gPSBtZWRp
-          YS0+cGhvdG8oKSkgeworCQkJcGhvdG8tPmNhbmNlbCgpOworCQkJUGVuZGluZ1Bob3RvVmlld3MoKS5l
-          cmFzZShwaG90byk7CisJCX0gZWxzZSBpZiAoY29uc3QgYXV0byBkb2N1bWVudCA9IG1lZGlhLT5kb2N1
-          bWVudCgpKSB7CisJCQlkb2N1bWVudC0+Y2FuY2VsKCk7CisJCX0KKwkJUmVtb3ZlUGVybWFuZW50TWVk
-          aWEoUGVybWFuZW50TWVkaWFQYXRoKGl0ZW0pKTsKKwl9CisJaWYgKGNvbnN0IGF1dG8gbWVzc2FnZSA9
-          IEF5dURhdGFiYXNlOjpnZXREZWxldGVkTWVzc2FnZSgKKwkJdXNlcklkLAorCQlkaWFsb2dJZCwKKwkJ
-          bWVzc2FnZUlkKSkgeworCQlSZW1vdmVQZXJtYW5lbnRNZWRpYShRU3RyaW5nOjpmcm9tU3RkU3RyaW5n
-          KG1lc3NhZ2UtPm1lZGlhUGF0aCkpOworCX0KKwlBeXVEYXRhYmFzZTo6cmVtb3ZlRGVsZXRlZE1lc3Nh
-          Z2UodXNlcklkLCBkaWFsb2dJZCwgbWVzc2FnZUlkKTsKIH0KIAogdm9pZCBjbGVhckRlbGV0ZWRNZXNz
-          YWdlcyhub3RfbnVsbDxQZWVyRGF0YSo+IHBlZXIsIElEIHRvcGljSWQpIHsKIAljb25zdCBJRCB1c2Vy
-          SWQgPSBwZWVyLT5zZXNzaW9uKCkudXNlcklkKCkuYmFyZSAmIFBlZXJJZDo6a0NoYXRUeXBlTWFzazsK
-          LQlBeXVEYXRhYmFzZTo6Y2xlYXJEZWxldGVkTWVzc2FnZXModXNlcklkLCBnZXREaWFsb2dJZEZyb21Q
-          ZWVyKHBlZXIpLCB0b3BpY0lkKTsKKwljb25zdCBhdXRvIGRpYWxvZ0lkID0gZ2V0RGlhbG9nSWRGcm9t
-          UGVlcihwZWVyKTsKKwljb25zdCBhdXRvIG1lc3NhZ2VzID0gQXl1RGF0YWJhc2U6OmdldERlbGV0ZWRN
-          ZXNzYWdlcygKKwkJdXNlcklkLAorCQlkaWFsb2dJZCwKKwkJdG9waWNJZCwKKwkJMCwKKwkJMCwKKwkJ
-          c3RkOjpudW1lcmljX2xpbWl0czxpbnQ+OjptYXgoKSwKKwkJIiIpOworCWZvciAoY29uc3QgYXV0byAm
-          bWVzc2FnZSA6IG1lc3NhZ2VzKSB7CisJCVJlbW92ZVBlcm1hbmVudE1lZGlhKFFTdHJpbmc6OmZyb21T
-          dGRTdHJpbmcobWVzc2FnZS5tZWRpYVBhdGgpKTsKKwl9CisJQXl1RGF0YWJhc2U6OmNsZWFyRGVsZXRl
-          ZE1lc3NhZ2VzKHVzZXJJZCwgZGlhbG9nSWQsIHRvcGljSWQpOwogfQogCiB9CmRpZmYgLS1naXQgYS9U
-          ZWxlZ3JhbS9Tb3VyY2VGaWxlcy9heXUvZGF0YS9tZXNzYWdlc19zdG9yYWdlLmggYi9UZWxlZ3JhbS9T
-          b3VyY2VGaWxlcy9heXUvZGF0YS9tZXNzYWdlc19zdG9yYWdlLmgKaW5kZXggOWI2NmNhNi4uMDIwMTc3
-          MCAxMDA2NDQKLS0tIGEvVGVsZWdyYW0vU291cmNlRmlsZXMvYXl1L2RhdGEvbWVzc2FnZXNfc3RvcmFn
-          ZS5oCisrKyBiL1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5dS9kYXRhL21lc3NhZ2VzX3N0b3JhZ2UuaApA
-          QCAtOCw2ICs4LDE1IEBACiAKICNpbmNsdWRlICJheXUvZGF0YS9lbnRpdGllcy5oIgogCitjbGFzcyBE
-          b2N1bWVudERhdGE7CitjbGFzcyBIaXN0b3J5OworY2xhc3MgUGhvdG9EYXRhOworCitzdHJ1Y3QgQXl1
-          UmVzdG9yZWRNZWRpYSB7CisJUGhvdG9EYXRhICpwaG90byA9IG51bGxwdHI7CisJRG9jdW1lbnREYXRh
-          ICpkb2N1bWVudCA9IG51bGxwdHI7Cit9OworCiBuYW1lc3BhY2UgQXl1TWVzc2FnZXMgewogCiB2b2lk
-          IGFkZEVkaXRlZE1lc3NhZ2Uobm90X251bGw8SGlzdG9yeUl0ZW0gKj4gaXRlbSk7CkBAIC0xNyw3ICsy
-          NiwxNSBAQCBib29sIGhhc1JldmlzaW9ucyhub3RfbnVsbDxIaXN0b3J5SXRlbSo+IGl0ZW0pOwogdm9p
-          ZCBhZGREZWxldGVkTWVzc2FnZShub3RfbnVsbDxIaXN0b3J5SXRlbSo+IGl0ZW0pOwogc3RkOjp2ZWN0
-          b3I8QXl1TWVzc2FnZUJhc2U+IGdldERlbGV0ZWRNZXNzYWdlcyhub3RfbnVsbDxQZWVyRGF0YSo+IHBl
-          ZXIsIElEIHRvcGljSWQsIElEIG1pbklkLCBJRCBtYXhJZCwgaW50IHRvdGFsTGltaXQsIGNvbnN0IFFT
-          dHJpbmcgJnNlYXJjaFF1ZXJ5ID0gUVN0cmluZygpKTsKIGJvb2wgaGFzRGVsZXRlZE1lc3NhZ2VzKG5v
-          dF9udWxsPFBlZXJEYXRhKj4gcGVlciwgSUQgdG9waWNJZCk7CitbW25vZGlzY2FyZF1dIGJvb2wgc2hv
-          dWxkS2VlcFBlcm1hbmVudE1lZGlhKG5vdF9udWxsPEhpc3RvcnlJdGVtKj4gaXRlbSk7CiB2b2lkIHJl
-          bW92ZURlbGV0ZWRNZXNzYWdlKG5vdF9udWxsPEhpc3RvcnlJdGVtKj4gaXRlbSk7CiB2b2lkIGNsZWFy
-          RGVsZXRlZE1lc3NhZ2VzKG5vdF9udWxsPFBlZXJEYXRhKj4gcGVlciwgSUQgdG9waWNJZCk7Cit2b2lk
-          IHByZXBhcmVQZXJtYW5lbnRNZWRpYShub3RfbnVsbDxIaXN0b3J5SXRlbSo+IGl0ZW0pOwordm9pZCBh
-          cmNoaXZlUGVybWFuZW50TWVkaWEobm90X251bGw8SGlzdG9yeUl0ZW0qPiBpdGVtKTsKK3ZvaWQgcmVs
-          ZWFzZVBlcm1hbmVudFBob3RvTG9hZChub3RfbnVsbDxQaG90b0RhdGEqPiBwaG90byk7CitbW25vZGlz
-          Y2FyZF1dIEF5dVJlc3RvcmVkTWVkaWEgcmVzdG9yZVBlcm1hbmVudE1lZGlhKAorCW5vdF9udWxsPEhp
-          c3RvcnkqPiBoaXN0b3J5LAorCWNvbnN0IEF5dU1lc3NhZ2VCYXNlICZtZXNzYWdlKTsKK3ZvaWQgcmVp
-          bmplY3RQZXJtYW5lbnRNZWRpYShub3RfbnVsbDxIaXN0b3J5Kj4gaGlzdG9yeSk7CiAKIH0KZGlmZiAt
-          LWdpdCBhL1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5dS91aS9jb250ZXh0X21lbnUvY29udGV4dF9tZW51
-          LmNwcCBiL1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5dS91aS9jb250ZXh0X21lbnUvY29udGV4dF9tZW51
-          LmNwcAppbmRleCA0MjdkZTZiLi4zNDE1NTY0IDEwMDY0NAotLS0gYS9UZWxlZ3JhbS9Tb3VyY2VGaWxl
-          cy9heXUvdWkvY29udGV4dF9tZW51L2NvbnRleHRfbWVudS5jcHAKKysrIGIvVGVsZWdyYW0vU291cmNl
-          RmlsZXMvYXl1L3VpL2NvbnRleHRfbWVudS9jb250ZXh0X21lbnUuY3BwCkBAIC02NSw2ICs2NSw5IEBA
-          IEZuPHZvaWQoKT4gQ2xlYXJEZWxldGVkTWVzc2FnZXNIYW5kbGVyKG5vdF9udWxsPFdpbmRvdzo6U2Vz
-          c2lvbkNvbnRyb2xsZXIqPiBjb250CiAJCQkJCQl9CiAJCQkJCX0KIAkJCQl9CisJCQkJZm9yIChjb25z
-          dCBhdXRvIGl0ZW0gOiBpdGVtcykgeworCQkJCQlBeXVNZXNzYWdlczo6cmVtb3ZlRGVsZXRlZE1lc3Nh
-          Z2UoaXRlbSk7CisJCQkJfQogCQkJCUF5dU1lc3NhZ2VzOjpjbGVhckRlbGV0ZWRNZXNzYWdlcyhwZWVy
-          LCB0b3BpY0lkKTsKIAkJCQlmb3IgKGNvbnN0IGF1dG8gaXRlbSA6IGl0ZW1zKSB7CiAJCQkJCWl0ZW0t
-          PmRlc3Ryb3koKTsKZGlmZiAtLWdpdCBhL1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5dS91aS9tZXNzYWdl
-          X2hpc3RvcnkvaGlzdG9yeV9pdGVtLmNwcCBiL1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5dS91aS9tZXNz
-          YWdlX2hpc3RvcnkvaGlzdG9yeV9pdGVtLmNwcAppbmRleCBlMzU4YjIxLi44YWVhYzU3IDEwMDY0NAot
-          LS0gYS9UZWxlZ3JhbS9Tb3VyY2VGaWxlcy9heXUvdWkvbWVzc2FnZV9oaXN0b3J5L2hpc3RvcnlfaXRl
-          bS5jcHAKKysrIGIvVGVsZWdyYW0vU291cmNlRmlsZXMvYXl1L3VpL21lc3NhZ2VfaGlzdG9yeS9oaXN0
-          b3J5X2l0ZW0uY3BwCkBAIC05LDYgKzksNyBAQAogI2luY2x1ZGUgImhpc3RvcnkvaGlzdG9yeV9pdGVt
-          LmgiCiAjaW5jbHVkZSAiYXBpL2FwaV90ZXh0X2VudGl0aWVzLmgiCiAjaW5jbHVkZSAiYXl1L2RhdGEv
-          ZW50aXRpZXMuaCIKKyNpbmNsdWRlICJheXUvZGF0YS9tZXNzYWdlc19zdG9yYWdlLmgiCiAjaW5jbHVk
-          ZSAiYXl1L3VpL21lc3NhZ2VfaGlzdG9yeS9oaXN0b3J5X2lubmVyLmgiCiAjaW5jbHVkZSAiYXl1L3V0
-          aWxzL2F5dV9tYXBwZXIuaCIKICNpbmNsdWRlICJiYXNlL3VuaXh0aW1lLmgiCkBAIC04Miw3ICs4Myw3
-          IEBAIHZvaWQgR2VuZXJhdGVJdGVtcygKIAkJcmV0dXJuIGNhbGxiYWNrKE93bmVkSXRlbShkZWxlZ2F0
-          ZSwgaXRlbSksIHNlbnREYXRlLCByZWFsSWQpOwogCX07CiAKLQljb25zdCBhdXRvIG1ha2VTaW1wbGVU
-          ZXh0TWVzc2FnZSA9IFsmXShUZXh0V2l0aEVudGl0aWVzICYmdGV4dCkKKwljb25zdCBhdXRvIG1ha2VT
-          aW1wbGVNZXNzYWdlID0gWyZdKFRleHRXaXRoRW50aXRpZXMgJiZ0ZXh0KQogCXsKIAkJYmFzZTo6Zmxh
-          Z3M8TWVzc2FnZUZsYWc+IGZsYWdzID0gTWVzc2FnZUZsYWc6OkFkbWluTG9nRW50cnk7CiAJCWlmIChm
-          cm9tKSB7CkBAIC05NCwzMSArOTUsNTIgQEAgdm9pZCBHZW5lcmF0ZUl0ZW1zKAogCQkJZmxhZ3MgfD0g
-          TWVzc2FnZUZsYWc6Okhhc1Bvc3RBdXRob3I7CiAJCX0KIAotCQlyZXR1cm4gaGlzdG9yeS0+bWFrZU1l
-          c3NhZ2UoewotCQkJCQkJCQkJCS5pZCA9IGhpc3RvcnktPm5leHROb25IaXN0b3J5RW50cnlJZCgpLAot
-          CQkJCQkJCQkJCS5mbGFncyA9IGZsYWdzLAotCQkJCQkJCQkJCS5mcm9tID0gZnJvbSA/IGZyb20tPmlk
-          IDogMCwKLQkJCQkJCQkJCQkuZGF0ZSA9IGRhdGUsCi0JCQkJCQkJCQkJLnBvc3RBdXRob3IgPSAhbWVz
-          c2FnZS5wb3N0QXV0aG9yLmVtcHR5KCkKLQkJCQkJCQkJCQkJCQkJICA/IFFTdHJpbmc6OmZyb21TdGRT
-          dHJpbmcobWVzc2FnZS5wb3N0QXV0aG9yKQotCQkJCQkJCQkJCQkJCQkgIDogZnJvbQotCQkJCQkJCQkJ
-          CQkJCQkJCT8gUVN0cmluZygpCi0JCQkJCQkJCQkJCQkJCQkJOiBRU3RyaW5nKCJ1bmtub3duIHVzZXI6
-          ICUxIikuYXJnKG1lc3NhZ2UuZnJvbUlkKSwKLQkJCQkJCQkJCX0sCi0JCQkJCQkJCQlzdGQ6Om1vdmUo
-          dGV4dCksCi0JCQkJCQkJCQlNVFBfbWVzc2FnZU1lZGlhRW1wdHkoKSk7CisJCWF1dG8gZmllbGRzID0g
-          SGlzdG9yeUl0ZW1Db21tb25GaWVsZHN7CisJCQkuaWQgPSBoaXN0b3J5LT5uZXh0Tm9uSGlzdG9yeUVu
-          dHJ5SWQoKSwKKwkJCS5mbGFncyA9IGZsYWdzLAorCQkJLmZyb20gPSBmcm9tID8gZnJvbS0+aWQgOiAw
-          LAorCQkJLmRhdGUgPSBkYXRlLAorCQkJLnBvc3RBdXRob3IgPSAhbWVzc2FnZS5wb3N0QXV0aG9yLmVt
-          cHR5KCkKKwkJCQk/IFFTdHJpbmc6OmZyb21TdGRTdHJpbmcobWVzc2FnZS5wb3N0QXV0aG9yKQorCQkJ
-          CTogZnJvbQorCQkJCT8gUVN0cmluZygpCisJCQkJOiBRU3RyaW5nKCJ1bmtub3duIHVzZXI6ICUxIiku
-          YXJnKG1lc3NhZ2UuZnJvbUlkKSwKKwkJfTsKKwkJY29uc3QgYXV0byByZXN0b3JlZCA9IEF5dU1lc3Nh
-          Z2VzOjpyZXN0b3JlUGVybWFuZW50TWVkaWEoCisJCQloaXN0b3J5LAorCQkJbWVzc2FnZSk7CisJCWlm
-          IChyZXN0b3JlZC5waG90bykgeworCQkJcmV0dXJuIGhpc3RvcnktPm1ha2VNZXNzYWdlKAorCQkJCXN0
-          ZDo6bW92ZShmaWVsZHMpLAorCQkJCW5vdF9udWxsPFBob3RvRGF0YSo+KHJlc3RvcmVkLnBob3RvKSwK
-          KwkJCQl0ZXh0KTsKKwkJfSBlbHNlIGlmIChyZXN0b3JlZC5kb2N1bWVudCkgeworCQkJcmV0dXJuIGhp
-          c3RvcnktPm1ha2VNZXNzYWdlKAorCQkJCXN0ZDo6bW92ZShmaWVsZHMpLAorCQkJCW5vdF9udWxsPERv
-          Y3VtZW50RGF0YSo+KHJlc3RvcmVkLmRvY3VtZW50KSwKKwkJCQl0ZXh0KTsKKwkJfQorCQlyZXR1cm4g
-          aGlzdG9yeS0+bWFrZU1lc3NhZ2UoCisJCQlzdGQ6Om1vdmUoZmllbGRzKSwKKwkJCXN0ZDo6bW92ZSh0
-          ZXh0KSwKKwkJCU1UUF9tZXNzYWdlTWVkaWFFbXB0eSgpKTsKIAl9OwogCi0JY29uc3QgYXV0byBhZGRT
-          aW1wbGVUZXh0TWVzc2FnZSA9IFsmXShUZXh0V2l0aEVudGl0aWVzICYmdGV4dCkKKwljb25zdCBhdXRv
-          IGFkZFNpbXBsZU1lc3NhZ2UgPSBbJl0oVGV4dFdpdGhFbnRpdGllcyAmJnRleHQpCiAJewotCQlhZGRQ
-          YXJ0KG1ha2VTaW1wbGVUZXh0TWVzc2FnZShzdGQ6Om1vdmUodGV4dCkpKTsKKwkJYWRkUGFydChtYWtl
-          U2ltcGxlTWVzc2FnZShzdGQ6Om1vdmUodGV4dCkpKTsKIAl9OwogCiAJY29uc3QgYXV0byB0ZXh0ID0g
-          UVN0cmluZzo6ZnJvbVN0ZFN0cmluZyhtZXNzYWdlLnRleHQpOwogCWF1dG8gdGV4dEFuZEVudGl0aWVz
-          ID0gVWk6OlRleHQ6OldpdGhFbnRpdGllcyh0ZXh0KTsKLQljb25zdCBhdXRvIGVudGl0aWVzID0gQXl1
-          TWFwcGVyOjpkZXNlcmlhbGl6ZVRleHRXaXRoRW50aXRpZXMobWVzc2FnZS50ZXh0RW50aXRpZXMpOwot
-          CXRleHRBbmRFbnRpdGllcy5lbnRpdGllcyA9IEFwaTo6RW50aXRpZXNGcm9tTVRQKCZoaXN0b3J5LT5z
-          ZXNzaW9uKCksIGVudGl0aWVzLnYpOwotCWFkZFNpbXBsZVRleHRNZXNzYWdlKHN0ZDo6bW92ZSh0ZXh0
-          QW5kRW50aXRpZXMpKTsKKwlpZiAoIW1lc3NhZ2UudGV4dEVudGl0aWVzLmVtcHR5KCkpIHsKKwkJY29u
-          c3QgYXV0byBlbnRpdGllcyA9IEF5dU1hcHBlcjo6ZGVzZXJpYWxpemVUZXh0V2l0aEVudGl0aWVzKAor
-          CQkJbWVzc2FnZS50ZXh0RW50aXRpZXMpOworCQl0ZXh0QW5kRW50aXRpZXMuZW50aXRpZXMgPSBBcGk6
-          OkVudGl0aWVzRnJvbU1UUCgKKwkJCSZoaXN0b3J5LT5zZXNzaW9uKCksCisJCQllbnRpdGllcy52KTsK
-          Kwl9CisJYWRkU2ltcGxlTWVzc2FnZShzdGQ6Om1vdmUodGV4dEFuZEVudGl0aWVzKSk7CiB9CiAKIH0g
-          Ly8gbmFtZXNwYWNlIE1lc3NhZ2VIaXN0b3J5CmRpZmYgLS1naXQgYS9UZWxlZ3JhbS9Tb3VyY2VGaWxl
-          cy9heXUvdWkvc2V0dGluZ3Mvc2V0dGluZ3NfY2hhdHMuY3BwIGIvVGVsZWdyYW0vU291cmNlRmlsZXMv
-          YXl1L3VpL3NldHRpbmdzL3NldHRpbmdzX2NoYXRzLmNwcAppbmRleCAwYTgyZGI0Li4zNTcyMWM5IDEw
-          MDY0NAotLS0gYS9UZWxlZ3JhbS9Tb3VyY2VGaWxlcy9heXUvdWkvc2V0dGluZ3Mvc2V0dGluZ3NfY2hh
-          dHMuY3BwCisrKyBiL1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5dS91aS9zZXR0aW5ncy9zZXR0aW5nc19j
-          aGF0cy5jcHAKQEAgLTEyNCw2ICsxMjQsMzEgQEAgdm9pZCBCdWlsZEdyb3Vwc0FuZENoYW5uZWxzKFNl
-          Y3Rpb25CdWlsZGVyICZidWlsZGVyLCBBeXVTZWN0aW9uQnVpbGRlciAmYXl1KSB7CiAJYnVpbGRlci5h
-          ZGRTa2lwKCk7CiB9CiAKK3ZvaWQgQnVpbGRTZWxmRGVzdHJ1Y3RQaG90b3MoU2VjdGlvbkJ1aWxkZXIg
-          JmJ1aWxkZXIsIEF5dVNlY3Rpb25CdWlsZGVyICZheXUpIHsKKwlidWlsZGVyLmFkZFN1YnNlY3Rpb25U
-          aXRsZSh0cjo6YXl1X1NlbGZEZXN0cnVjdFBob3RvVGltZXIoKSk7CisKKwlheXUuYWRkU2xpZGVyKHsK
-          KwkJLmlkID0gdSJheXUvc2VsZkRlc3RydWN0UGhvdG9TZWNvbmRzIl9xLAorCQkudGl0bGUgPSB0cjo6
-          YXl1X1NlbGZEZXN0cnVjdFBob3RvVGltZXIoKSwKKwkJLnN0ZXBzID0gNjEsCisJCS5jdXJyZW50ID0g
-          QXl1U2V0dGluZ3M6OmdldEluc3RhbmNlKCkuc2VsZkRlc3RydWN0UGhvdG9TZWNvbmRzKCksCisJCS5p
-          bmRleFRvVmFsdWUgPSBbXShpbnQgaW5kZXgpIHsgcmV0dXJuIGluZGV4OyB9LAorCQkub25DaGFuZ2Vk
-          ID0gbnVsbHB0ciwKKwkJLm9uRmluYWxDaGFuZ2VkID0gW10oaW50IGluZGV4KSB7CisJCQlBeXVTZXR0
-          aW5nczo6Z2V0SW5zdGFuY2UoKS5zZXRTZWxmRGVzdHJ1Y3RQaG90b1NlY29uZHMoaW5kZXgpOworCQl9
-          LAorCQkuZm9ybWF0TGFiZWwgPSBbXShpbnQgaW5kZXgpIHsKKwkJCXJldHVybiBpbmRleAorCQkJCT8g
-          dHI6OmxuZ19zZWNvbmRzKHRyOjpub3csIGx0X2NvdW50LCBpbmRleCkKKwkJCQk6IHRyOjpsbmdfc2V0
-          dGluZ3NfdHRsX2FmdGVyX29mZih0cjo6bm93KTsKKwkJfSwKKwl9KTsKKworCWJ1aWxkZXIuYWRkU2tp
-          cCgpOworCWJ1aWxkZXIuYWRkRGl2aWRlclRleHQodHI6OmF5dV9TZWxmRGVzdHJ1Y3RQaG90b1RpbWVy
-          RGVzY3JpcHRpb24oKSk7CisJYnVpbGRlci5hZGRTa2lwKCk7Cit9CisKIHZvaWQgQnVpbGRNYXJrcygK
-          IAkJU2VjdGlvbkJ1aWxkZXIgJmJ1aWxkZXIsCiAJCUF5dVNlY3Rpb25CdWlsZGVyICZheXUsCkBAIC00
-          NTcsNiArNDgyLDcgQEAgY29uc3QgYXV0byBrTWV0YSA9IEJ1aWxkSGVscGVyKHsKIAlidWlsZGVyLmFk
-          ZFNraXAoKTsKIAlCdWlsZFN0aWNrZXJzQW5kRW1vamkoYnVpbGRlciwgYXl1KTsKIAlCdWlsZEdyb3Vw
-          c0FuZENoYW5uZWxzKGJ1aWxkZXIsIGF5dSk7CisJQnVpbGRTZWxmRGVzdHJ1Y3RQaG90b3MoYnVpbGRl
-          ciwgYXl1KTsKIAlCdWlsZE1hcmtzKGJ1aWxkZXIsIGF5dSwgcHJldmlld1N0YXRlKTsKIAlCdWlsZFdp
-          ZGVNZXNzYWdlc011bHRpcGxpZXIoYnVpbGRlciwgYXl1LCBwcmV2aWV3U3RhdGUpOwogCUJ1aWxkQ29u
-          dGV4dE1lbnVFbGVtZW50cyhidWlsZGVyLCBheXUpOwpkaWZmIC0tZ2l0IGEvVGVsZWdyYW0vU291cmNl
-          RmlsZXMvYXl1L3V0aWxzL3RlbGVncmFtX2hlbHBlcnMuY3BwIGIvVGVsZWdyYW0vU291cmNlRmlsZXMv
-          YXl1L3V0aWxzL3RlbGVncmFtX2hlbHBlcnMuY3BwCmluZGV4IDM0MGVkYjQuLmVlNTNhYTcgMTAwNjQ0
-          Ci0tLSBhL1RlbGVncmFtL1NvdXJjZUZpbGVzL2F5dS91dGlscy90ZWxlZ3JhbV9oZWxwZXJzLmNwcAor
-          KysgYi9UZWxlZ3JhbS9Tb3VyY2VGaWxlcy9heXUvdXRpbHMvdGVsZWdyYW1faGVscGVycy5jcHAKQEAg
-          LTcyNSw3ICs3MjUsOCBAQCBib29sIGlzTWVzc2FnZVNhdmFibGUoY29uc3Qgbm90X251bGw8SGlzdG9y
-          eUl0ZW0qPiBpdGVtKSB7CiB9CiAKIHZvaWQgcHJvY2Vzc01lc3NhZ2VEZWxldGUobm90X251bGw8SGlz
-          dG9yeUl0ZW0qPiBpdGVtKSB7Ci0JaWYgKCFpc01lc3NhZ2VTYXZhYmxlKGl0ZW0pKSB7CisJaWYgKCFp
-          c01lc3NhZ2VTYXZhYmxlKGl0ZW0pCisJCSYmICFBeXVNZXNzYWdlczo6c2hvdWxkS2VlcFBlcm1hbmVu
-          dE1lZGlhKGl0ZW0pKSB7CiAJCWl0ZW0tPmRlc3Ryb3koKTsKIAl9IGVsc2UgewogCQlpZiAoaXRlbS0+
-          dHRsRGVzdHJveUF0KCkgPiAwKSB7CmRpZmYgLS1naXQgYS9UZWxlZ3JhbS9Tb3VyY2VGaWxlcy9ib3hl
-          cy9zZW5kX2ZpbGVzX2JveC5jcHAgYi9UZWxlZ3JhbS9Tb3VyY2VGaWxlcy9ib3hlcy9zZW5kX2ZpbGVz
-          X2JveC5jcHAKaW5kZXggZDAwYTVmMC4uZjM2NGY5NSAxMDA2NDQKLS0tIGEvVGVsZWdyYW0vU291cmNl
-          RmlsZXMvYm94ZXMvc2VuZF9maWxlc19ib3guY3BwCisrKyBiL1RlbGVncmFtL1NvdXJjZUZpbGVzL2Jv
-          eGVzL3NlbmRfZmlsZXNfYm94LmNwcApAQCAtMjQ3Niw3ICsyNDc2LDYgQEAgdm9pZCBTZW5kRmlsZXNC
-          b3g6OnNlbmQoCiAJY29uc3QgYXV0byBzdW1TaXplID0gcmFuZ2VzOjphY2N1bXVsYXRlKAogCQlfbGlz
-          dC5maWxlcywgaW50NjQoMCksCiAJCVtdKGludDY0IHN1bSwgY29uc3QgYXV0byAmZmlsZSkgeyByZXR1
-          cm4gc3VtICsgZmlsZS5zaXplOyB9KTsKLQlhcHBseUdob3N0U2NoZWR1bGluZygmX3Nob3ctPnNlc3Np
-          b24oKSwgb3B0aW9ucywgZ2V0U2NoZWR1bGVUaW1lKHN1bVNpemUpKTsKIAogCWlmICgoX3NlbmRUeXBl
-          ID09IEFwaTo6U2VuZFR5cGU6OlNjaGVkdWxlZAogCQl8fCBfc2VuZFR5cGUgPT0gQXBpOjpTZW5kVHlw
-          ZTo6U2NoZWR1bGVkVG9Vc2VyKQpAQCAtMjQ5Nyw3ICsyNDk2LDMxIEBAIHZvaWQgU2VuZEZpbGVzQm94
-          OjpzZW5kKAogCQlyZXR1cm47CiAJfQogCi0JY29uc3QgYXV0byB3YXkgPSBfc2VuZFdheS5jdXJyZW50
-          KCk7CisJYXV0byB3YXkgPSBfc2VuZFdheS5jdXJyZW50KCk7CisJY29uc3QgYXV0byBzZWxmRGVzdHJ1
-          Y3RQaG90b1NlY29uZHMgPQorCQlBeXVTZXR0aW5nczo6Z2V0SW5zdGFuY2UoKS5zZWxmRGVzdHJ1Y3RQ
-          aG90b1NlY29uZHMoKTsKKwljb25zdCBhdXRvIHVzZXIgPSBfdG9QZWVyLT5hc1VzZXIoKTsKKwljb25z
-          dCBhdXRvIGFsbFBob3RvcyA9ICFfbGlzdC5maWxlcy5lbXB0eSgpCisJCSYmIHdheS5zZW5kSW1hZ2Vz
-          QXNQaG90b3MoKQorCQkmJiByYW5nZXM6OmFsbF9vZihfbGlzdC5maWxlcywgW10oY29uc3QgVWk6OlBy
-          ZXBhcmVkRmlsZSAmZmlsZSkgeworCQkJcmV0dXJuIGZpbGUudHlwZSA9PSBVaTo6UHJlcGFyZWRGaWxl
-          OjpUeXBlOjpQaG90bzsKKwkJfSk7CisJaWYgKHNlbGZEZXN0cnVjdFBob3RvU2Vjb25kcyA+IDAKKwkJ
-          JiYgdXNlcgorCQkmJiAhdXNlci0+aXNTZWxmKCkKKwkJJiYgIXVzZXItPmlzQm90KCkKKwkJJiYgIW9w
-          dGlvbnMuc2NoZWR1bGVkCisJCSYmICFvcHRpb25zLnNob3J0Y3V0SWQKKwkJJiYgYWxsUGhvdG9zKSB7
-          CisJCW9wdGlvbnMudHRsU2Vjb25kcyA9IHNlbGZEZXN0cnVjdFBob3RvU2Vjb25kczsKKwkJd2F5LnNl
-          dEdyb3VwRmlsZXMoZmFsc2UpOworCX0KKwlpZiAoIW9wdGlvbnMudHRsU2Vjb25kcykgeworCQlhcHBs
-          eUdob3N0U2NoZWR1bGluZygKKwkJCSZfc2hvdy0+c2Vzc2lvbigpLAorCQkJb3B0aW9ucywKKwkJCWdl
-          dFNjaGVkdWxlVGltZShzdW1TaXplKSk7CisJfQogCiAJZm9yIChhdXRvICZpdGVtIDogX2xpc3QuZmls
-          ZXMpIHsKIAkJaXRlbS5zcG9pbGVyID0gZmFsc2U7CmRpZmYgLS1naXQgYS9UZWxlZ3JhbS9Tb3VyY2VG
-          aWxlcy9kYXRhL2RhdGFfc2Vzc2lvbi5jcHAgYi9UZWxlZ3JhbS9Tb3VyY2VGaWxlcy9kYXRhL2RhdGFf
-          c2Vzc2lvbi5jcHAKaW5kZXggODBmNDlmNS4uYjUwNWQyYyAxMDA2NDQKLS0tIGEvVGVsZWdyYW0vU291
-          cmNlRmlsZXMvZGF0YS9kYXRhX3Nlc3Npb24uY3BwCisrKyBiL1RlbGVncmFtL1NvdXJjZUZpbGVzL2Rh
-          dGEvZGF0YV9zZXNzaW9uLmNwcApAQCAtMTkzOSw2ICsxOTM5LDEzIEBAIHZvaWQgU2Vzc2lvbjo6ZG9j
-          dW1lbnRMb2FkUHJvZ3Jlc3Mobm90X251bGw8RG9jdW1lbnREYXRhKj4gZG9jdW1lbnQpIHsKIHZvaWQg
-          U2Vzc2lvbjo6ZG9jdW1lbnRMb2FkRG9uZShub3RfbnVsbDxEb2N1bWVudERhdGEqPiBkb2N1bWVudCkg
-          ewogCW5vdGlmeURvY3VtZW50TGF5b3V0Q2hhbmdlZChkb2N1bWVudCk7CiAJX2RvY3VtZW50TG9hZFBy
-          b2dyZXNzLmZpcmVfY29weShkb2N1bWVudCk7CisJaWYgKGNvbnN0IGF1dG8gaSA9IF9kb2N1bWVudEl0
-          ZW1zLmZpbmQoZG9jdW1lbnQpOworCQlpICE9IGVuZChfZG9jdW1lbnRJdGVtcykpIHsKKwkJY29uc3Qg
-          YXV0byBpdGVtcyA9IGktPnNlY29uZDsKKwkJZm9yIChjb25zdCBhdXRvIGl0ZW0gOiBpdGVtcykgewor
-          CQkJQXl1TWVzc2FnZXM6OmFyY2hpdmVQZXJtYW5lbnRNZWRpYShpdGVtKTsKKwkJfQorCX0KIH0KIAog
-          dm9pZCBTZXNzaW9uOjpkb2N1bWVudExvYWRGYWlsKApAQCAtMTk1NiwxMSArMTk2MywxOCBAQCB2b2lk
-          IFNlc3Npb246OnBob3RvTG9hZFByb2dyZXNzKG5vdF9udWxsPFBob3RvRGF0YSo+IHBob3RvKSB7CiB2
-          b2lkIFNlc3Npb246OnBob3RvTG9hZERvbmUobm90X251bGw8UGhvdG9EYXRhKj4gcGhvdG8pIHsKIAlu
-          b3RpZnlQaG90b0xheW91dENoYW5nZWQocGhvdG8pOwogCV9waG90b0xvYWRQcm9ncmVzcy5maXJlX2Nv
-          cHkocGhvdG8pOworCWlmIChjb25zdCBhdXRvIGkgPSBfcGhvdG9JdGVtcy5maW5kKHBob3RvKTsgaSAh
-          PSBlbmQoX3Bob3RvSXRlbXMpKSB7CisJCWNvbnN0IGF1dG8gaXRlbXMgPSBpLT5zZWNvbmQ7CisJCWZv
-          ciAoY29uc3QgYXV0byBpdGVtIDogaXRlbXMpIHsKKwkJCUF5dU1lc3NhZ2VzOjphcmNoaXZlUGVybWFu
-          ZW50TWVkaWEoaXRlbSk7CisJCX0KKwl9CiB9CiAKIHZvaWQgU2Vzc2lvbjo6cGhvdG9Mb2FkRmFpbCgK
-          IAkJbm90X251bGw8UGhvdG9EYXRhKj4gcGhvdG8sCiAJCWJvb2wgc3RhcnRlZCkgeworCUF5dU1lc3Nh
-          Z2VzOjpyZWxlYXNlUGVybWFuZW50UGhvdG9Mb2FkKHBob3RvKTsKIAlub3RpZnlQaG90b0xheW91dENo
-          YW5nZWQocGhvdG8pOwogCV9waG90b0xvYWRQcm9ncmVzcy5maXJlX2NvcHkocGhvdG8pOwogfQpAQCAt
-          MzA4OSw3ICszMTAzLDggQEAgdm9pZCBTZXNzaW9uOjpjaGVja1RUTHMoKSB7CiAJfQogCWF1dG8gdG9E
-          ZXN0cm95ID0gc3RkOjp2ZWN0b3I8bm90X251bGw8SGlzdG9yeUl0ZW0qPj4oKTsKIAlmb3IgKGNvbnN0
-          IGF1dG8gJml0ZW0gOiBleHBpcmVkKSB7Ci0JCWlmIChpc01lc3NhZ2VTYXZhYmxlKGl0ZW0pKSB7CisJ
-          CWlmIChpc01lc3NhZ2VTYXZhYmxlKGl0ZW0pCisJCQl8fCBBeXVNZXNzYWdlczo6c2hvdWxkS2VlcFBl
-          cm1hbmVudE1lZGlhKGl0ZW0pKSB7CiAJCQlwcm9jZXNzTWVzc2FnZURlbGV0ZShpdGVtKTsKIAkJfSBl
-          bHNlIHsKIAkJCXRvRGVzdHJveS5wdXNoX2JhY2soaXRlbSk7CkBAIC0zMTYzLDcgKzMxNzgsOCBAQCB2
-          b2lkIFNlc3Npb246OnByb2Nlc3NNZXNzYWdlc0RlbGV0ZWQoCiAJCWlmIChsaXN0ICYmIGkgIT0gbGlz
-          dC0+ZW5kKCkpIHsKIAkJCWNvbnN0IGF1dG8gaXRlbSA9IGktPnNlY29uZDsKIAkJCWNvbnN0IGF1dG8g
-          aGlzdG9yeSA9IGl0ZW0tPmhpc3RvcnkoKTsKLQkJCWlmIChpc01lc3NhZ2VTYXZhYmxlKGl0ZW0pKSB7
-          CisJCQlpZiAoaXNNZXNzYWdlU2F2YWJsZShpdGVtKQorCQkJCXx8IEF5dU1lc3NhZ2VzOjpzaG91bGRL
-          ZWVwUGVybWFuZW50TWVkaWEoaXRlbSkpIHsKIAkJCQlwcm9jZXNzTWVzc2FnZURlbGV0ZShpdGVtKTsK
-          IAkJCX0gZWxzZSB7CiAJCQkJdG9EZXN0cm95LnB1c2hfYmFjayhpdGVtKTsKQEAgLTMxOTIsNyArMzIw
-          OCw4IEBAIHZvaWQgU2Vzc2lvbjo6cHJvY2Vzc05vbkNoYW5uZWxNZXNzYWdlc0RlbGV0ZWQoY29uc3Qg
-          UVZlY3RvcjxNVFBpbnQ+ICZkYXRhKSB7CiAJZm9yIChjb25zdCBhdXRvICZtZXNzYWdlSWQgOiBkYXRh
-          KSB7CiAJCWlmIChjb25zdCBhdXRvIGl0ZW0gPSBub25DaGFubmVsTWVzc2FnZShtZXNzYWdlSWQudikp
-          IHsKIAkJCWNvbnN0IGF1dG8gaGlzdG9yeSA9IGl0ZW0tPmhpc3RvcnkoKTsKLQkJCWlmIChpc01lc3Nh
-          Z2VTYXZhYmxlKGl0ZW0pKSB7CisJCQlpZiAoaXNNZXNzYWdlU2F2YWJsZShpdGVtKQorCQkJCXx8IEF5
-          dU1lc3NhZ2VzOjpzaG91bGRLZWVwUGVybWFuZW50TWVkaWEoaXRlbSkpIHsKIAkJCQlwcm9jZXNzTWVz
-          c2FnZURlbGV0ZShpdGVtKTsKIAkJCX0gZWxzZSB7CiAJCQkJdG9EZXN0cm95LnB1c2hfYmFjayhpdGVt
-          KTsKQEAgLTM0MjAsNiArMzQzNyw3IEBAIEhpc3RvcnlJdGVtICpTZXNzaW9uOjphZGROZXdNZXNzYWdl
-          KAogCQkJCWlmIChjb25zdCBhdXRvIGFkb3B0ZWQgPSBzdHJlYW1lZC0+YWRvcHRJbmNvbWluZygKIAkJ
-          CQkJCWRhdGEuY19tZXNzYWdlKCkpKSB7CiAJCQkJCUNoZWNrRm9yU3dpdGNoSW5saW5lQnV0dG9uKGFk
-          b3B0ZWQpOworCQkJCQlBeXVNZXNzYWdlczo6cHJlcGFyZVBlcm1hbmVudE1lZGlhKGFkb3B0ZWQpOwog
-          CQkJCQlyZXR1cm4gYWRvcHRlZDsKIAkJCQl9CiAJCQl9CkBAIC0zNDMzLDYgKzM0NTEsMTMgQEAgSGlz
-          dG9yeUl0ZW0gKlNlc3Npb246OmFkZE5ld01lc3NhZ2UoCiAJCXR5cGUpOwogCWlmICh0eXBlID09IE5l
-          d01lc3NhZ2VUeXBlOjpVbnJlYWQpIHsKIAkJQ2hlY2tGb3JTd2l0Y2hJbmxpbmVCdXR0b24ocmVzdWx0
-          KTsKKwkJQXl1TWVzc2FnZXM6OnByZXBhcmVQZXJtYW5lbnRNZWRpYShyZXN1bHQpOworCX0gZWxzZSBp
-          ZiAoY29uc3QgYXV0byBtZWRpYSA9IHJlc3VsdC0+bWVkaWEoKTsKKwkJbWVkaWEKKwkJJiYgKG1lZGlh
-          LT50dGxTZWNvbmRzKCkgPiAwIHx8IHJlc3VsdC0+dW5zdXBwb3J0ZWRUVEwoKSA+IDApCisJCSYmIHJl
-          c3VsdC0+aGFzVW5yZWFkTWVkaWFGbGFnKCkpIHsKKwkJLy8gQWxzbyBoYW5kbGUgdW5yZWFkIHNlbGYt
-          ZGVzdHJ1Y3RpbmcgbWVkaWEgcmVjZWl2ZWQgd2hpbGUgb2ZmbGluZS4KKwkJQXl1TWVzc2FnZXM6OnBy
-          ZXBhcmVQZXJtYW5lbnRNZWRpYShyZXN1bHQpOwogCX0KIAlyZXR1cm4gcmVzdWx0OwogfQpkaWZmIC0t
-          Z2l0IGEvVGVsZWdyYW0vU291cmNlRmlsZXMvaGlzdG9yeS9oaXN0b3J5LmNwcCBiL1RlbGVncmFtL1Nv
-          dXJjZUZpbGVzL2hpc3RvcnkvaGlzdG9yeS5jcHAKaW5kZXggMWMzMWJiMy4uNzZkNThkOSAxMDA2NDQK
-          LS0tIGEvVGVsZWdyYW0vU291cmNlRmlsZXMvaGlzdG9yeS9oaXN0b3J5LmNwcAorKysgYi9UZWxlZ3Jh
-          bS9Tb3VyY2VGaWxlcy9oaXN0b3J5L2hpc3RvcnkuY3BwCkBAIC04NSw2ICs4NSw3IEBAIGh0dHBzOi8v
-          Z2l0aHViLmNvbS90ZWxlZ3JhbWRlc2t0b3AvdGRlc2t0b3AvYmxvYi9tYXN0ZXIvTEVHQUwKIC8vIEF5
-          dUdyYW0gaW5jbHVkZXMKICNpbmNsdWRlICJheXUvYXl1X3NldHRpbmdzLmgiCiAjaW5jbHVkZSAiYXl1
-          L2F5dV9zdGF0ZS5oIgorI2luY2x1ZGUgImF5dS9kYXRhL21lc3NhZ2VzX3N0b3JhZ2UuaCIKIAogCiBu
-          YW1lc3BhY2UgewpAQCAtMTg0Nyw3ICsxODQ4LDkgQEAgdm9pZCBIaXN0b3J5OjphZGRFZGdlc1RvU2hh
-          cmVkTWVkaWEoKSB7CiB2b2lkIEhpc3Rvcnk6OmFkZE9sZGVyU2xpY2UoY29uc3QgUVZlY3RvcjxNVFBN
-          ZXNzYWdlPiAmc2xpY2UpIHsKIAlpZiAoc2xpY2UuaXNFbXB0eSgpKSB7CiAJCV9sb2FkZWRBdFRvcCA9
-          IHRydWU7CisJCUF5dU1lc3NhZ2VzOjpyZWluamVjdFBlcm1hbmVudE1lZGlhKHRoaXMpOwogCQljaGVj
-          a0xvY2FsTWVzc2FnZXMoKTsKKwkJY2hlY2tMYXN0TWVzc2FnZSgpOwogCQlyZXR1cm47CiAJfQogCkBA
-          IC0xODU4LDYgKzE4NjEsNyBAQCB2b2lkIEhpc3Rvcnk6OmFkZE9sZGVyU2xpY2UoY29uc3QgUVZlY3Rv
-          cjxNVFBNZXNzYWdlPiAmc2xpY2UpIHsKIAkJX2xvYWRlZEF0VG9wID0gdHJ1ZTsKIAkJYWRkRWRnZXNU
-          b1NoYXJlZE1lZGlhKCk7CiAJfQorCUF5dU1lc3NhZ2VzOjpyZWluamVjdFBlcm1hbmVudE1lZGlhKHRo
-          aXMpOwogCWNoZWNrTG9jYWxNZXNzYWdlcygpOwogCWNoZWNrTGFzdE1lc3NhZ2UoKTsKIH0KZGlmZiAt
-          LWdpdCBhL1RlbGVncmFtL1NvdXJjZUZpbGVzL2hpc3RvcnkvaGlzdG9yeV9pdGVtLmggYi9UZWxlZ3Jh
-          bS9Tb3VyY2VGaWxlcy9oaXN0b3J5L2hpc3RvcnlfaXRlbS5oCmluZGV4IGYwOWEyNTMuLmVlN2I0ZDQg
-          MTAwNjQ0Ci0tLSBhL1RlbGVncmFtL1NvdXJjZUZpbGVzL2hpc3RvcnkvaGlzdG9yeV9pdGVtLmgKKysr
-          IGIvVGVsZWdyYW0vU291cmNlRmlsZXMvaGlzdG9yeS9oaXN0b3J5X2l0ZW0uaApAQCAtNDY1LDYgKzQ2
-          NSwxMiBAQCBwdWJsaWM6CiAJdm9pZCBzZXRQb3N0QXV0aG9yKGNvbnN0IFFTdHJpbmcgJmF1dGhvcik7
-          CiAJdm9pZCBzZXREZWxldGVkKCk7CiAJW1tub2Rpc2NhcmRdXSBib29sIGlzRGVsZXRlZCgpIGNvbnN0
-          OworCXZvaWQgc2V0QXl1T3JpZ2luYWxNZXNzYWdlSWQoTXNnSWQgaWQpIHsKKwkJX2F5dU9yaWdpbmFs
-          TWVzc2FnZUlkID0gaWQ7CisJfQorCVtbbm9kaXNjYXJkXV0gTXNnSWQgYXl1T3JpZ2luYWxNZXNzYWdl
-          SWQoKSBjb25zdCB7CisJCXJldHVybiBfYXl1T3JpZ2luYWxNZXNzYWdlSWQ7CisJfQogCVtbbm9kaXNj
-          YXJkXV0gYm9vbCBpc0J1cm50KCkgY29uc3Q7CiAJW1tub2Rpc2NhcmRdXSBib29sIHdhc0RlbGV0ZWRB
-          bmltYXRlZCgpIGNvbnN0OwogCXZvaWQgbWFya0RlbGV0ZWRBbmltYXRlZCgpOwpAQCAtODI3LDYgKzgz
-          Myw3IEBAIHByaXZhdGU6CiAJYm9vbCBfZGVsZXRlZCA9IGZhbHNlOwogCWJvb2wgX2RlbGV0ZWRBbmlt
-          YXRlZCA9IGZhbHNlOwogCWludCBfdW5zdXBwb3J0ZWRUVEwgPSAwOworCU1zZ0lkIF9heXVPcmlnaW5h
-          bE1lc3NhZ2VJZCA9IE1zZ0lkKCk7CiAKIAlUaW1lSWQgX2RhdGUgPSAwOwogCVRpbWVJZCBfdHRsRGVz
-          dHJveUF0ID0gMDsK
+
+
+          @dataclass
+          class Recipient:
+              douyin_id: str
+              nickname: str = ""
+              sources: list[str] = field(default_factory=list)
+
+
+          @dataclass
+          class ImportResult:
+              records: list[Recipient]
+              parsed: int = 0
+              skipped: int = 0
+              duplicates: int = 0
+
+
+          def valid_id(value: str) -> bool:
+              return bool(ID_RE.fullmatch(value))
+
+
+          def decode_file(data: bytes) -> str:
+              if data.startswith((b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff")):
+                  return data.decode("utf-32")
+              if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+                  return data.decode("utf-16")
+              for encoding in ("utf-8-sig", "gb18030"):
+                  try:
+                      text = data.decode(encoding)
+                      if "\x00" not in text:
+                          return text
+                  except UnicodeError:
+                      continue
+              raise ValueError("无法识别文件编码。请另存为 UTF-8、带 BOM 的 UTF-16 或 GB18030 文本。")
+
+
+          def source_name(filename: str) -> str:
+              stem = Path(filename).stem
+              for name in ("共同好友", "评论区", "关注", "粉丝"):
+                  if name in stem:
+                      return name
+              return stem[:60] or "导入名单"
+
+
+          def parse_text(text: str, source: str = "导入名单") -> ImportResult:
+              """Accept supplied labeled TXT, one ID per line, and headed CSV/TSV."""
+              result = ImportResult([])
+              lines = [line.strip() for line in text.lstrip("\ufeff").splitlines()
+                       if line.strip() and not line.lstrip().startswith("#")]
+              if not lines:
+                  return result
+              first = lines[0]
+              delimiter = "\t" if "\t" in first else ("," if "," in first else "，")
+              first_cells = next(csv.reader([first], delimiter=delimiter))
+              headers = [cell.strip().lower() for cell in first_cells]
+              headed = any(header in ID_HEADERS for header in headers)
+              id_column = next((i for i, h in enumerate(headers) if h in ID_HEADERS), None)
+              name_column = next((i for i, h in enumerate(headers) if h in NAME_HEADERS), None)
+              source_column = next((i for i, h in enumerate(headers) if h in SOURCE_HEADERS), None)
+              seen: dict[str, Recipient] = {}
+
+              def add(value: str, nickname: str = "", label: str = source) -> None:
+                  value = value.strip().lstrip("\ufeff").removeprefix("@").strip()
+                  if not valid_id(value):
+                      result.skipped += 1
+                      return
+                  result.parsed += 1
+                  labels = [part.strip() for part in label.split(" / ") if part.strip()] or [source]
+                  if value in seen:
+                      result.duplicates += 1
+                      existing = seen[value]
+                      if not existing.nickname and nickname:
+                          existing.nickname = nickname.strip()
+                      for group in labels:
+                          if group not in existing.sources:
+                              existing.sources.append(group)
+                      return
+                  record = Recipient(value, nickname.strip(), list(dict.fromkeys(labels)))
+                  seen[value] = record
+                  result.records.append(record)
+
+              if headed:
+                  try:
+                      for row in csv.reader(lines[1:], delimiter=delimiter, strict=True):
+                          if id_column is None or len(row) <= id_column:
+                              result.skipped += 1
+                              continue
+                          nickname = row[name_column] if name_column is not None and len(row) > name_column else ""
+                          label = row[source_column] if source_column is not None and len(row) > source_column else source
+                          add(row[id_column], nickname, label)
+                  except csv.Error as exc:
+                      raise ValueError(f"CSV 格式有误：{exc}") from exc
+                  return result
+
+              for line in lines:
+                  match = LABELED_ID.search(line)
+                  if match:
+                      nickname = ""
+                      before_id = line[:match.start()]
+                      if "昵称" in before_id:
+                          nickname = before_id.split("昵称", 1)[1].strip()
+                          # Remove the final demographics field, preserving spaces inside nicknames.
+                          nickname = re.sub(r"\s{2,}(?:空|[男女](?:\d{1,3}岁)?)\s*$", "", nickname).strip()
+                      add(match.group(1), nickname)
+                  elif "昵称" in line or "资料位置" in line:
+                      result.skipped += 1
+                  else:
+                      # Bare-ID files may also separate IDs with commas, semicolons or tabs.
+                      for token in re.split(r"[\s,，;；]+", line):
+                          if token:
+                              add(token)
+              return result
+
+
+          def read_list(path: Path) -> ImportResult:
+              if path.stat().st_size > MAX_FILE_BYTES:
+                  raise ValueError("单个文件不得超过 5 MB。")
+              return parse_text(decode_file(path.read_bytes()), source_name(path.name))
+
+
+          def merge_records(existing: list[Recipient], incoming: list[Recipient]) -> tuple[int, int]:
+              by_id = {r.douyin_id: r for r in existing}
+              added = repeated = 0
+              new_ids = {r.douyin_id for r in incoming if r.douyin_id not in by_id}
+              if len(existing) + len(new_ids) > MAX_RECIPIENTS:
+                  raise ValueError(f"名单最多支持 {MAX_RECIPIENTS:,} 人，请拆分文件。")
+              for record in incoming:
+                  current = by_id.get(record.douyin_id)
+                  if current is not None:
+                      repeated += 1
+                      if not current.nickname:
+                          current.nickname = record.nickname
+                      current.sources.extend(s for s in record.sources if s not in current.sources)
+                  else:
+                      clone = Recipient(record.douyin_id, record.nickname, list(record.sources))
+                      existing.append(clone)
+                      by_id[clone.douyin_id] = clone
+                      added += 1
+              return added, repeated
+
+
+          def render_message(template: str, recipient: Recipient) -> str:
+              return template.replace("{昵称}", recipient.nickname or recipient.douyin_id).replace("{抖音号}", recipient.douyin_id)
+
+
+          def csv_cell(value: str) -> str:
+              # Keep exported text from being interpreted as a spreadsheet formula.
+              return "'" + value if value.startswith(("=", "+", "-", "@", "\t", "\r", "\n")) else value
+
+
+          class Session:
+              """Deterministic local queue, with no network or account integration."""
+              def __init__(self) -> None:
+                  self.state = "idle"
+                  self.queue: list[Recipient] = []
+                  self.template = ""
+                  self.cursor = 0
+                  self.statuses: dict[str, str] = {}
+                  self.started_at: float | None = None
+                  self.elapsed_before = 0.0
+
+              @property
+              def active(self) -> bool:
+                  return self.state in {"running", "paused"}
+
+              @property
+              def remaining(self) -> int:
+                  return len(self.queue) - self.cursor
+
+              @property
+              def elapsed(self) -> float:
+                  return self.elapsed_before + (time.monotonic() - self.started_at if self.started_at is not None else 0)
+
+              def start(self, records: list[Recipient], template: str) -> None:
+                  if self.active:
+                      raise ValueError("请先停止当前任务。")
+                  if not records:
+                      raise ValueError("请先导入名单；选择“仅选中”时，请在名单中选中接收人。")
+                  if not template.strip():
+                      raise ValueError("请填写群发内容。")
+                  if len(template) > MAX_MESSAGE:
+                      raise ValueError(f"群发内容不得超过 {MAX_MESSAGE} 字。")
+                  self.queue = list(records)
+                  self.template = template
+                  self.cursor = 0
+                  self.statuses = {r.douyin_id: "等待模拟" for r in records}
+                  self.elapsed_before = 0.0
+                  self.started_at = time.monotonic()
+                  self.state = "running"
+
+              def tick(self) -> Recipient | None:
+                  if self.state != "running" or self.cursor >= len(self.queue):
+                      return None
+                  recipient = self.queue[self.cursor]
+                  self.statuses[recipient.douyin_id] = "模拟完成"
+                  self.cursor += 1
+                  if self.cursor == len(self.queue):
+                      self._freeze_clock()
+                      self.state = "completed"
+                  return recipient
+
+              def _freeze_clock(self) -> None:
+                  self.elapsed_before = self.elapsed
+                  self.started_at = None
+
+              def pause(self) -> None:
+                  if self.state == "running":
+                      self._freeze_clock()
+                      self.state = "paused"
+
+              def resume(self) -> None:
+                  if self.state == "paused":
+                      self.started_at = time.monotonic()
+                      self.state = "running"
+
+              def stop(self) -> None:
+                  if self.active:
+                      self._freeze_clock()
+                      for recipient in self.queue[self.cursor:]:
+                          self.statuses[recipient.douyin_id] = "已停止"
+                      self.state = "stopped"
+
+
+          class DemoApp:
+              def __init__(self, root: tk.Tk) -> None:
+                  self.root = root
+                  self.records: list[Recipient] = []
+                  self.session = Session()
+                  self.logs: list[tuple[str, str, str]] = []
+                  self.import_duplicates = 0
+                  self.timer: str | None = None
+                  self.search_timer: str | None = None
+                  self.search_var = tk.StringVar()
+                  self.source_var = tk.StringVar(value="全部来源")
+                  self.selected_only = tk.BooleanVar(value=False)
+                  self.interval_var = tk.StringVar(value="0.8")
+                  self.toast_var = tk.StringVar(value="就绪 · 点击“导入名单”开始")
+                  self.count_var = tk.StringVar(value=f"0 / {MAX_MESSAGE} 字")
+                  self.progress_var = tk.DoubleVar(value=0)
+                  self.progress_text = tk.StringVar(value="等待开始")
+                  self.preview_target = tk.StringVar(value="选择名单中的一位用户以预览")
+                  root.title(APP_NAME)
+                  root.configure(bg=COLORS["bg"])
+                  root.geometry("1240x850")
+                  root.minsize(1060, 760)
+                  root.protocol("WM_DELETE_WINDOW", self.close)
+                  root.option_add("*Font", ("Microsoft YaHei UI", 10))
+                  self.configure_styles()
+                  self.build_ui()
+                  root.bind("<Control-o>", lambda _event: self.import_files())
+                  self.search_var.trace_add("write", self.search_changed)
+                  self.source_var.trace_add("write", lambda *_: self.refresh_table())
+                  self.log("系统", "本地演示已就绪。发送按钮仅模拟流程。")
+                  self.update_stats()
+
+              def configure_styles(self) -> None:
+                  style = ttk.Style(self.root)
+                  style.theme_use("clam")
+                  style.configure("TFrame", background=COLORS["card"])
+                  style.configure("TCombobox", fieldbackground=COLORS["input"], background=COLORS["line"],
+                                  foreground=COLORS["text"], arrowcolor=COLORS["muted"], padding=5)
+                  style.map("TCombobox", fieldbackground=[("readonly", COLORS["input"])],
+                            selectbackground=[("readonly", COLORS["input"])],
+                            selectforeground=[("readonly", COLORS["text"])])
+                  style.configure("Treeview", background=COLORS["input"], fieldbackground=COLORS["input"],
+                                  foreground=COLORS["text"], rowheight=33, borderwidth=0,
+                                  font=("Microsoft YaHei UI", 10))
+                  style.configure("Treeview.Heading", background=COLORS["card"], foreground=COLORS["muted"],
+                                  relief="flat", padding=(8, 9), font=("Microsoft YaHei UI", 9))
+                  style.map("Treeview", background=[("selected", "#214D53")], foreground=[("selected", "#FFFFFF")])
+                  style.map("Treeview.Heading", background=[("active", COLORS["hover"])])
+                  style.configure("Vertical.TScrollbar", background=COLORS["line"], troughcolor=COLORS["input"],
+                                  borderwidth=0, arrowcolor=COLORS["muted"])
+                  style.configure("Horizontal.TProgressbar", troughcolor=COLORS["input"],
           '@
-          [IO.File]::WriteAllBytes($patch, [Convert]::FromBase64String(($patchBase64 -replace '\s', '')))
-          git -C "$env:BUILD_ROOT\tdesktop" apply --check $patch
-          git -C "$env:BUILD_ROOT\tdesktop" apply $patch
-          git -C "$env:BUILD_ROOT\tdesktop" diff --check
+          [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-          # Ninja uses per-source language-key subsets. AyuGram's pinned
-          # code generator scans lng_* keys only, so teach it about ayu_* too.
-          $langPatch = "$env:RUNNER_TEMP\ninja-lang-subsets-ayu.patch"
-          $langPatchBase64 = @'
-          ZGlmZiAtLWdpdCBhL2NvZGVnZW4vbGFuZy9zdWJzZXRzLmNwcCBiL2NvZGVnZW4vbGFuZy9zdWJz
-          ZXRzLmNwcAppbmRleCBmZGE5MjZiLi44MTEwYjUyIDEwMDY0NAotLS0gYS9jb2RlZ2VuL2xhbmcv
-          c3Vic2V0cy5jcHAKKysrIGIvY29kZWdlbi9sYW5nL3N1YnNldHMuY3BwCkBAIC0xNzIsMTEgKzE3
-          MiwxNiBAQCB2b2lkIFNjYW4oY29uc3QgUUJ5dGVBcnJheSAmY29udGVudCwgU2Nhbm5lZCAmcmVz
-          dWx0KSB7CiAJY29uc3QgYXV0byBkYXRhID0gY29udGVudC5jb25zdERhdGEoKTsKIAljb25zdCBh
-          dXRvIHNpemUgPSBjb250ZW50LnNpemUoKTsKIAlmb3IgKGF1dG8gaSA9IHFzaXpldHlwZSgwKTsg
-          aSArIDQgPCBzaXplOyArK2kpIHsKLQkJaWYgKGRhdGFbaV0gIT0gJ2wnCi0JCQl8fCBkYXRhW2kg
-          KyAxXSAhPSAnbicKLQkJCXx8IGRhdGFbaSArIDJdICE9ICdnJwotCQkJfHwgZGF0YVtpICsgM10g
-          IT0gJ18nCi0JCQl8fCAoaSA+IDAgJiYgSXNJZGVudGlmaWVyQ2hhcihkYXRhW2kgLSAxXSkpKSB7
-          CisJCWNvbnN0IGF1dG8gaXNUZWxlZ3JhbUtleSA9IGRhdGFbaV0gPT0gJ2wnCisJCQkmJiBkYXRh
-          W2kgKyAxXSA9PSAnbicKKwkJCSYmIGRhdGFbaSArIDJdID09ICdnJworCQkJJiYgZGF0YVtpICsg
-          M10gPT0gJ18nOworCQljb25zdCBhdXRvIGlzQXl1R3JhbUtleSA9IGRhdGFbaV0gPT0gJ2EnCisJ
-          CQkmJiBkYXRhW2kgKyAxXSA9PSAneScKKwkJCSYmIGRhdGFbaSArIDJdID09ICd1JworCQkJJiYg
-          ZGF0YVtpICsgM10gPT0gJ18nOworCQlpZiAoKCFpc1RlbGVncmFtS2V5ICYmICFpc0F5dUdyYW1L
-          ZXkpCisJCQkJfHwgKGkgPiAwICYmIElzSWRlbnRpZmllckNoYXIoZGF0YVtpIC0gMV0pKSkgewog
-          CQkJY29udGludWU7CiAJCX0KIAkJYXV0byB0aWxsID0gaSArIDQ7Cg==
+      - name: Write embedded app.py (2/4)
+        run: |
+          $payload = @'
+                                  background=COLORS["accent"], borderwidth=0, thickness=7)
+                  self.root.option_add("*TCombobox*Listbox.background", COLORS["input"])
+                  self.root.option_add("*TCombobox*Listbox.foreground", COLORS["text"])
+
+              def label(self, parent, text="", size=10, color="text", bold=False, **options):
+                  return tk.Label(parent, text=text, bg=parent.cget("bg"), fg=COLORS[color],
+                                  font=("Microsoft YaHei UI", size, "bold" if bold else "normal"), **options)
+
+              def button(self, parent, text, command, primary=False, danger=False, **options):
+                  bg = COLORS["accent"] if primary else COLORS["hover"]
+                  fg = COLORS["bg"] if primary else COLORS["red"] if danger else COLORS["text"]
+                  padding = {"padx": 14, "pady": 8}
+                  padding.update(options)
+                  return tk.Button(parent, text=text, command=command, bg=bg, fg=fg,
+                                   activebackground="#83EFD6" if primary else COLORS["line"],
+                                   activeforeground=COLORS["bg"] if primary else COLORS["text"],
+                                   disabledforeground="#66748A", relief="flat", bd=0, cursor="hand2",
+                                   font=("Microsoft YaHei UI", 10, "bold" if primary else "normal"), **padding)
+
+              def card(self, parent):
+                  return tk.Frame(parent, bg=COLORS["card"], highlightbackground=COLORS["line"], highlightthickness=1)
+
+              def build_ui(self) -> None:
+                  side = tk.Frame(self.root, bg=COLORS["side"], width=190)
+                  side.pack(side="left", fill="y")
+                  side.pack_propagate(False)
+                  brand = tk.Frame(side, bg=COLORS["side"])
+                  brand.pack(fill="x", padx=22, pady=(30, 28))
+                  self.label(brand, "S /", 30, "accent", True).pack(anchor="w")
+                  self.label(brand, "SEND STUDIO", 13, bold=True).pack(anchor="w", pady=(3, 0))
+                  self.label(brand, "桌面演示工作台", 9, "muted").pack(anchor="w", pady=(5, 0))
+                  for text, command in [
+                      ("01    群发任务", lambda: self.message.focus_set()),
+                      ("02    导入名单", self.import_files),
+                      ("03    导出日志", self.export_logs),
+                  ]:
+                      self.button(side, text, command, anchor="w").pack(fill="x", padx=14, pady=4)
+                  note = tk.Frame(side, bg=COLORS["side"])
+                  note.pack(side="bottom", fill="x", padx=22, pady=26)
+                  self.label(note, "●  本地演示", 10, "accent", True).pack(anchor="w")
+                  self.label(note, "所有发送结果均为模拟。\n无需登录抖音账号。", 9, "muted", justify="left").pack(anchor="w", pady=(10, 14))
+                  self.label(note, f"WINDOWS  /  v{VERSION}", 8, "muted").pack(anchor="w")
+
+                  main = tk.Frame(self.root, bg=COLORS["bg"])
+                  main.pack(side="left", expand=True, fill="both", padx=24, pady=20)
+                  header = tk.Frame(main, bg=COLORS["bg"])
+                  header.pack(fill="x")
+                  self.label(header, "WORKSPACE / LOCAL DEMO", 9, "muted").pack(anchor="w")
+                  title_row = tk.Frame(header, bg=COLORS["bg"])
+                  title_row.pack(fill="x", pady=(4, 2))
+                  self.label(title_row, "抖音群发工作台", 23, bold=True).pack(side="left")
+                  self.label(title_row, "  ● 演示模式  ", 10, "accent", True).pack(side="right", pady=7)
+                  self.label(header, "导入名单，编辑内容，预览完整的群发模拟流程。", 10, "muted").pack(anchor="w")
+
+                  stats = tk.Frame(main, bg=COLORS["bg"])
+                  stats.pack(fill="x", pady=(16, 14))
+                  self.stat_vars = [tk.StringVar(value="0") for _ in range(4)]
+                  for i, (caption, color) in enumerate([("名单人数", "text"), ("已合并重复", "blue"),
+                                                        ("模拟完成", "accent"), ("本轮待处理", "amber")]):
+                      stats.columnconfigure(i, weight=1, uniform="stat")
+                      card = self.card(stats)
+                      card.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 5, 0 if i == 3 else 5))
+                      self.label(card, caption, 9, "muted").pack(anchor="w", padx=14, pady=(10, 0))
+                      self.label(card, size=23, color=color, bold=True, textvariable=self.stat_vars[i]).pack(anchor="w", padx=14, pady=(0, 9))
+
+                  body = tk.Frame(main, bg=COLORS["bg"])
+                  body.pack(fill="both", expand=True)
+                  body.columnconfigure(0, weight=6, minsize=395)
+                  body.columnconfigure(1, weight=5, minsize=340)
+                  body.rowconfigure(0, weight=1)
+                  list_card = self.card(body)
+                  list_card.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+                  list_card.columnconfigure(0, weight=1)
+                  list_card.rowconfigure(3, weight=1)
+                  list_header = tk.Frame(list_card, bg=COLORS["card"])
+                  list_header.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 10))
+                  self.label(list_header, "接收人名单", 12, bold=True).pack(side="left")
+                  self.import_button = self.button(list_header, "+ 导入名单", self.import_files, primary=True)
+                  self.import_button.pack(side="right")
+                  filters = tk.Frame(list_card, bg=COLORS["card"])
+                  filters.grid(row=1, column=0, sticky="ew", padx=14)
+                  self.search_entry = tk.Entry(filters, textvariable=self.search_var, bg=COLORS["input"],
+                                               fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat", width=15)
+                  self.search_entry.pack(side="left", fill="x", expand=True, ipady=7)
+                  self.source_combo = ttk.Combobox(filters, textvariable=self.source_var,
+                                                   values=["全部来源"], state="readonly", width=9)
+                  self.source_combo.pack(side="left", padx=(8, 0))
+                  self.label(list_card, "搜索昵称 / 抖音号  ·  Ctrl+O 导入  ·  支持多选", 8, "muted").grid(
+                      row=2, column=0, sticky="w", padx=14, pady=(5, 8))
+                  table_frame = tk.Frame(list_card, bg=COLORS["input"])
+                  table_frame.grid(row=3, column=0, sticky="nsew", padx=14)
+                  self.table = ttk.Treeview(table_frame, columns=("name", "id", "source", "status"),
+                                            show="headings", selectmode="extended", height=8)
+                  for column, caption, width, minimum in [
+                      ("name", "昵称", 110, 70), ("id", "抖音号", 120, 80),
+                      ("source", "来源", 72, 48), ("status", "状态", 78, 65),
+                  ]:
+                      self.table.heading(column, text=caption)
+                      self.table.column(column, width=width, minwidth=minimum, stretch=True)
+                  yscroll = ttk.Scrollbar(table_frame, command=self.table.yview)
+                  self.table.configure(yscrollcommand=yscroll.set)
+                  yscroll.pack(side="right", fill="y")
+                  self.table.pack(side="left", fill="both", expand=True)
+                  self.table.tag_configure("done", foreground=COLORS["accent"])
+                  self.table.tag_configure("stopped", foreground=COLORS["muted"])
+                  self.table.bind("<<TreeviewSelect>>", lambda _event: self.update_preview())
+                  bottom = tk.Frame(list_card, bg=COLORS["card"])
+                  bottom.grid(row=4, column=0, sticky="ew", padx=14, pady=10)
+                  self.visible_var = tk.StringVar(value="显示 0 / 0 人")
+                  self.label(bottom, size=9, color="muted", textvariable=self.visible_var).pack(side="left")
+                  self.sample_button = self.button(bottom, "示例", self.load_sample)
+                  self.sample_button.pack(side="right", padx=(5, 0))
+                  self.clear_button = self.button(bottom, "清空", self.clear_list, danger=True)
+                  self.clear_button.pack(side="right")
+
+                  compose = self.card(body)
+                  compose.grid(row=0, column=1, sticky="nsew")
+                  self.label(compose, "群发内容", 12, bold=True).pack(anchor="w", padx=16, pady=(14, 4))
+                  self.label(compose, "支持 {昵称}、{抖音号} 个性化变量", 9, "muted").pack(anchor="w", padx=16, pady=(0, 8))
+                  self.message = tk.Text(compose, height=4, width=1, wrap="word", undo=True, bg=COLORS["input"],
+                                         fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat",
+                                         padx=10, pady=10, font=("Microsoft YaHei UI", 10))
+                  self.message.pack(fill="x", padx=16)
+                  self.message.insert("1.0", "你好，{昵称}！这是一条群发界面演示消息。")
+                  self.message.edit_modified(False)
+                  self.message.bind("<<Modified>>", self.message_changed)
+                  self.counter_label = self.label(compose, size=8, color="muted", textvariable=self.count_var)
+                  self.counter_label.pack(anchor="e", padx=16, pady=(4, 7))
+                  self.label(compose, "消息预览", 10, bold=True).pack(anchor="w", padx=16)
+                  self.label(compose, size=8, color="muted", textvariable=self.preview_target).pack(anchor="w", padx=16, pady=(2, 4))
+                  self.preview = tk.Text(compose, height=2, width=1, wrap="word", bg=COLORS["input"], fg=COLORS["muted"],
+                                         relief="flat", padx=10, pady=8, state="disabled", font=("Microsoft YaHei UI", 9))
+                  self.preview.pack(fill="x", padx=16)
+                  settings = tk.Frame(compose, bg=COLORS["card"])
+                  settings.pack(fill="x", padx=16, pady=(10, 4))
+                  self.label(settings, "模拟间隔", 9, "muted").pack(side="left")
+                  self.interval_spin = tk.Spinbox(settings, from_=0.1, to=10, increment=0.1, width=4,
+                                                  textvariable=self.interval_var, bg=COLORS["input"], fg=COLORS["text"],
+                                                  buttonbackground=COLORS["line"], insertbackground=COLORS["text"], relief="flat")
+                  self.interval_spin.pack(side="left", padx=(8, 4), ipady=3)
+                  self.label(settings, "秒 / 人", 9, "muted").pack(side="left")
+                  self.selection_check = tk.Checkbutton(compose, text="仅模拟选中的接收人（默认处理全部名单）",
+                                                         variable=self.selected_only, bg=COLORS["card"], fg=COLORS["muted"],
+                                                         activebackground=COLORS["card"], activeforeground=COLORS["text"],
+                                                         selectcolor=COLORS["input"], font=("Microsoft YaHei UI", 9))
+                  self.selection_check.pack(anchor="w", padx=12)
+                  actions = tk.Frame(compose, bg=COLORS["card"])
+                  actions.pack(fill="x", padx=16, pady=(8, 8))
+                  self.start_button = self.button(actions, "开始群发（模拟）", self.start, primary=True)
+                  self.start_button.pack(side="left", fill="x", expand=True)
+                  self.pause_button = self.button(actions, "暂停", self.toggle_pause, state="disabled")
+                  self.pause_button.pack(side="left", padx=7)
+                  self.stop_button = self.button(actions, "停止", self.stop, danger=True, state="disabled")
+                  self.stop_button.pack(side="left")
+                  ttk.Progressbar(compose, variable=self.progress_var, maximum=100).pack(fill="x", padx=16, pady=(0, 6))
+                  self.label(compose, size=8, color="muted", textvariable=self.progress_text).pack(anchor="w", padx=16, pady=(0, 10))
+
+                  log_card = self.card(main)
+                  log_card.pack(fill="x", pady=(14, 0))
+                  log_top = tk.Frame(log_card, bg=COLORS["card"])
+                  log_top.pack(fill="x", padx=14, pady=(8, 4))
+                  self.label(log_top, "运行日志", 10, bold=True).pack(side="left")
+                  self.label(log_top, "DEMO ONLY", 8, "accent").pack(side="left", padx=12)
+                  self.button(log_top, "导出 CSV", self.export_logs, pady=3).pack(side="right")
+                  self.log_text = tk.Text(log_card, height=2, width=1, wrap="word", bg=COLORS["card"], fg=COLORS["muted"],
+                                          relief="flat", state="disabled", font=("Consolas", 9), padx=14, pady=4)
+                  self.log_text.pack(fill="x", pady=(0, 8))
+                  self.label(main, size=9, color="muted", textvariable=self.toast_var, anchor="w").pack(fill="x", pady=(8, 0))
+                  self.update_preview()
+
+              def search_changed(self, *_args) -> None:
+                  if self.search_timer is not None:
+                      self.root.after_cancel(self.search_timer)
+                  self.search_timer = self.root.after(180, self.refresh_table)
+
+              def refresh_table(self) -> None:
+                  self.search_timer = None
+                  selected = set(self.table.selection())
+                  children = self.table.get_children()
+                  if children:
+                      self.table.delete(*children)
+                  query = self.search_var.get().strip().casefold()
+                  group = self.source_var.get()
+                  visible = []
+                  for recipient in self.records:
+                      if query and query not in (recipient.nickname + " " + recipient.douyin_id).casefold():
           '@
-          [IO.File]::WriteAllBytes($langPatch, [Convert]::FromBase64String(($langPatchBase64 -replace '\s', '')))
-          git -C "$env:BUILD_ROOT\tdesktop\Telegram\codegen" apply --check $langPatch
-          git -C "$env:BUILD_ROOT\tdesktop\Telegram\codegen" apply $langPatch
-          git -C "$env:BUILD_ROOT\tdesktop\Telegram\codegen" diff --check
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Find Visual Studio
-        shell: pwsh
+      - name: Write embedded app.py (3/4)
         run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $vs) {
-            throw "Visual Studio C++ tools were not found."
-          }
-          $devcmd = "$vs\VC\Auxiliary\Build\vcvars64.bat"
-          "VSINSTALLPATH=$vs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "VSDEVCMD=$devcmd" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $payload = @'
+                          continue
+                      if group != "全部来源" and group not in recipient.sources:
+                          continue
+                      status = self.session.statuses.get(recipient.douyin_id, "待开始")
+                      tag = "done" if status == "模拟完成" else "stopped" if status == "已停止" else ""
+                      self.table.insert("", "end", iid=recipient.douyin_id,
+                                        values=(recipient.nickname or "—", recipient.douyin_id,
+                                                " / ".join(recipient.sources), status), tags=(tag,))
+                      visible.append(recipient.douyin_id)
+                  remaining_selection = selected.intersection(visible)
+                  if remaining_selection:
+                      self.table.selection_set(*remaining_selection)
+                  self.visible_var.set(f"显示 {len(visible):,} / {len(self.records):,} 人")
+                  self.update_preview()
 
-      - name: Install ATL and MFC for the v14.44 toolset
-        shell: pwsh
+              def import_files(self) -> None:
+                  if self.session.active:
+                      return
+                  paths = filedialog.askopenfilenames(title="导入接收人名单（支持多选）", filetypes=[
+                      ("名单文件", "*.txt *.csv *.tsv"), ("文本文件", "*.txt"), ("所有文件", "*.*")])
+                  if not paths:
+                      return
+                  added = repeated = skipped = 0
+                  errors = []
+                  for filename in paths:
+                      path = Path(filename)
+                      try:
+                          result = read_list(path)
+                          new, duplicate = merge_records(self.records, result.records)
+                          added += new
+                          repeated += duplicate + result.duplicates
+                          skipped += result.skipped
+                      except (OSError, ValueError, UnicodeError) as exc:
+                          errors.append(f"{path.name}：{exc}")
+                  self.import_duplicates += repeated
+                  groups = list(dict.fromkeys(s for r in self.records for s in r.sources))
+                  self.source_combo.configure(values=["全部来源", *groups])
+                  self.source_var.set("全部来源")
+                  self.search_var.set("")
+                  self.refresh_table()
+                  self.update_stats()
+                  summary = f"导入完成：新增 {added} 人，合并重复 {repeated} 条，跳过无效项 {skipped} 条。"
+                  self.toast_var.set(summary)
+                  self.log("导入", summary)
+                  if errors:
+                      messagebox.showwarning("部分文件未导入", "\n".join(errors), parent=self.root)
+
+              def load_sample(self) -> None:
+                  if self.session.active:
+                      return
+                  sample = [Recipient(f"demo_{i:03d}", f"演示用户 {i:02d}", ["示例名单"]) for i in range(1, 7)]
+                  new, duplicate = merge_records(self.records, sample)
+                  self.import_duplicates += duplicate
+                  groups = list(dict.fromkeys(s for r in self.records for s in r.sources))
+                  self.source_combo.configure(values=["全部来源", *groups])
+                  self.refresh_table()
+                  self.update_stats()
+                  self.toast_var.set(f"已加入 {new} 位虚构演示用户。可直接点击开始群发。")
+                  self.log("导入", f"载入虚构示例名单，新增 {new} 人。")
+
+              def clear_list(self) -> None:
+                  if self.session.active or not self.records:
+                      return
+                  if not messagebox.askyesno("清空名单", "确定清空当前名单和任务状态？原始文件会保留。", parent=self.root):
+                      return
+                  self.records.clear()
+                  self.session = Session()
+                  self.import_duplicates = 0
+                  self.source_combo.configure(values=["全部来源"])
+                  self.source_var.set("全部来源")
+                  self.refresh_table()
+                  self.update_stats()
+                  self.toast_var.set("名单已清空。")
+                  self.log("名单", "已清空当前名单。")
+
+              def message_changed(self, _event=None) -> None:
+                  if self.message.edit_modified():
+                      self.message.edit_modified(False)
+                      self.update_preview()
+
+              def update_preview(self) -> None:
+                  template = self.message.get("1.0", "end-1c")
+                  self.count_var.set(f"{len(template):,} / {MAX_MESSAGE} 字")
+                  self.counter_label.configure(fg=COLORS["red"] if len(template) > MAX_MESSAGE else COLORS["muted"])
+                  selection = self.table.selection()
+                  record = next((r for r in self.records if selection and r.douyin_id == selection[0]), None)
+                  if record is None and self.records:
+                      record = self.records[0]
+                  if record is None:
+                      record = Recipient("demo_001", "演示用户", ["示例"])
+                      self.preview_target.set("示例接收人 · 尚未导入名单")
+                  else:
+                      self.preview_target.set(f"接收人：{record.nickname or record.douyin_id}  ·  {record.douyin_id}")
+                  self.preview.configure(state="normal")
+                  self.preview.delete("1.0", "end")
+                  self.preview.insert("1.0", render_message(template, record))
+                  self.preview.configure(state="disabled")
+
+              def set_busy(self, busy: bool) -> None:
+                  for widget in [self.import_button, self.sample_button, self.clear_button, self.start_button,
+                                 self.interval_spin, self.selection_check]:
+                      widget.configure(state="disabled" if busy else "normal")
+                  self.message.configure(state="disabled" if busy else "normal")
+                  self.pause_button.configure(state="normal" if busy else "disabled")
+                  self.stop_button.configure(state="normal" if busy else "disabled")
+                  self.pause_button.configure(text="继续" if self.session.state == "paused" else "暂停")
+
+              def start(self) -> None:
+                  try:
+                      interval = float(self.interval_var.get())
+                      if not math.isfinite(interval) or not 0.1 <= interval <= 10:
+                          raise ValueError("模拟间隔请填写 0.1 至 10 秒之间的数字。")
+                      targets = self.records
+                      if self.selected_only.get():
+                          selected = set(self.table.selection())
+                          targets = [r for r in self.records if r.douyin_id in selected]
+                      self.session.start(targets, self.message.get("1.0", "end-1c"))
+                  except ValueError as exc:
+                      messagebox.showinfo("请检查任务设置", str(exc), parent=self.root)
+                      return
+                  self.interval_ms = round(interval * 1000)
+                  self.set_busy(True)
+                  self.refresh_table()
+                  self.log("开始", f"开始模拟 {len(targets)} 位接收人，间隔 {interval:g} 秒 / 人。")
+                  self.toast_var.set("正在模拟群发 · 所有结果仅用于界面演示")
+                  self.update_stats()
+                  self.schedule_tick()
+
+              def schedule_tick(self) -> None:
+                  self.cancel_tick()
+                  if self.session.state == "running":
+                      self.timer = self.root.after(self.interval_ms, self.tick)
+
+              def cancel_tick(self) -> None:
+                  if self.timer is not None:
+                      self.root.after_cancel(self.timer)
+                      self.timer = None
+
+              def tick(self) -> None:
+                  self.timer = None
+                  recipient = self.session.tick()
+                  if recipient is None:
+                      return
+                  if self.table.exists(recipient.douyin_id):
+                      self.table.set(recipient.douyin_id, "status", "模拟完成")
+                      self.table.item(recipient.douyin_id, tags=("done",))
+                  self.log("模拟", f"{recipient.nickname or recipient.douyin_id} ({recipient.douyin_id}) · 模拟完成")
+                  self.update_stats()
+                  if self.session.state == "completed":
+                      self.set_busy(False)
+                      self.log("完成", f"本轮模拟完成，共 {self.session.cursor} 人。")
+                      self.toast_var.set("本轮模拟已完成 · 可导出日志或开始新一轮")
+                  else:
+                      self.schedule_tick()
+
+              def toggle_pause(self) -> None:
+                  if self.session.state == "running":
+                      self.cancel_tick()
+                      self.session.pause()
+                      self.log("暂停", "任务已暂停，点击“继续”接着处理。")
+                      self.toast_var.set("已暂停 · 当前进度保留")
+                  elif self.session.state == "paused":
+                      self.session.resume()
+                      self.schedule_tick()
+                      self.log("继续", "继续本轮模拟任务。")
+                      self.toast_var.set("正在模拟群发 · 所有结果仅用于界面演示")
+                  self.pause_button.configure(text="继续" if self.session.state == "paused" else "暂停")
+                  self.update_stats()
+
+              def stop(self) -> None:
+                  if not self.session.active:
+                      return
+                  self.cancel_tick()
+                  self.session.stop()
+                  self.set_busy(False)
+                  self.refresh_table()
+                  self.update_stats()
+                  self.log("停止", f"任务已停止，本轮已模拟 {self.session.cursor} / {len(self.session.queue)} 人。")
+                  self.toast_var.set("任务已停止 · 再次开始会创建新一轮模拟")
+
+              def update_stats(self) -> None:
+                  for variable, value in zip(self.stat_vars, [len(self.records), self.import_duplicates,
+                                                              self.session.cursor, self.session.remaining]):
+                      variable.set(f"{value:,}")
+                  total = len(self.session.queue)
+                  percent = self.session.cursor / total * 100 if total else 0
+                  self.progress_var.set(percent)
+                  states = {"idle": "等待开始", "running": "模拟进行中", "paused": "已暂停",
+                            "completed": "模拟完成", "stopped": "已停止"}
+                  if total:
+                      seconds = int(self.session.elapsed)
+                      remaining = self.session.remaining * getattr(self, "interval_ms", 800) / 1000
+                      self.progress_text.set(f"{states[self.session.state]}  {self.session.cursor} / {total} 人  ·  {percent:.0f}%\n"
+                                             f"用时 {seconds // 60:02d}:{seconds % 60:02d}  ·  剩余模拟约 {remaining:.0f} 秒")
+                  else:
+                      self.progress_text.set("等待开始 · 默认处理全部名单，筛选仅影响列表显示")
+
+              def log(self, category: str, text: str) -> None:
+                  stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                  self.logs.append((stamp, category, text))
+                  self.log_text.configure(state="normal")
+                  self.log_text.insert("end", f"{stamp[11:]}  [{category}]  {text}\n")
+                  if len(self.logs) > 400:
+                      self.log_text.delete("1.0", "2.0")
+                  self.log_text.see("end")
+                  self.log_text.configure(state="disabled")
+
+              def export_logs(self) -> None:
+                  filename = filedialog.asksaveasfilename(title="导出模拟日志", defaultextension=".csv",
+                                                         initialfile=f"模拟群发日志_{datetime.now():%Y%m%d_%H%M%S}.csv",
+                                                         filetypes=[("CSV 日志", "*.csv")])
+                  if not filename:
+                      return
+                  try:
+                      with open(filename, "w", encoding="utf-8-sig", newline="") as handle:
+                          writer = csv.writer(handle)
+                          writer.writerow(["模式", "时间", "事件", "日志内容"])
+                          for stamp, category, text in self.logs:
+                              writer.writerow(["本地演示 / 模拟结果", stamp, category, csv_cell(text)])
+                  except OSError as exc:
+                      messagebox.showerror("导出失败", str(exc), parent=self.root)
+                      return
+                  self.toast_var.set(f"模拟日志已导出：{Path(filename).name}")
+
+              def close(self) -> None:
+                  if self.session.active and not messagebox.askyesno("退出演示", "当前模拟任务尚未结束，确定退出？", parent=self.root):
+                      return
+                  self.cancel_tick()
+                  self.root.destroy()
+
+
+          def smoke_test(report_path: Path) -> None:
+              """Run on the Windows builder, from both source and the packaged EXE."""
+              root = tk.Tk()
+              root.withdraw()
+              try:
+                  app = DemoApp(root)
+                  app.load_sample()
+                  root.update_idletasks()
+                  assert len(app.table.get_children()) == 6
+                  app.start()
+                  app.cancel_tick()
+                  app.tick()
+                  app.cancel_tick()
+                  assert app.session.cursor == 1
+                  app.toggle_pause()
+                  assert app.session.state == "paused" and app.timer is None
+                  app.toggle_pause()
+                  app.cancel_tick()
+                  assert app.session.state == "running"
+                  app.stop()
+                  assert app.session.state == "stopped" and app.session.cursor == 1
+                  app.start()
+                  app.cancel_tick()
+                  for _ in range(6):
+                      app.tick()
+                      app.cancel_tick()
+                  assert app.session.state == "completed" and app.session.cursor == 6
+                  assert app.table.set("demo_001", "status") == "模拟完成"
+                  app.search_var.set("demo_003")
+                  app.refresh_table()
+                  assert len(app.table.get_children()) == 1
+                  report_path.write_text(json.dumps({"ok": True, "mode": "local_demo", "version": VERSION,
+                                                     "tk_version": root.tk.call("info", "patchlevel"),
+                                                     "checks": ["widgets", "sample_import", "start", "pause", "resume", "stop", "complete", "filter"]},
+                                                    ensure_ascii=False, indent=2), encoding="utf-8")
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (4/4)
         run: |
-          $setup = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
-          $arguments = @(
-            "modify"
-            "--installPath `"$env:VSINSTALLPATH`""
-            "--add Microsoft.VisualStudio.Component.VC.14.44.17.14.ATL"
-            "--add Microsoft.VisualStudio.Component.VC.14.44.17.14.MFC"
-            "--quiet"
-            "--norestart"
-            "--nocache"
-          )
-          $process = Start-Process -FilePath $setup -ArgumentList $arguments -Wait -PassThru
-          $exitCode = $process.ExitCode
-          if ($exitCode -notin @(0, 3010)) {
-            throw "Visual Studio component installation failed with exit code $exitCode."
-          }
-          $toolset = Get-ChildItem "$env:VSINSTALLPATH\VC\Tools\MSVC" -Directory |
-            Where-Object Name -Like "14.44.*" |
-            Sort-Object Name -Descending |
-            Select-Object -First 1
-          if (-not $toolset -or -not (Test-Path "$($toolset.FullName)\atlmfc\include\atlbase.h")) {
-            throw "The v14.44 ATL/MFC headers were not installed."
-          }
-          Write-Host "Using ATL/MFC from $($toolset.FullName)."
+          $payload = @'
+              finally:
+                  root.destroy()
 
-      - name: Prepare libraries and build AyuGram
-        shell: cmd
-        env:
-          CMAKE_BUILD_PARALLEL_LEVEL: 4
+
+          def main() -> int:
+              # Delay Tk loading so importer/queue tests also run on headless systems.
+              global tk, filedialog, messagebox, ttk
+              parser = argparse.ArgumentParser(description=APP_NAME)
+              parser.add_argument("--smoke-test", type=Path, metavar="REPORT_JSON")
+              args = parser.parse_args()
+              import tkinter as tk
+              from tkinter import filedialog, messagebox, ttk
+              if sys.platform == "win32":
+                  try:
+                      import ctypes
+                      ctypes.windll.user32.SetProcessDPIAware()
+                  except (AttributeError, OSError):
+                      pass
+              if args.smoke_test:
+                  smoke_test(args.smoke_test)
+                  return 0
+              root = tk.Tk()
+              DemoApp(root)
+              root.mainloop()
+              return 0
+
+
+          if __name__ == "__main__":
+              try:
+                  raise SystemExit(main())
+              except Exception:
+                  detail = traceback.format_exc()
+                  # A windowed EXE has no console. Keep a startup error report in the user's TEMP.
+                  log_path = Path(os.environ.get("TEMP", str(Path.cwd()))) / "douyin-demo-error.log"
+                  try:
+                      log_path.write_text(detail, encoding="utf-8")
+                  except OSError:
+                      pass
+                  if sys.stderr is not None:
+                      sys.stderr.write(detail)
+                  if "--smoke-test" not in sys.argv:
+                      try:
+                          messagebox.showerror("演示程序启动失败", f"请将以下错误反馈给维护者：\n\n{detail[-1500:]}\n\n错误日志：{log_path}")
+                      except Exception:
+                          pass
+                  raise SystemExit(1)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (1/1)
         run: |
-          call "%VSDEVCMD%" -vcvars_ver=14.44
-          if errorlevel 1 exit /b 1
-          cd /d "%BUILD_ROOT%"
-          call tdesktop\Telegram\build\prepare\win.bat
-          if errorlevel 1 exit /b 1
-          cd /d "%BUILD_ROOT%\tdesktop\Telegram"
-          where ninja
-          if errorlevel 1 exit /b 1
-          set CMAKE_BUILD_PARALLEL_LEVEL=2
-          set _CL_=/MP1
-          rem Omit release debug symbols so the final link does not exhaust runner memory.
-          call configure.bat "-GNinja Multi-Config" -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT:STRING= -D TDESKTOP_API_ID=2040 -D TDESKTOP_API_HASH=b18441a1ff607e10a989891a5462e627
-          if errorlevel 1 exit /b 1
-          cmake --build ..\out --config Release --target Telegram --parallel 2
-          if errorlevel 1 exit /b 1
-          if not exist "%BUILD_ROOT%\tdesktop\out\Release\AyuGram.exe" exit /b 1
+          $payload = @'
+          import tempfile
+          import unittest
+          from pathlib import Path
 
-      - name: Create the portable ZIP
-        shell: pwsh
+          from app import (Recipient, Session, csv_cell, decode_file, merge_records,
+                           parse_text, read_list, render_message, valid_id)
+
+
+          class ImportTests(unittest.TestCase):
+              def test_supplied_txt_formats(self):
+                  text = ("妹妹 昵称 示例用户 A  女19岁  抖音号 001234  资料位置 江苏 镇江  IP属地 江苏\n"
+                          "昵称 Example Display Name  空  抖音号 user.name  评论次数 1  （未知1次）\n"
+                          "昵称 示例餐馆  二号门店  男  抖音号 demo_003  资料位置 空\n"
+                          "好朋友 昵称 昵称带空格 A B  女  抖音号 AbC_999  评论次数 5\n")
+                  result = parse_text(text, "评论区")
+                  self.assertEqual([r.douyin_id for r in result.records], ["001234", "user.name", "demo_003", "AbC_999"])
+                  self.assertEqual([r.nickname for r in result.records], ["示例用户 A", "Example Display Name", "示例餐馆  二号门店", "昵称带空格 A B"])
+                  self.assertEqual(result.parsed, 4)
+                  self.assertEqual(result.skipped, 0)
+
+              def test_csv_with_quoted_name_and_headers(self):
+                  result = parse_text('抖音号,昵称,来源\n001234,"名字,含逗号",关注 / 粉丝\nabc,用户,评论区\n')
+                  self.assertEqual(result.records[0].nickname, "名字,含逗号")
+                  self.assertEqual(result.records[0].sources, ["关注", "粉丝"])
+                  self.assertEqual(result.records[0].douyin_id, "001234")
+                  self.assertEqual(len(result.records), 2)
+
+              def test_tsv_and_chinese_comma(self):
+                  for delimiter in ("\t", "，"):
+                      result = parse_text(f"抖音ID{delimiter}昵称\nhello_01{delimiter}张三")
+                      self.assertEqual(result.records[0].nickname, "张三")
+
+              def test_plain_ids_invalid_lines_and_exact_deduplication(self):
+                  result = parse_text("# 注释\n@00123\n00123,abc;def\n非法ID\n..\n昵称 信息不完整\n")
+                  self.assertEqual([r.douyin_id for r in result.records], ["00123", "abc", "def"])
+                  self.assertEqual(result.duplicates, 1)
+                  self.assertEqual(result.skipped, 3)
+
+              def test_merge_sources_and_preserve_id_strings(self):
+                  records = [Recipient("00001", "", ["关注"])]
+                  added, repeated = merge_records(records, [Recipient("00001", "张三", ["粉丝"]),
+                                                            Recipient("1.2345", "李四", ["评论区"])])
+                  self.assertEqual((added, repeated), (1, 1))
+                  self.assertEqual(records[0].nickname, "张三")
+                  self.assertEqual(records[0].sources, ["关注", "粉丝"])
+                  self.assertEqual(records[1].douyin_id, "1.2345")
+
+              def test_encodings(self):
+                  for encoding in ("utf-8-sig", "utf-16", "utf-32", "gb18030"):
+                      text = "昵称 张三  男  抖音号 001234  资料位置 空"
+                      self.assertEqual(decode_file(text.encode(encoding)), text)
+
+              def test_file_source(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "@0000_共同好友__26人(2).txt"
+                      path.write_text("00123", encoding="utf-8")
+                      result = read_list(path)
+                      self.assertEqual(result.records[0].sources, ["共同好友"])
+
+              def test_empty_and_invalid(self):
+                  self.assertEqual(parse_text("").records, [])
+                  for invalid in ("", "..", "https://example.com", "a/b", "a b", "x" * 65):
+                      self.assertFalse(valid_id(invalid))
+                  for value in ("0001", "name.name", "abc_DEF", "id-123"):
+                      self.assertTrue(valid_id(value))
+
+
+          class SimulationTests(unittest.TestCase):
+              def setUp(self):
+                  self.records = [Recipient("demo_001", "张三"), Recipient("demo_002", "李四")]
+                  self.session = Session()
+
+              def test_pause_resume_finish_and_restart(self):
+                  self.session.start(self.records, "你好，{昵称}")
+                  self.assertEqual(self.session.tick().douyin_id, "demo_001")
+                  self.session.pause()
+                  elapsed = self.session.elapsed
+                  self.assertIsNone(self.session.tick())
+                  self.assertEqual(self.session.cursor, 1)
+                  self.assertEqual(self.session.elapsed, elapsed)
+                  self.session.resume()
+                  self.assertEqual(self.session.tick().douyin_id, "demo_002")
+                  self.assertEqual(self.session.state, "completed")
+                  self.assertEqual(self.session.remaining, 0)
+                  self.assertIsNone(self.session.tick())
+                  self.session.start(self.records, "再次演示")
+                  self.assertEqual(self.session.cursor, 0)
+                  self.assertEqual(self.session.statuses["demo_001"], "等待模拟")
+
+              def test_stop_while_paused(self):
+                  self.session.start(self.records, "演示")
+                  self.session.tick()
+                  self.session.pause()
+                  self.session.stop()
+                  self.assertEqual(self.session.state, "stopped")
+                  self.assertEqual(self.session.statuses, {"demo_001": "模拟完成", "demo_002": "已停止"})
+                  self.assertIsNone(self.session.tick())
+
+              def test_validation(self):
+                  for records, message in (([], "演示"), (self.records, "  "), (self.records, "a" * 2001)):
+                      with self.assertRaises(ValueError):
+                          self.session.start(records, message)
+                  self.session.start(self.records, "演示")
+                  with self.assertRaises(ValueError):
+                      self.session.start(self.records, "不允许重入")
+
+              def test_template_substitutes_only_supported_variables(self):
+                  self.assertEqual(render_message("{昵称}/{抖音号}/{普通花括号}", self.records[0]), "张三/demo_001/{普通花括号}")
+                  self.assertEqual(render_message("你好{昵称}", Recipient("00001")), "你好00001")
+
+              def test_csv_text_is_safe_to_open_in_spreadsheet(self):
+                  self.assertEqual(csv_cell("=1+1"), "'=1+1")
+                  self.assertEqual(csv_cell("普通文本"), "普通文本")
+
+
+          if __name__ == "__main__":
+              unittest.main()
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded README.md (1/1)
         run: |
-          $output = "$env:GITHUB_WORKSPACE\output"
-          $official = "$output\official.zip"
-          $package = "$output\package"
-          New-Item -ItemType Directory -Force -Path $output | Out-Null
-          Invoke-WebRequest -Uri $env:OFFICIAL_ZIP_URL -OutFile $official
-          $actual = (Get-FileHash $official -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $env:OFFICIAL_ZIP_SHA256) {
-            throw "Official ZIP checksum mismatch: $actual"
+          $payload = @'
+          # 抖音群发工作台 · Windows 演示版
+
+          深色中文桌面界面，支持导入接收人、编辑消息、模拟群发、暂停、继续、停止和导出日志。
+          **所有发送行为和结果均为本地模拟**，无需抖音登录，无需 Cookie 或 API 密钥。
+
+          ## 只上传一个 YML 即可构建
+
+          1. 打开自己的 GitHub 仓库，在**默认分支**选择 **Add file → Create new file**。
+          2. 文件名填写 `.github/workflows/build-windows.yml`。
+          3. 将交付的 `build-windows.yml` 全文粘贴进去，提交保存。文件中已经包含完整程序源码和测试，不需要再上传 Python 源码、名单或安装包。
+          4. 提交此工作流文件后会自动构建。也可打开 **Actions → Build Windows Demo → Run workflow → Run workflow** 手动运行。
+          5. 构建成功后，在该次运行页面底部的 **Artifacts** 下载 `DouyinDemo-Windows-x64`。
+          6. 解压后双击 `DouyinDemo.exe`。目标环境为 Windows 10 / 11 64 位，无需安装 Python。
+
+          提交或修改 `.github/workflows/build-windows.yml` 后会自动构建，同时保留手动触发；不需要配置任何 Secrets。
+          工作流使用 Windows 环境构建，并依次执行解析/队列测试、源码 GUI 检查、打包后的 EXE GUI 检查。
+          若某项检查失败，该次运行不会发布 EXE 下载产物。`smoke-source.json` 和 `smoke-exe.json` 记录成功检查结果。
+
+          ## 导入你的四份名单
+
+          启动 EXE 后点击“导入名单”，按住 Ctrl 可同时选择上传的四份 TXT。
+          程序直接从“抖音号”字段取 ID，并提取昵称；会识别共同好友、关注、粉丝和评论区来源。
+
+          本次四份附件共 282 条记录，按抖音号**原样精确匹配**后有 225 个不同 ID、57 条重复。
+          也可以导入单独交付的 `导入名单_225人.csv`。真实名单不嵌入构建工作流和源码压缩包。
+          若导入原始四份 TXT，会显示“已合并重复 57”；若导入已去重 CSV，则显示“已合并重复 0”。
+
+          支持 UTF-8、UTF-8 BOM、带 BOM 的 UTF-16 / UTF-32 和 GB18030 编码。
+          支持下列格式，ID 按文本保留，包含前导零或小数点的 ID 不会被转成数值：
+
+          ```text
+          昵称 演示用户  空  抖音号 demo_001  资料位置 空  IP属地 空
+          ```
+
+          ```text
+          demo_001
+          demo_002
+          ```
+
+          ```csv
+          抖音号,昵称,来源
+          demo_001,演示用户甲,示例名单
+          demo_002,演示用户乙,示例名单
+          ```
+
+          单个文件上限 5 MB，当前名单最多 20,000 人。导入为追加模式，重复 ID 合并来源和缺失昵称。
+          ID 大小写保持原样；不同大小写不会被自动合并。TXT 中无法识别的项目会计入跳过数量。
+
+          ## 界面细节
+
+          - 昵称 / 抖音号搜索、来源筛选、批量选中。
+          - 消息支持 `{昵称}`、`{抖音号}`，右侧预览会替换为对应接收人的信息。
+          - 消息上限 2,000 字，模拟间隔可填 0.1–10 秒 / 人。
+          - 默认模拟全部已导入名单；搜索和来源筛选只影响显示。勾选“仅模拟选中”后，才限定为表格中选中的人。
+          - 任务开始后锁定名单和编辑器；暂停后可继续，停止后保留本轮状态，再次开始创建新一轮。
+          - 实时进度、用时、本轮待处理数量、模拟日志；日志导出为带 BOM 的 UTF-8 CSV。
+          - 点击“示例”可载入六位虚构用户，便于演示界面。
+          - 名单和群发内容只在当前窗口内存中保存，关闭后清除；仅手动导出日志会写出所选文件。
+          - 这是独立的交互原型，界面和日志持续标注“演示 / 模拟”。
+
+          ## 本地运行与构建
+
+          安装包含 Tkinter 的 Python 3.12 后：
+
+          ```powershell
+          python app.py
+          python -m unittest -v
+          python app.py --smoke-test smoke-source.json
+          python -m pip install PyInstaller==6.22.3
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --name DouyinDemo app.py
+          ```
+
+          可直接运行 `build_windows.bat`。输出位于 `dist/DouyinDemo.exe`。
+          本地修改源码后，运行 `python make_workflow.py` 可重新生成包含最新源码的独立工作流。
+          若缺少 Tk/Tcl 或程序启动失败，错误信息会写到用户 TEMP 目录中的 `douyin-demo-error.log`。
+
+          ## 当前验证范围
+
+          交付前已在当前环境执行名单解析和任务队列逻辑测试，并检查 YML 与内嵌源码一致性。
+          当前环境没有 Windows，Windows GUI 和 EXE 检查会在你手动运行 GitHub Actions 后实际执行。
+          当前交付物是源码与编译配置；EXE 由该工作流成功运行后生成。
+
+          ## 官方参考
+
+          - [GitHub 手动运行工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+          - [actions/setup-python](https://github.com/actions/setup-python)
+          - [actions/upload-artifact](https://github.com/actions/upload-artifact)
+          - [PyInstaller 用法](https://pyinstaller.org/en/stable/usage.html)
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD 'README.md'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Test list parsing and simulation queue
+        run: |
+          python -m unittest -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check Windows GUI from source
+        run: |
+          python app.py --smoke-test smoke-source.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path smoke-source.json)) { throw 'Source GUI smoke report missing' }
+
+      - name: Install pinned build dependency
+        run: |
+          python -m pip install PyInstaller==6.22.3
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build standalone Windows EXE
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --name DouyinDemo app.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check packaged EXE and prepare download
+        run: |
+          $exe = (Resolve-Path 'dist/DouyinDemo.exe').Path
+          $report = Join-Path $PWD 'smoke-exe.json'
+          $process = Start-Process -FilePath $exe -ArgumentList @('--smoke-test', ('"' + $report + '"')) -PassThru
+          if (-not $process.WaitForExit(90000)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            throw 'Packaged EXE startup timed out'
           }
-          Expand-Archive -Path $official -DestinationPath $package
-          Copy-Item "$env:BUILD_ROOT\tdesktop\out\Release\AyuGram.exe" "$package\AyuGram.exe" -Force
-          @"
-          AyuGram v7.0.9 定制版
+          $process.Refresh()
+          if ($process.ExitCode -ne 0) { throw "Packaged EXE failed: $($process.ExitCode)" }
+          if (-not (Test-Path $report)) { throw 'EXE GUI smoke report missing' }
+          $result = Get-Content $report -Raw -Encoding utf8 | ConvertFrom-Json
+          if ($result.ok -ne $true) { throw 'EXE GUI smoke check failed' }
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item $exe 'release/DouyinDemo.exe'
+          Copy-Item README.md 'release/README.md'
+          Copy-Item smoke-source.json,smoke-exe.json -Destination release
+          $hash = (Get-FileHash 'release/DouyinDemo.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path $PWD 'release/SHA256SUMS.txt'), "$hash  DouyinDemo.exe`n", [Text.UTF8Encoding]::new($false))
+          "Built DouyinDemo.exe (local simulation only). Download DouyinDemo-Windows-x64 from Artifacts." >> $env:GITHUB_STEP_SUMMARY
 
-          设置位置：AyuGram 设置 -> Chats -> 阅后即焚照片
-          默认时间：3 秒；选择“关闭”即可停用。
-          只作用于私聊中“作为照片”正常发送的内容。
-          多张照片会拆开逐张发送。定时发送、机器人、群组、收藏夹和“作为文件”不受影响。
-
-          收到的私聊照片和视频会自动下载到：
-          tdata\AyuPermanentMedia\账号编号\聊天编号_用户名
-          闪照和闪视频会在文件保存成功后自动启动自毁倒计时，无需右键操作。
-          对方或服务器删除、阅后即焚以及重启软件后，已下载的文件仍会保留并重新显示。
-          在 AyuGram 中手动删除该条已删除消息，或使用“清空已删除消息”，会同时删除对应文件。
-          此功能不处理群组、频道、机器人和自己发送的媒体；长期使用会占用磁盘空间。
-
-          本程序没有官方数字签名。首次启动时 Windows 可能显示安全提示。
-          "@ | Set-Content -Path "$package\使用说明.txt" -Encoding utf8
-          $zip = "$output\AyuGram-v7.0.9-custom.zip"
-          Compress-Archive -Path "$package\*" -DestinationPath $zip -CompressionLevel Optimal
-          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  AyuGram-v7.0.9-custom.zip" | Set-Content "$zip.sha256" -Encoding ascii
-
-      - name: Upload the finished program
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v7
         with:
-          name: AyuGram-v7.0.9-custom
-          path: |
-            output/AyuGram-v7.0.9-custom.zip
-            output/AyuGram-v7.0.9-custom.zip.sha256
+          name: DouyinDemo-Windows-x64
+          path: release/
           if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
+          retention-days: 30
+          compression-level: 6
