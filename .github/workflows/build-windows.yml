@@ -1,6 +1,6 @@
 # Upload this single file as .github/workflows/build-windows.yml
 # It embeds all source and uses no real recipient data, Secrets, or account logins.
-name: Build Windows Demo
+name: Build Windows App
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-demo-${{ github.ref }}
+  group: windows-app-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -36,7 +36,7 @@ jobs:
       - name: Write embedded app.py (1/4)
         run: |
           $payload = @'
-          """Windows desktop UI demo. All send actions are local simulations."""
+          """Desktop messaging workbench with a local task queue."""
           from __future__ import annotations
 
           import argparse
@@ -53,8 +53,8 @@ jobs:
           from pathlib import Path
 
 
-          APP_NAME = "抖音群发工作台 · 演示版"
-          VERSION = "1.0.0"
+          APP_NAME = "抖音群发工作台"
+          VERSION = "1.2.0"
           MAX_FILE_BYTES = 5 * 1024 * 1024
           MAX_RECIPIENTS = 20000
           MAX_MESSAGE = 2000
@@ -254,7 +254,7 @@ jobs:
                   self.queue = list(records)
                   self.template = template
                   self.cursor = 0
-                  self.statuses = {r.douyin_id: "等待模拟" for r in records}
+                  self.statuses = {r.douyin_id: "等待处理" for r in records}
                   self.elapsed_before = 0.0
                   self.started_at = time.monotonic()
                   self.state = "running"
@@ -263,7 +263,7 @@ jobs:
                   if self.state != "running" or self.cursor >= len(self.queue):
                       return None
                   recipient = self.queue[self.cursor]
-                  self.statuses[recipient.douyin_id] = "模拟完成"
+                  self.statuses[recipient.douyin_id] = "已处理"
                   self.cursor += 1
                   if self.cursor == len(self.queue):
                       self._freeze_clock()
@@ -292,7 +292,7 @@ jobs:
                       self.state = "stopped"
 
 
-          class DemoApp:
+          class MessengerApp:
               def __init__(self, root: tk.Tk) -> None:
                   self.root = root
                   self.records: list[Recipient] = []
@@ -321,7 +321,7 @@ jobs:
                   root.bind("<Control-o>", lambda _event: self.import_files())
                   self.search_var.trace_add("write", self.search_changed)
                   self.source_var.trace_add("write", lambda *_: self.refresh_table())
-                  self.log("系统", "本地演示已就绪。发送按钮仅模拟流程。")
+                  self.log("系统", "工作台已就绪，请导入接收人名单。")
                   self.update_stats()
 
               def configure_styles(self) -> None:
@@ -379,7 +379,7 @@ jobs:
                   brand.pack(fill="x", padx=22, pady=(30, 28))
                   self.label(brand, "S /", 30, "accent", True).pack(anchor="w")
                   self.label(brand, "SEND STUDIO", 13, bold=True).pack(anchor="w", pady=(3, 0))
-                  self.label(brand, "桌面演示工作台", 9, "muted").pack(anchor="w", pady=(5, 0))
+                  self.label(brand, "批量消息管理", 9, "muted").pack(anchor="w", pady=(5, 0))
                   for text, command in [
                       ("01    群发任务", lambda: self.message.focus_set()),
                       ("02    导入名单", self.import_files),
@@ -388,26 +388,26 @@ jobs:
                       self.button(side, text, command, anchor="w").pack(fill="x", padx=14, pady=4)
                   note = tk.Frame(side, bg=COLORS["side"])
                   note.pack(side="bottom", fill="x", padx=22, pady=26)
-                  self.label(note, "●  本地演示", 10, "accent", True).pack(anchor="w")
-                  self.label(note, "所有发送结果均为模拟。\n无需登录抖音账号。", 9, "muted", justify="left").pack(anchor="w", pady=(10, 14))
+                  self.label(note, "任务工作台", 10, "muted", True).pack(anchor="w")
+                  self.label(note, "名单管理 · 消息预览\n任务进度 · 运行记录", 9, "muted", justify="left").pack(anchor="w", pady=(10, 14))
                   self.label(note, f"WINDOWS  /  v{VERSION}", 8, "muted").pack(anchor="w")
 
                   main = tk.Frame(self.root, bg=COLORS["bg"])
                   main.pack(side="left", expand=True, fill="both", padx=24, pady=20)
                   header = tk.Frame(main, bg=COLORS["bg"])
                   header.pack(fill="x")
-                  self.label(header, "WORKSPACE / LOCAL DEMO", 9, "muted").pack(anchor="w")
+                  self.label(header, "WORKSPACE / MESSAGING", 9, "muted").pack(anchor="w")
                   title_row = tk.Frame(header, bg=COLORS["bg"])
                   title_row.pack(fill="x", pady=(4, 2))
                   self.label(title_row, "抖音群发工作台", 23, bold=True).pack(side="left")
-                  self.label(title_row, "  ● 演示模式  ", 10, "accent", True).pack(side="right", pady=7)
-                  self.label(header, "导入名单，编辑内容，预览完整的群发模拟流程。", 10, "muted").pack(anchor="w")
+                  self.label(title_row, f"v{VERSION}", 10, "muted").pack(side="right", pady=7)
+                  self.label(header, "集中管理接收人名单、消息内容与任务进度。", 10, "muted").pack(anchor="w")
 
                   stats = tk.Frame(main, bg=COLORS["bg"])
                   stats.pack(fill="x", pady=(16, 14))
                   self.stat_vars = [tk.StringVar(value="0") for _ in range(4)]
                   for i, (caption, color) in enumerate([("名单人数", "text"), ("已合并重复", "blue"),
-                                                        ("模拟完成", "accent"), ("本轮待处理", "amber")]):
+                                                        ("已处理", "accent"), ("本轮待处理", "amber")]):
                       stats.columnconfigure(i, weight=1, uniform="stat")
                       card = self.card(stats)
                       card.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 5, 0 if i == 3 else 5))
@@ -459,8 +459,6 @@ jobs:
                   bottom.grid(row=4, column=0, sticky="ew", padx=14, pady=10)
                   self.visible_var = tk.StringVar(value="显示 0 / 0 人")
                   self.label(bottom, size=9, color="muted", textvariable=self.visible_var).pack(side="left")
-                  self.sample_button = self.button(bottom, "示例", self.load_sample)
-                  self.sample_button.pack(side="right", padx=(5, 0))
                   self.clear_button = self.button(bottom, "清空", self.clear_list, danger=True)
                   self.clear_button.pack(side="right")
 
@@ -472,7 +470,7 @@ jobs:
                                          fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat",
                                          padx=10, pady=10, font=("Microsoft YaHei UI", 10))
                   self.message.pack(fill="x", padx=16)
-                  self.message.insert("1.0", "你好，{昵称}！这是一条群发界面演示消息。")
+                  self.message.insert("1.0", "你好，{昵称}！感谢关注，后续有新消息会在这里与你分享。")
                   self.message.edit_modified(False)
                   self.message.bind("<<Modified>>", self.message_changed)
                   self.counter_label = self.label(compose, size=8, color="muted", textvariable=self.count_var)
@@ -484,20 +482,20 @@ jobs:
                   self.preview.pack(fill="x", padx=16)
                   settings = tk.Frame(compose, bg=COLORS["card"])
                   settings.pack(fill="x", padx=16, pady=(10, 4))
-                  self.label(settings, "模拟间隔", 9, "muted").pack(side="left")
+                  self.label(settings, "发送间隔", 9, "muted").pack(side="left")
                   self.interval_spin = tk.Spinbox(settings, from_=0.1, to=10, increment=0.1, width=4,
                                                   textvariable=self.interval_var, bg=COLORS["input"], fg=COLORS["text"],
                                                   buttonbackground=COLORS["line"], insertbackground=COLORS["text"], relief="flat")
                   self.interval_spin.pack(side="left", padx=(8, 4), ipady=3)
                   self.label(settings, "秒 / 人", 9, "muted").pack(side="left")
-                  self.selection_check = tk.Checkbutton(compose, text="仅模拟选中的接收人（默认处理全部名单）",
+                  self.selection_check = tk.Checkbutton(compose, text="仅处理选中的接收人（默认处理全部名单）",
                                                          variable=self.selected_only, bg=COLORS["card"], fg=COLORS["muted"],
                                                          activebackground=COLORS["card"], activeforeground=COLORS["text"],
                                                          selectcolor=COLORS["input"], font=("Microsoft YaHei UI", 9))
                   self.selection_check.pack(anchor="w", padx=12)
                   actions = tk.Frame(compose, bg=COLORS["card"])
                   actions.pack(fill="x", padx=16, pady=(8, 8))
-                  self.start_button = self.button(actions, "开始群发（模拟）", self.start, primary=True)
+                  self.start_button = self.button(actions, "开始群发", self.start, primary=True)
                   self.start_button.pack(side="left", fill="x", expand=True)
                   self.pause_button = self.button(actions, "暂停", self.toggle_pause, state="disabled")
                   self.pause_button.pack(side="left", padx=7)
@@ -511,7 +509,7 @@ jobs:
                   log_top = tk.Frame(log_card, bg=COLORS["card"])
                   log_top.pack(fill="x", padx=14, pady=(8, 4))
                   self.label(log_top, "运行日志", 10, bold=True).pack(side="left")
-                  self.label(log_top, "DEMO ONLY", 8, "accent").pack(side="left", padx=12)
+                  self.label(log_top, "ACTIVITY", 8, "muted").pack(side="left", padx=12)
                   self.button(log_top, "导出 CSV", self.export_logs, pady=3).pack(side="right")
                   self.log_text = tk.Text(log_card, height=2, width=1, wrap="word", bg=COLORS["card"], fg=COLORS["muted"],
                                           relief="flat", state="disabled", font=("Consolas", 9), padx=14, pady=4)
@@ -535,17 +533,17 @@ jobs:
                   visible = []
                   for recipient in self.records:
                       if query and query not in (recipient.nickname + " " + recipient.douyin_id).casefold():
+                          continue
+                      if group != "全部来源" and group not in recipient.sources:
+                          continue
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded app.py (3/4)
         run: |
           $payload = @'
-                          continue
-                      if group != "全部来源" and group not in recipient.sources:
-                          continue
                       status = self.session.statuses.get(recipient.douyin_id, "待开始")
-                      tag = "done" if status == "模拟完成" else "stopped" if status == "已停止" else ""
+                      tag = "done" if status == "已处理" else "stopped" if status == "已停止" else ""
                       self.table.insert("", "end", iid=recipient.douyin_id,
                                         values=(recipient.nickname or "—", recipient.douyin_id,
                                                 " / ".join(recipient.sources), status), tags=(tag,))
@@ -591,15 +589,15 @@ jobs:
               def load_sample(self) -> None:
                   if self.session.active:
                       return
-                  sample = [Recipient(f"demo_{i:03d}", f"演示用户 {i:02d}", ["示例名单"]) for i in range(1, 7)]
+                  sample = [Recipient(f"demo_{i:03d}", f"示例用户 {i:02d}", ["示例名单"]) for i in range(1, 7)]
                   new, duplicate = merge_records(self.records, sample)
                   self.import_duplicates += duplicate
                   groups = list(dict.fromkeys(s for r in self.records for s in r.sources))
                   self.source_combo.configure(values=["全部来源", *groups])
                   self.refresh_table()
                   self.update_stats()
-                  self.toast_var.set(f"已加入 {new} 位虚构演示用户。可直接点击开始群发。")
-                  self.log("导入", f"载入虚构示例名单，新增 {new} 人。")
+                  self.toast_var.set(f"已加入 {new} 位示例联系人，可编辑消息后开始任务。")
+                  self.log("导入", f"载入示例名单，新增 {new} 人。")
 
               def clear_list(self) -> None:
                   if self.session.active or not self.records:
@@ -630,17 +628,16 @@ jobs:
                   if record is None and self.records:
                       record = self.records[0]
                   if record is None:
-                      record = Recipient("demo_001", "演示用户", ["示例"])
-                      self.preview_target.set("示例接收人 · 尚未导入名单")
+                      self.preview_target.set("尚未选择接收人")
                   else:
                       self.preview_target.set(f"接收人：{record.nickname or record.douyin_id}  ·  {record.douyin_id}")
                   self.preview.configure(state="normal")
                   self.preview.delete("1.0", "end")
-                  self.preview.insert("1.0", render_message(template, record))
+                  self.preview.insert("1.0", render_message(template, record) if record else "导入名单后，可查看接收人专属消息。")
                   self.preview.configure(state="disabled")
 
               def set_busy(self, busy: bool) -> None:
-                  for widget in [self.import_button, self.sample_button, self.clear_button, self.start_button,
+                  for widget in [self.import_button, self.clear_button, self.start_button,
                                  self.interval_spin, self.selection_check]:
                       widget.configure(state="disabled" if busy else "normal")
                   self.message.configure(state="disabled" if busy else "normal")
@@ -652,7 +649,7 @@ jobs:
                   try:
                       interval = float(self.interval_var.get())
                       if not math.isfinite(interval) or not 0.1 <= interval <= 10:
-                          raise ValueError("模拟间隔请填写 0.1 至 10 秒之间的数字。")
+                          raise ValueError("发送间隔请填写 0.1 至 10 秒之间的数字。")
                       targets = self.records
                       if self.selected_only.get():
                           selected = set(self.table.selection())
@@ -664,8 +661,8 @@ jobs:
                   self.interval_ms = round(interval * 1000)
                   self.set_busy(True)
                   self.refresh_table()
-                  self.log("开始", f"开始模拟 {len(targets)} 位接收人，间隔 {interval:g} 秒 / 人。")
-                  self.toast_var.set("正在模拟群发 · 所有结果仅用于界面演示")
+                  self.log("开始", f"任务已创建，共 {len(targets)} 位接收人，间隔 {interval:g} 秒 / 人。")
+                  self.toast_var.set("任务进行中 · 可随时暂停或停止")
                   self.update_stats()
                   self.schedule_tick()
 
@@ -685,14 +682,14 @@ jobs:
                   if recipient is None:
                       return
                   if self.table.exists(recipient.douyin_id):
-                      self.table.set(recipient.douyin_id, "status", "模拟完成")
+                      self.table.set(recipient.douyin_id, "status", "已处理")
                       self.table.item(recipient.douyin_id, tags=("done",))
-                  self.log("模拟", f"{recipient.nickname or recipient.douyin_id} ({recipient.douyin_id}) · 模拟完成")
+                  self.log("处理", f"{recipient.nickname or recipient.douyin_id} ({recipient.douyin_id}) · 已处理")
                   self.update_stats()
                   if self.session.state == "completed":
                       self.set_busy(False)
-                      self.log("完成", f"本轮模拟完成，共 {self.session.cursor} 人。")
-                      self.toast_var.set("本轮模拟已完成 · 可导出日志或开始新一轮")
+                      self.log("完成", f"本轮任务已完成，共处理 {self.session.cursor} 人。")
+                      self.toast_var.set("任务已完成 · 可导出日志或开始新一轮")
                   else:
                       self.schedule_tick()
 
@@ -705,8 +702,8 @@ jobs:
                   elif self.session.state == "paused":
                       self.session.resume()
                       self.schedule_tick()
-                      self.log("继续", "继续本轮模拟任务。")
-                      self.toast_var.set("正在模拟群发 · 所有结果仅用于界面演示")
+                      self.log("继续", "继续处理本轮任务。")
+                      self.toast_var.set("任务进行中 · 可随时暂停或停止")
                   self.pause_button.configure(text="继续" if self.session.state == "paused" else "暂停")
                   self.update_stats()
 
@@ -718,8 +715,8 @@ jobs:
                   self.set_busy(False)
                   self.refresh_table()
                   self.update_stats()
-                  self.log("停止", f"任务已停止，本轮已模拟 {self.session.cursor} / {len(self.session.queue)} 人。")
-                  self.toast_var.set("任务已停止 · 再次开始会创建新一轮模拟")
+                  self.log("停止", f"任务已停止，本轮已处理 {self.session.cursor} / {len(self.session.queue)} 人。")
+                  self.toast_var.set("任务已停止 · 再次开始会创建新一轮任务")
 
               def update_stats(self) -> None:
                   for variable, value in zip(self.stat_vars, [len(self.records), self.import_duplicates,
@@ -728,13 +725,13 @@ jobs:
                   total = len(self.session.queue)
                   percent = self.session.cursor / total * 100 if total else 0
                   self.progress_var.set(percent)
-                  states = {"idle": "等待开始", "running": "模拟进行中", "paused": "已暂停",
-                            "completed": "模拟完成", "stopped": "已停止"}
+                  states = {"idle": "等待开始", "running": "正在处理", "paused": "已暂停",
+                            "completed": "任务完成", "stopped": "已停止"}
                   if total:
                       seconds = int(self.session.elapsed)
                       remaining = self.session.remaining * getattr(self, "interval_ms", 800) / 1000
                       self.progress_text.set(f"{states[self.session.state]}  {self.session.cursor} / {total} 人  ·  {percent:.0f}%\n"
-                                             f"用时 {seconds // 60:02d}:{seconds % 60:02d}  ·  剩余模拟约 {remaining:.0f} 秒")
+                                             f"用时 {seconds // 60:02d}:{seconds % 60:02d}  ·  预计剩余 {remaining:.0f} 秒")
                   else:
                       self.progress_text.set("等待开始 · 默认处理全部名单，筛选仅影响列表显示")
 
@@ -749,24 +746,24 @@ jobs:
                   self.log_text.configure(state="disabled")
 
               def export_logs(self) -> None:
-                  filename = filedialog.asksaveasfilename(title="导出模拟日志", defaultextension=".csv",
-                                                         initialfile=f"模拟群发日志_{datetime.now():%Y%m%d_%H%M%S}.csv",
+                  filename = filedialog.asksaveasfilename(title="导出运行日志", defaultextension=".csv",
+                                                         initialfile=f"群发日志_{datetime.now():%Y%m%d_%H%M%S}.csv",
                                                          filetypes=[("CSV 日志", "*.csv")])
                   if not filename:
                       return
                   try:
                       with open(filename, "w", encoding="utf-8-sig", newline="") as handle:
                           writer = csv.writer(handle)
-                          writer.writerow(["模式", "时间", "事件", "日志内容"])
+                          writer.writerow(["时间", "事件", "日志内容"])
                           for stamp, category, text in self.logs:
-                              writer.writerow(["本地演示 / 模拟结果", stamp, category, csv_cell(text)])
+                              writer.writerow([stamp, category, csv_cell(text)])
                   except OSError as exc:
                       messagebox.showerror("导出失败", str(exc), parent=self.root)
                       return
-                  self.toast_var.set(f"模拟日志已导出：{Path(filename).name}")
+                  self.toast_var.set(f"运行日志已导出：{Path(filename).name}")
 
               def close(self) -> None:
-                  if self.session.active and not messagebox.askyesno("退出演示", "当前模拟任务尚未结束，确定退出？", parent=self.root):
+                  if self.session.active and not messagebox.askyesno("退出工作台", "当前任务尚未结束，确定退出？", parent=self.root):
                       return
                   self.cancel_tick()
                   self.root.destroy()
@@ -777,7 +774,7 @@ jobs:
               root = tk.Tk()
               root.withdraw()
               try:
-                  app = DemoApp(root)
+                  app = MessengerApp(root)
                   app.load_sample()
                   root.update_idletasks()
                   assert len(app.table.get_children()) == 6
@@ -799,20 +796,14 @@ jobs:
                       app.tick()
                       app.cancel_tick()
                   assert app.session.state == "completed" and app.session.cursor == 6
-                  assert app.table.set("demo_001", "status") == "模拟完成"
+                  assert app.table.set("demo_001", "status") == "已处理"
                   app.search_var.set("demo_003")
                   app.refresh_table()
                   assert len(app.table.get_children()) == 1
-                  report_path.write_text(json.dumps({"ok": True, "mode": "local_demo", "version": VERSION,
+                  report_path.write_text(json.dumps({"ok": True, "mode": "local_queue", "version": VERSION,
                                                      "tk_version": root.tk.call("info", "patchlevel"),
                                                      "checks": ["widgets", "sample_import", "start", "pause", "resume", "stop", "complete", "filter"]},
                                                     ensure_ascii=False, indent=2), encoding="utf-8")
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (4/4)
-        run: |
-          $payload = @'
               finally:
                   root.destroy()
 
@@ -820,6 +811,12 @@ jobs:
           def main() -> int:
               # Delay Tk loading so importer/queue tests also run on headless systems.
               global tk, filedialog, messagebox, ttk
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (4/4)
+        run: |
+          $payload = @'
               parser = argparse.ArgumentParser(description=APP_NAME)
               parser.add_argument("--smoke-test", type=Path, metavar="REPORT_JSON")
               args = parser.parse_args()
@@ -835,7 +832,7 @@ jobs:
                   smoke_test(args.smoke_test)
                   return 0
               root = tk.Tk()
-              DemoApp(root)
+              MessengerApp(root)
               root.mainloop()
               return 0
 
@@ -846,7 +843,7 @@ jobs:
               except Exception:
                   detail = traceback.format_exc()
                   # A windowed EXE has no console. Keep a startup error report in the user's TEMP.
-                  log_path = Path(os.environ.get("TEMP", str(Path.cwd()))) / "douyin-demo-error.log"
+                  log_path = Path(os.environ.get("TEMP", str(Path.cwd()))) / "douyin-sender-error.log"
                   try:
                       log_path.write_text(detail, encoding="utf-8")
                   except OSError:
@@ -855,7 +852,7 @@ jobs:
                       sys.stderr.write(detail)
                   if "--smoke-test" not in sys.argv:
                       try:
-                          messagebox.showerror("演示程序启动失败", f"请将以下错误反馈给维护者：\n\n{detail[-1500:]}\n\n错误日志：{log_path}")
+                          messagebox.showerror("程序启动失败", f"请将以下错误反馈给维护者：\n\n{detail[-1500:]}\n\n错误日志：{log_path}")
                       except Exception:
                           pass
                   raise SystemExit(1)
@@ -952,7 +949,7 @@ jobs:
                   self.assertIsNone(self.session.tick())
                   self.session.start(self.records, "再次演示")
                   self.assertEqual(self.session.cursor, 0)
-                  self.assertEqual(self.session.statuses["demo_001"], "等待模拟")
+                  self.assertEqual(self.session.statuses["demo_001"], "等待处理")
 
               def test_stop_while_paused(self):
                   self.session.start(self.records, "演示")
@@ -960,7 +957,7 @@ jobs:
                   self.session.pause()
                   self.session.stop()
                   self.assertEqual(self.session.state, "stopped")
-                  self.assertEqual(self.session.statuses, {"demo_001": "模拟完成", "demo_002": "已停止"})
+                  self.assertEqual(self.session.statuses, {"demo_001": "已处理", "demo_002": "已停止"})
                   self.assertIsNone(self.session.tick())
 
               def test_validation(self):
@@ -988,19 +985,21 @@ jobs:
       - name: Write embedded README.md (1/1)
         run: |
           $payload = @'
-          # 抖音群发工作台 · Windows 演示版
+          # 抖音群发工作台
 
-          深色中文桌面界面，支持导入接收人、编辑消息、模拟群发、暂停、继续、停止和导出日志。
-          **所有发送行为和结果均为本地模拟**，无需抖音登录，无需 Cookie 或 API 密钥。
+          深色中文桌面界面，支持导入接收人、编辑消息、群发任务交互、暂停、继续、停止和导出日志。
+          当前程序提供名单导入、内容编辑与本地任务队列；“已处理”表示队列处理完成。
+          程序未接入抖音消息接口。
+          程序无需抖音登录，无需 Cookie 或 API 密钥。
 
           ## 只上传一个 YML 即可构建
 
           1. 打开自己的 GitHub 仓库，在**默认分支**选择 **Add file → Create new file**。
           2. 文件名填写 `.github/workflows/build-windows.yml`。
           3. 将交付的 `build-windows.yml` 全文粘贴进去，提交保存。文件中已经包含完整程序源码和测试，不需要再上传 Python 源码、名单或安装包。
-          4. 提交此工作流文件后会自动构建。也可打开 **Actions → Build Windows Demo → Run workflow → Run workflow** 手动运行。
-          5. 构建成功后，在该次运行页面底部的 **Artifacts** 下载 `DouyinDemo-Windows-x64`。
-          6. 解压后双击 `DouyinDemo.exe`。目标环境为 Windows 10 / 11 64 位，无需安装 Python。
+          4. 提交此工作流文件后会自动构建。也可打开 **Actions → Build Windows App → Run workflow → Run workflow** 手动运行。
+          5. 构建成功后，在该次运行页面底部的 **Artifacts** 下载 `DouyinSender-Windows-x64`。
+          6. 解压后双击 `DouyinSender.exe`。目标环境为 Windows 10 / 11 64 位，无需安装 Python。
 
           提交或修改 `.github/workflows/build-windows.yml` 后会自动构建，同时保留手动触发；不需要配置任何 Secrets。
           工作流使用 Windows 环境构建，并依次执行解析/队列测试、源码 GUI 检查、打包后的 EXE GUI 检查。
@@ -1019,7 +1018,7 @@ jobs:
           支持下列格式，ID 按文本保留，包含前导零或小数点的 ID 不会被转成数值：
 
           ```text
-          昵称 演示用户  空  抖音号 demo_001  资料位置 空  IP属地 空
+          昵称 联系人甲  空  抖音号 demo_001  资料位置 空  IP属地 空
           ```
 
           ```text
@@ -1029,8 +1028,8 @@ jobs:
 
           ```csv
           抖音号,昵称,来源
-          demo_001,演示用户甲,示例名单
-          demo_002,演示用户乙,示例名单
+          demo_001,联系人甲,示例名单
+          demo_002,联系人乙,示例名单
           ```
 
           单个文件上限 5 MB，当前名单最多 20,000 人。导入为追加模式，重复 ID 合并来源和缺失昵称。
@@ -1040,13 +1039,18 @@ jobs:
 
           - 昵称 / 抖音号搜索、来源筛选、批量选中。
           - 消息支持 `{昵称}`、`{抖音号}`，右侧预览会替换为对应接收人的信息。
-          - 消息上限 2,000 字，模拟间隔可填 0.1–10 秒 / 人。
-          - 默认模拟全部已导入名单；搜索和来源筛选只影响显示。勾选“仅模拟选中”后，才限定为表格中选中的人。
+          - 消息上限 2,000 字，发送间隔可填 0.1–10 秒 / 人。
+          - 默认处理全部已导入名单；搜索和来源筛选只影响显示。勾选“仅处理选中”后，才限定为表格中选中的人。
           - 任务开始后锁定名单和编辑器；暂停后可继续，停止后保留本轮状态，再次开始创建新一轮。
-          - 实时进度、用时、本轮待处理数量、模拟日志；日志导出为带 BOM 的 UTF-8 CSV。
-          - 点击“示例”可载入六位虚构用户，便于演示界面。
+          - 实时进度、用时、本轮待处理数量、运行日志；日志导出为带 BOM 的 UTF-8 CSV。
           - 名单和群发内容只在当前窗口内存中保存，关闭后清除；仅手动导出日志会写出所选文件。
-          - 这是独立的交互原型，界面和日志持续标注“演示 / 模拟”。
+          - 标题、按钮、进度、提示和运行日志采用常规任务管理文案，右上角显示当前版本。
+
+          ## v1.2.0 界面调整
+
+          统一标题、按钮、状态、提示与日志的任务管理文案；移除模式角标和示例入口。
+          主按钮为“开始群发”，名单状态为“等待处理 / 已处理”，进度为“正在处理 / 任务完成”。
+          当前版本保留自动构建；上传工作流后，重新下载本次构建的 EXE 即可看到调整。
 
           ## 本地运行与构建
 
@@ -1057,12 +1061,12 @@ jobs:
           python -m unittest -v
           python app.py --smoke-test smoke-source.json
           python -m pip install PyInstaller==6.22.3
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --name DouyinDemo app.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --name DouyinSender app.py
           ```
 
-          可直接运行 `build_windows.bat`。输出位于 `dist/DouyinDemo.exe`。
+          可直接运行 `build_windows.bat`。输出位于 `dist/DouyinSender.exe`。
           本地修改源码后，运行 `python make_workflow.py` 可重新生成包含最新源码的独立工作流。
-          若缺少 Tk/Tcl 或程序启动失败，错误信息会写到用户 TEMP 目录中的 `douyin-demo-error.log`。
+          若缺少 Tk/Tcl 或程序启动失败，错误信息会写到用户 TEMP 目录中的 `douyin-sender-error.log`。
 
           ## 当前验证范围
 
@@ -1079,7 +1083,7 @@ jobs:
           '@
           [IO.File]::WriteAllText((Join-Path $PWD 'README.md'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Test list parsing and simulation queue
+      - name: Test list parsing and task queue
         run: |
           python -m unittest -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -1097,12 +1101,12 @@ jobs:
 
       - name: Build standalone Windows EXE
         run: |
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --name DouyinDemo app.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --name DouyinSender app.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Check packaged EXE and prepare download
         run: |
-          $exe = (Resolve-Path 'dist/DouyinDemo.exe').Path
+          $exe = (Resolve-Path 'dist/DouyinSender.exe').Path
           $report = Join-Path $PWD 'smoke-exe.json'
           $process = Start-Process -FilePath $exe -ArgumentList @('--smoke-test', ('"' + $report + '"')) -PassThru
           if (-not $process.WaitForExit(90000)) {
@@ -1115,17 +1119,17 @@ jobs:
           $result = Get-Content $report -Raw -Encoding utf8 | ConvertFrom-Json
           if ($result.ok -ne $true) { throw 'EXE GUI smoke check failed' }
           New-Item -ItemType Directory -Force -Path release | Out-Null
-          Copy-Item $exe 'release/DouyinDemo.exe'
+          Copy-Item $exe 'release/DouyinSender.exe'
           Copy-Item README.md 'release/README.md'
           Copy-Item smoke-source.json,smoke-exe.json -Destination release
-          $hash = (Get-FileHash 'release/DouyinDemo.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
-          [IO.File]::WriteAllText((Join-Path $PWD 'release/SHA256SUMS.txt'), "$hash  DouyinDemo.exe`n", [Text.UTF8Encoding]::new($false))
-          "Built DouyinDemo.exe (local simulation only). Download DouyinDemo-Windows-x64 from Artifacts." >> $env:GITHUB_STEP_SUMMARY
+          $hash = (Get-FileHash 'release/DouyinSender.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path $PWD 'release/SHA256SUMS.txt'), "$hash  DouyinSender.exe`n", [Text.UTF8Encoding]::new($false))
+          "Built DouyinSender.exe. Download DouyinSender-Windows-x64 from Artifacts." >> $env:GITHUB_STEP_SUMMARY
 
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v7
         with:
-          name: DouyinDemo-Windows-x64
+          name: DouyinSender-Windows-x64
           path: release/
           if-no-files-found: error
           retention-days: 30
