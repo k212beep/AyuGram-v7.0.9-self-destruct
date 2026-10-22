@@ -4,8 +4,6 @@ name: Build Windows App
 
 on:
   push:
-    paths:
-      - '.github/workflows/build-windows.yml'
   workflow_dispatch:
 
 permissions:
@@ -1696,7 +1694,9 @@ jobs:
           5. 构建成功后，在该次运行页面底部的 **Artifacts** 下载 `DouyinSender-Windows-x64`。
           6. 解压后双击 `DouyinSender.exe`。目标环境为 Windows 10 / 11 64 位，无需安装 Python。
 
-          提交或修改 `.github/workflows/build-windows.yml` 后会自动构建，同时保留手动触发；不需要配置任何 Secrets。
+          此工作流在每次 push 提交后自动构建，同时保留手动触发；不需要配置任何 Secrets。
+          已移除固定文件名的路径限制，工作流文件可使用其他 `.yml` 或 `.yaml` 文件名，但必须位于仓库的 `.github/workflows/` 目录。
+          上传后需点击“Commit changes”完成提交，并在仓库设置中允许 GitHub Actions 运行。
           工作流使用 Windows 环境构建，并依次执行解析/队列测试、源码 GUI 检查、打包后的 EXE GUI 检查。
           若某项检查失败，该次运行不会发布 EXE 下载产物。`smoke-source.json` 和 `smoke-exe.json` 记录成功检查结果。
 
