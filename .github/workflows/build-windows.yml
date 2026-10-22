@@ -31,7 +31,7 @@ jobs:
           architecture: x64
 
 
-      - name: Write embedded app.py (1/6)
+      - name: Write embedded app.py (1/8)
         run: |
           $payload = @'
           """Desktop messaging workbench with a local task queue."""
@@ -47,16 +47,22 @@ jobs:
           import tempfile
           import time
           import traceback
+          from collections import deque
           from dataclasses import dataclass, field
           from datetime import datetime
           from pathlib import Path
 
 
           APP_NAME = "抖音群发工作台"
-          VERSION = "1.4.0"
+          VERSION = "1.5.0"
           MAX_FILE_BYTES = 5 * 1024 * 1024
           MAX_RECIPIENTS = 20000
-          MAX_MESSAGE = 2000
+          MAX_MESSAGE = 200
+          MEDIA_EXTENSIONS = {
+              ".png": "图片", ".jpg": "图片", ".jpeg": "图片", ".gif": "图片", ".webp": "图片", ".bmp": "图片",
+              ".mp4": "视频", ".mov": "视频", ".mkv": "视频", ".avi": "视频", ".webm": "视频",
+              ".mp3": "音频", ".wav": "音频", ".m4a": "音频", ".aac": "音频", ".ogg": "音频", ".flac": "音频",
+          }
           ID_RE = re.compile(r"(?=[A-Za-z0-9_.-]*[A-Za-z0-9])[A-Za-z0-9_.-]{1,64}\Z")
           LABELED_ID = re.compile(r"(?:抖音号|抖音ID|douyin[_ ]?id)\s*[:：=]?\s*([^\s,，;；]+)", re.I)
           ID_HEADERS = {"抖音号", "抖音id", "douyin_id", "douyinid", "id", "账号"}
@@ -163,13 +169,7 @@ jobs:
               return normalize_profile(AccountProfile(**{name: values.get(name, getattr(defaults, name)) for name in fields}))
 
 
-          def save_profile(path: Path, profile: AccountProfile) -> AccountProfile:
-              profile = normalize_profile(profile)
-              data = {"schema_version": 1, "profile": {
-                  "account": profile.account, "nickname": profile.nickname,
-                  "show_account": profile.show_account, "show_nickname": profile.show_nickname,
-                  "mask_account": profile.mask_account,
-              }}
+          def write_json_atomic(path: Path, data: dict) -> None:
               path.parent.mkdir(parents=True, exist_ok=True)
               temporary_path = None
               try:
@@ -182,7 +182,152 @@ jobs:
               finally:
                   if temporary_path is not None:
                       temporary_path.unlink(missing_ok=True)
+
+
+          def save_profile(path: Path, profile: AccountProfile) -> AccountProfile:
+              profile = normalize_profile(profile)
+              write_json_atomic(path, {"schema_version": 1, "profile": {
+                  "account": profile.account, "nickname": profile.nickname,
+                  "show_account": profile.show_account, "show_nickname": profile.show_nickname,
+                  "mask_account": profile.mask_account,
+              }})
               return profile
+
+
+          def duration_seconds(hours: str, minutes: str, seconds: str) -> int:
+              values = [str(value).strip() for value in (hours, minutes, seconds)]
+              if not all(re.fullmatch(r"\d+", value) for value in values):
+                  raise ValueError("时、分、秒请填写非负整数。")
+              h, m, s = map(int, values)
+              if h > 99999 or m > 59 or s > 59:
+                  raise ValueError("小时范围为 0–99999，分钟和秒范围为 0–59。")
+              return h * 3600 + m * 60 + s
+
+
+          def format_duration(seconds: float) -> str:
+              total = max(0, int(seconds))
+              return f"{total // 3600:02d}:{total // 60 % 60:02d}:{total % 60:02d}"
+
+
+          def load_runtime_offset(path: Path) -> int:
+              if not path.exists():
+                  return 0
+              if path.stat().st_size > 4096:
+                  raise ValueError("计时设置文件过大。")
+              data = json.loads(path.read_text(encoding="utf-8"))
+              if not isinstance(data, dict) or data.get("schema_version") != 1:
+                  raise ValueError("计时设置格式不正确。")
+              value = data.get("initial_seconds", 0)
+              if type(value) is not int or not 0 <= value <= 99999 * 3600 + 3599:
+                  raise ValueError("初始时长格式不正确。")
+              return value
+
+
+          def save_runtime_offset(path: Path, seconds: int) -> None:
+              if type(seconds) is not int or not 0 <= seconds <= 99999 * 3600 + 3599:
+                  raise ValueError("初始时长格式不正确。")
+              write_json_atomic(path, {"schema_version": 1, "initial_seconds": seconds})
+
+
+          class RuntimeClock:
+              def __init__(self, initial_seconds: int = 0) -> None:
+                  self.started = time.monotonic()
+                  self.display_started = self.started
+                  self.initial_seconds = initial_seconds
+
+              @property
+              def actual(self) -> float:
+                  return max(0, time.monotonic() - self.started)
+
+              @property
+              def displayed(self) -> float:
+                  return self.initial_seconds + max(0, time.monotonic() - self.display_started)
+
+              def set_initial(self, seconds: int) -> None:
+                  if type(seconds) is not int or seconds < 0:
+                      raise ValueError("初始时长必须是非负整数。")
+                  self.initial_seconds = seconds
+                  self.display_started = time.monotonic()
+
+
+          @dataclass(frozen=True)
+          class MediaAsset:
+              path: Path
+              name: str
+              kind: str
+              size: int
+              modified_ns: int
+
+
+          def inspect_media(path: Path) -> MediaAsset:
+              path = path.resolve()
+              if not path.is_file():
+                  raise ValueError("请选择可读取的媒体文件。")
+              kind = MEDIA_EXTENSIONS.get(path.suffix.casefold())
+              if kind is None:
+                  raise ValueError("请选择图片、视频或音频文件。")
+              stat = path.stat()
+              if stat.st_size == 0:
+                  raise ValueError("媒体文件为空，请重新选择。")
+              return MediaAsset(path, path.name, kind, stat.st_size, stat.st_mtime_ns)
+
+
+          @dataclass
+          class MediaTask:
+              recipient: Recipient
+              asset: MediaAsset
+              status: str = "等待处理"
+              error: str = ""
+
+
+          class FollowMediaQueue:
+              """Process explicit follow receipts into local media tasks."""
+              def __init__(self) -> None:
+                  self.pending: deque[MediaTask] = deque()
+                  self.seen: set[tuple] = set()
+                  self.completed = 0
+                  self.failed = 0
+
+              @staticmethod
+              def key(recipient: Recipient, asset: MediaAsset) -> tuple:
+                  return recipient.douyin_id, os.path.normcase(str(asset.path)), asset.size, asset.modified_ns
+
+              def submit(self, recipients: list[Recipient], asset: MediaAsset) -> tuple[int, int]:
+                  if inspect_media(asset.path) != asset:
+                      raise ValueError("媒体文件已变更，请重新选择。")
+                  added = duplicate = 0
+                  for record in recipients:
+                      key = self.key(record, asset)
+                      if key in self.seen:
+                          duplicate += 1
+                          continue
+                      self.seen.add(key)
+                      self.pending.append(MediaTask(record, asset))
+                      added += 1
+                  return added, duplicate
+
+              def process_next(self) -> MediaTask | None:
+                  if not self.pending:
+                      return None
+                  task = self.pending.popleft()
+                  try:
+                      if inspect_media(task.asset.path) != task.asset:
+                          raise ValueError("媒体文件已变更，请重新选择。")
+                      task.status = "已处理"
+                      self.completed += 1
+                  except (OSError, ValueError) as exc:
+                      task.status = "文件不可用"
+                      task.error = str(exc)
+                      self.failed += 1
+                      self.seen.discard(self.key(task.recipient, task.asset))
+                  return task
+
+              def cancel_pending(self) -> int:
+                  count = len(self.pending)
+                  while self.pending:
+                      task = self.pending.popleft()
+                      self.seen.discard(self.key(task.recipient, task.asset))
+                  return count
 
 
           def valid_id(value: str) -> bool:
@@ -238,6 +383,12 @@ jobs:
                       setattr(current, name, getattr(incoming, name))
               if current.age is None and incoming.age is not None:
                   current.age = incoming.age
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (2/8)
+        run: |
+          $payload = @'
               for name in ("sources", "raw_details"):
                   target = getattr(current, name)
                   target.extend(value for value in getattr(incoming, name) if value not in target)
@@ -322,12 +473,6 @@ jobs:
 
               def add(value: str, nickname: str = "", label: str = source, gender: str = "", age: str = "",
                       region: str = "", ip_region: str = "", raw: str = "") -> None:
-          '@
-          [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (2/6)
-        run: |
-          $payload = @'
                   value = value.strip().lstrip("\ufeff").removeprefix("@").strip()
                   if not valid_id(value):
                       result.skipped += 1
@@ -460,6 +605,9 @@ jobs:
                       raise ValueError("请填写群发内容。")
                   if len(template) > MAX_MESSAGE:
                       raise ValueError(f"群发内容不得超过 {MAX_MESSAGE} 字。")
+                  for record in records:
+                      if len(render_message(template, record)) > MAX_MESSAGE:
+                          raise ValueError(f"接收人 {record.nickname or record.douyin_id} 替换变量后的内容超过 {MAX_MESSAGE} 字。")
                   self.queue = list(records)
                   self.template = template
                   self.cursor = 0
@@ -496,6 +644,12 @@ jobs:
               def stop(self) -> None:
                   if self.active:
                       self._freeze_clock()
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (3/8)
+        run: |
+          $payload = @'
                       for recipient in self.queue[self.cursor:]:
                           self.statuses[recipient.douyin_id] = "已停止"
                       self.state = "stopped"
@@ -512,6 +666,27 @@ jobs:
                       self.account_profile = AccountProfile()
                       self.profile_load_error = True
                   self.account_dialog = None
+                  self.runtime_dialog = None
+                  self.runtime_path = self.profile_path.with_name("runtime-settings.json")
+                  self.runtime_load_error = False
+                  try:
+                      initial_seconds = load_runtime_offset(self.runtime_path)
+                  except (OSError, ValueError):
+                      initial_seconds = 0
+                      self.runtime_load_error = True
+                  self.runtime_clock = RuntimeClock(initial_seconds)
+                  self.clock_timer = None
+                  self.media_timer = None
+                  self.media_asset: MediaAsset | None = None
+                  self.media_queue = FollowMediaQueue()
+                  self.follow_media_var = tk.BooleanVar(value=False)
+                  self.media_name_var = tk.StringVar(value="尚未选择媒体文件")
+                  self.media_info_var = tk.StringVar(value="支持图片、视频、音频")
+                  self.media_status_var = tk.StringVar(value="关注后媒体规则未启用")
+                  self.local_time_var = tk.StringVar()
+                  self.runtime_var = tk.StringVar()
+                  self.list_expanded = False
+                  self.log_expanded = False
                   self.account_display_var = tk.StringVar()
                   self.records: list[Recipient] = []
                   self.session = Session()
@@ -540,7 +715,9 @@ jobs:
                   self.preview_target = tk.StringVar(value="选择名单中的一位用户以预览")
                   root.title(APP_NAME)
                   root.configure(bg=COLORS["bg"])
-                  root.geometry("1400x850")
+                  width = max(1060, min(1540, root.winfo_screenwidth() - 40))
+                  height = max(760, min(940, root.winfo_screenheight() - 80))
+                  root.geometry(f"{width}x{height}")
                   root.minsize(1060, 760)
                   root.protocol("WM_DELETE_WINDOW", self.close)
                   root.option_add("*Font", ("Microsoft YaHei UI", 10))
@@ -554,7 +731,10 @@ jobs:
                   self.log("系统", "工作台已就绪，请导入接收人名单。")
                   if self.profile_load_error:
                       self.log("设置", "账号设置未能读取，已恢复默认显示，可在“账号设置”中重新保存。")
+                  if self.runtime_load_error:
+                      self.log("设置", "计时设置未能读取，已从零开始计时。")
                   self.update_stats()
+                  self.tick_clock()
 
               def configure_styles(self) -> None:
                   style = ttk.Style(self.root)
@@ -566,7 +746,7 @@ jobs:
                             selectbackground=[("readonly", COLORS["input"])],
                             selectforeground=[("readonly", COLORS["text"])])
                   style.configure("Treeview", background=COLORS["input"], fieldbackground=COLORS["input"],
-                                  foreground=COLORS["text"], rowheight=33, borderwidth=0,
+                                  foreground=COLORS["text"], rowheight=26, borderwidth=0,
                                   font=("Microsoft YaHei UI", 10))
                   style.configure("Treeview.Heading", background=COLORS["card"], foreground=COLORS["muted"],
                                   relief="flat", padding=(8, 9), font=("Microsoft YaHei UI", 9))
@@ -586,12 +766,6 @@ jobs:
                                   font=("Microsoft YaHei UI", size, "bold" if bold else "normal"), **options)
 
               def button(self, parent, text, command, primary=False, danger=False, **options):
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (3/6)
-        run: |
-          $payload = @'
                   bg = COLORS["accent"] if primary else COLORS["hover"]
                   fg = COLORS["bg"] if primary else COLORS["red"] if danger else COLORS["text"]
                   padding = {"padx": 14, "pady": 8}
@@ -606,19 +780,20 @@ jobs:
                   return tk.Frame(parent, bg=COLORS["card"], highlightbackground=COLORS["line"], highlightthickness=1)
 
               def build_ui(self) -> None:
-                  side = tk.Frame(self.root, bg=COLORS["side"], width=190)
+                  side = tk.Frame(self.root, bg=COLORS["side"], width=165)
                   side.pack(side="left", fill="y")
                   side.pack_propagate(False)
                   brand = tk.Frame(side, bg=COLORS["side"])
-                  brand.pack(fill="x", padx=22, pady=(30, 28))
+                  brand.pack(fill="x", padx=18, pady=(20, 18))
                   self.label(brand, "S /", 30, "accent", True).pack(anchor="w")
                   self.label(brand, "SEND STUDIO", 13, bold=True).pack(anchor="w", pady=(3, 0))
                   self.label(brand, "批量消息管理", 9, "muted").pack(anchor="w", pady=(5, 0))
                   for text, command in [
-                      ("01    群发任务", lambda: self.message.focus_set()),
+                      ("01    群发任务", self.focus_editor),
                       ("02    导入名单", self.import_files),
                       ("03    导出日志", self.export_logs),
                       ("04    账号设置", self.open_account_settings),
+                      ("05    计时设置", self.open_runtime_settings),
                   ]:
                       self.button(side, text, command, anchor="w").pack(fill="x", padx=14, pady=4)
                   note = tk.Frame(side, bg=COLORS["side"])
@@ -628,13 +803,13 @@ jobs:
                   self.label(note, f"WINDOWS  /  v{VERSION}", 8, "muted").pack(anchor="w")
 
                   main = tk.Frame(self.root, bg=COLORS["bg"])
-                  main.pack(side="left", expand=True, fill="both", padx=24, pady=20)
+                  main.pack(side="left", expand=True, fill="both", padx=18, pady=14)
                   header = tk.Frame(main, bg=COLORS["bg"])
                   header.pack(fill="x")
                   self.label(header, "WORKSPACE / MESSAGING", 9, "muted").pack(anchor="w")
                   title_row = tk.Frame(header, bg=COLORS["bg"])
                   title_row.pack(fill="x", pady=(4, 2))
-                  self.label(title_row, "抖音群发工作台", 23, bold=True).pack(side="left")
+                  self.label(title_row, "抖音群发工作台", 20, bold=True).pack(side="left")
                   account_box = tk.Frame(title_row, bg=COLORS["bg"])
                   account_box.pack(side="right", pady=3)
                   self.button(account_box, "账号设置", self.open_account_settings, padx=10, pady=6).pack(side="right", padx=(12, 0))
@@ -644,20 +819,21 @@ jobs:
                   self.label(header, "集中管理接收人名单、消息内容与任务进度。", 10, "muted").pack(anchor="w")
 
                   stats = tk.Frame(main, bg=COLORS["bg"])
-                  stats.pack(fill="x", pady=(16, 14))
+                  stats.pack(fill="x", pady=(10, 10))
                   self.stat_vars = [tk.StringVar(value="0") for _ in range(4)]
                   for i, (caption, color) in enumerate([("名单人数", "text"), ("已合并重复", "blue"),
                                                         ("已处理", "accent"), ("本轮待处理", "amber")]):
                       stats.columnconfigure(i, weight=1, uniform="stat")
                       card = self.card(stats)
                       card.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 5, 0 if i == 3 else 5))
-                      self.label(card, caption, 9, "muted").pack(anchor="w", padx=14, pady=(10, 0))
-                      self.label(card, size=23, color=color, bold=True, textvariable=self.stat_vars[i]).pack(anchor="w", padx=14, pady=(0, 9))
+                      self.label(card, caption, 9, "muted").pack(anchor="w", padx=12, pady=(6, 0))
+                      self.label(card, size=18, color=color, bold=True, textvariable=self.stat_vars[i]).pack(anchor="w", padx=12, pady=(0, 5))
 
                   body = tk.Frame(main, bg=COLORS["bg"])
+                  self.body = body
                   body.pack(fill="both", expand=True)
-                  body.columnconfigure(0, weight=8, minsize=410)
-                  body.columnconfigure(1, weight=5, minsize=340)
+                  body.columnconfigure(0, weight=1, minsize=410)
+                  body.columnconfigure(1, weight=0, minsize=355)
                   body.rowconfigure(0, weight=1)
                   list_card = self.card(body)
                   list_card.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
@@ -666,6 +842,8 @@ jobs:
                   list_header = tk.Frame(list_card, bg=COLORS["card"])
                   list_header.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 10))
                   self.label(list_header, "接收人名单", 12, bold=True).pack(side="left")
+                  self.expand_list_button = self.button(list_header, "全宽名单", self.toggle_list_width, padx=8, pady=5)
+                  self.expand_list_button.pack(side="left", padx=10)
                   self.import_button = self.button(list_header, "+ 导入名单", self.import_files, primary=True)
                   self.import_button.pack(side="right")
                   filters = tk.Frame(list_card, bg=COLORS["card"])
@@ -681,6 +859,12 @@ jobs:
                   second_filter = tk.Frame(filters, bg=COLORS["card"])
                   second_filter.pack(fill="x", pady=7)
                   self.gender_combo = ttk.Combobox(second_filter, textvariable=self.gender_var,
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (4/8)
+        run: |
+          $payload = @'
                                                     values=["全部性别", "男", "女", "未填写"], state="readonly", width=7)
                   self.gender_combo.pack(side="left")
                   ttk.Combobox(second_filter, textvariable=self.age_mode_var, values=["全部年龄", "已填年龄", "未填年龄"],
@@ -707,7 +891,7 @@ jobs:
                   table_frame.rowconfigure(0, weight=1)
                   table_frame.columnconfigure(0, weight=1)
                   self.table = ttk.Treeview(table_frame, columns=tuple(TABLE_COLUMNS),
-                                            show="headings", selectmode="extended", height=8)
+                                            show="headings", selectmode="extended", height=20)
                   for column, (caption, width, minimum) in TABLE_COLUMNS.items():
                       self.table.heading(column, text=caption, command=lambda key=column: self.sort_by(key))
                       self.table.column(column, width=width, minwidth=minimum, stretch=False,
@@ -732,11 +916,26 @@ jobs:
                   self.clear_button.pack(side="right")
                   self.button(bottom, "全选结果", self.select_visible, padx=8).pack(side="right", padx=7)
 
-                  compose = self.card(body)
-                  compose.grid(row=0, column=1, sticky="nsew")
+                  self.compose_shell = self.card(body)
+                  self.compose_shell.grid(row=0, column=1, sticky="nsew")
+                  fixed_controls = tk.Frame(self.compose_shell, bg=COLORS["card"])
+                  fixed_controls.pack(side="bottom", fill="x")
+                  self.compose_canvas = tk.Canvas(self.compose_shell, bg=COLORS["card"], highlightthickness=0, width=345)
+                  compose_scroll = ttk.Scrollbar(self.compose_shell, command=self.compose_canvas.yview)
+                  compose_scroll.pack(side="right", fill="y")
+                  self.compose_canvas.pack(side="left", fill="both", expand=True)
+                  self.compose_canvas.configure(yscrollcommand=compose_scroll.set)
+                  compose = tk.Frame(self.compose_canvas, bg=COLORS["card"])
+                  compose_window = self.compose_canvas.create_window((0, 0), window=compose, anchor="nw")
+                  compose.bind("<Configure>", lambda _event: self.compose_canvas.configure(scrollregion=self.compose_canvas.bbox("all")))
+                  self.compose_canvas.bind("<Configure>", lambda event: self.compose_canvas.itemconfigure(compose_window, width=event.width))
+                  def scroll_compose(event):
+                      if str(event.widget).startswith(str(compose)) and not isinstance(event.widget, tk.Text):
+                          self.compose_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+                  self.root.bind_all("<MouseWheel>", scroll_compose, add="+")
                   self.label(compose, "群发内容", 12, bold=True).pack(anchor="w", padx=16, pady=(14, 4))
                   self.label(compose, "支持 {昵称}、{抖音号} 个性化变量", 9, "muted").pack(anchor="w", padx=16, pady=(0, 8))
-                  self.message = tk.Text(compose, height=4, width=1, wrap="word", undo=True, bg=COLORS["input"],
+                  self.message = tk.Text(compose, height=3, width=1, wrap="word", undo=True, bg=COLORS["input"],
                                          fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat",
                                          padx=10, pady=10, font=("Microsoft YaHei UI", 10))
                   self.message.pack(fill="x", padx=16)
@@ -750,6 +949,21 @@ jobs:
                   self.preview = tk.Text(compose, height=2, width=1, wrap="word", bg=COLORS["input"], fg=COLORS["muted"],
                                          relief="flat", padx=10, pady=8, state="disabled", font=("Microsoft YaHei UI", 9))
                   self.preview.pack(fill="x", padx=16)
+                  media_frame = tk.Frame(compose, bg=COLORS["card"])
+                  media_frame.pack(fill="x", padx=16, pady=(12, 4))
+                  self.label(media_frame, "关注后媒体", 11, bold=True).pack(anchor="w")
+                  tk.Checkbutton(media_frame, text="对方关注后发送媒体文件", variable=self.follow_media_var,
+                                 command=self.toggle_follow_media, bg=COLORS["card"], fg=COLORS["text"],
+                                 activebackground=COLORS["card"], activeforeground=COLORS["text"],
+                                 selectcolor=COLORS["input"]).pack(anchor="w", pady=(4, 5))
+                  media_actions = tk.Frame(media_frame, bg=COLORS["card"])
+                  media_actions.pack(fill="x")
+                  self.button(media_actions, "导入媒体", self.choose_media, padx=10, pady=5).pack(side="left")
+                  self.button(media_actions, "清除", self.clear_media, padx=10, pady=5).pack(side="left", padx=6)
+                  self.button(media_actions, "关注回执", self.import_follow_receipts, padx=10, pady=5).pack(side="right")
+                  self.label(media_frame, size=9, textvariable=self.media_name_var, wraplength=295, justify="left").pack(anchor="w", pady=(8, 3))
+                  self.label(media_frame, size=8, color="muted", textvariable=self.media_info_var).pack(anchor="w")
+                  self.label(media_frame, size=8, color="muted", textvariable=self.media_status_var, wraplength=295, justify="left").pack(anchor="w", pady=(5, 0))
                   settings = tk.Frame(compose, bg=COLORS["card"])
                   settings.pack(fill="x", padx=16, pady=(10, 4))
                   self.label(settings, "发送间隔", 9, "muted").pack(side="left")
@@ -764,35 +978,221 @@ jobs:
                   self.scope_combo = ttk.Combobox(scope_row, textvariable=self.scope_var, state="readonly", width=15,
                                                    values=["当前筛选结果", "全部导入名单", "仅选中的接收人"])
                   self.scope_combo.pack(side="left", fill="x", expand=True)
-                  actions = tk.Frame(compose, bg=COLORS["card"])
+                  actions = tk.Frame(fixed_controls, bg=COLORS["card"])
                   actions.pack(fill="x", padx=16, pady=(8, 8))
                   self.start_button = self.button(actions, "开始群发", self.start, primary=True)
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (4/6)
-        run: |
-          $payload = @'
                   self.start_button.pack(side="left", fill="x", expand=True)
                   self.pause_button = self.button(actions, "暂停", self.toggle_pause, state="disabled")
                   self.pause_button.pack(side="left", padx=7)
                   self.stop_button = self.button(actions, "停止", self.stop, danger=True, state="disabled")
                   self.stop_button.pack(side="left")
-                  ttk.Progressbar(compose, variable=self.progress_var, maximum=100).pack(fill="x", padx=16, pady=(0, 6))
-                  self.label(compose, size=8, color="muted", textvariable=self.progress_text).pack(anchor="w", padx=16, pady=(0, 10))
+                  ttk.Progressbar(fixed_controls, variable=self.progress_var, maximum=100).pack(fill="x", padx=16, pady=(0, 6))
+                  self.label(fixed_controls, size=8, color="muted", textvariable=self.progress_text,
+                             wraplength=310, justify="left").pack(anchor="w", padx=16, pady=(0, 10))
 
                   log_card = self.card(main)
-                  log_card.pack(fill="x", pady=(14, 0))
+                  log_card.pack(fill="x", pady=(8, 0))
                   log_top = tk.Frame(log_card, bg=COLORS["card"])
                   log_top.pack(fill="x", padx=14, pady=(8, 4))
                   self.label(log_top, "运行日志", 10, bold=True).pack(side="left")
                   self.label(log_top, "ACTIVITY", 8, "muted").pack(side="left", padx=12)
                   self.button(log_top, "导出 CSV", self.export_logs, pady=3).pack(side="right")
+                  self.log_toggle_button = self.button(log_top, "展开日志", self.toggle_logs, padx=10, pady=3)
+                  self.log_toggle_button.pack(side="right", padx=6)
                   self.log_text = tk.Text(log_card, height=2, width=1, wrap="word", bg=COLORS["card"], fg=COLORS["muted"],
                                           relief="flat", state="disabled", font=("Consolas", 9), padx=14, pady=4)
-                  self.log_text.pack(fill="x", pady=(0, 8))
                   self.label(main, size=9, color="muted", textvariable=self.toast_var, anchor="w").pack(fill="x", pady=(8, 0))
+                  footer = tk.Frame(main, bg=COLORS["bg"])
+                  footer.pack(fill="x", pady=(5, 0))
+                  self.label(footer, size=9, color="muted", textvariable=self.local_time_var).pack(side="right")
+                  self.label(footer, size=9, color="muted", textvariable=self.runtime_var).pack(side="left")
+                  self.button(footer, "计时设置", self.open_runtime_settings, padx=8, pady=2).pack(side="left", padx=10)
                   self.update_preview()
+
+              def toggle_list_width(self) -> None:
+                  self.list_expanded = not self.list_expanded
+                  if self.list_expanded:
+                      self.compose_shell.grid_remove()
+                      self.body.columnconfigure(1, minsize=0, weight=0)
+                  else:
+                      self.compose_shell.grid()
+                      self.body.columnconfigure(1, minsize=355, weight=0)
+                  self.expand_list_button.configure(text="恢复双栏" if self.list_expanded else "全宽名单")
+
+              def focus_editor(self) -> None:
+                  if self.list_expanded:
+                      self.toggle_list_width()
+                  self.compose_canvas.yview_moveto(0)
+                  self.message.focus_set()
+
+              def toggle_logs(self) -> None:
+                  self.log_expanded = not self.log_expanded
+                  if self.log_expanded:
+                      self.log_text.pack(fill="x", pady=(0, 8))
+                  else:
+                      self.log_text.pack_forget()
+                  self.log_toggle_button.configure(text="收起日志" if self.log_expanded else "展开日志")
+
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (5/8)
+        run: |
+          $payload = @'
+              def refresh_clock_labels(self) -> None:
+                  self.local_time_var.set(datetime.now().strftime("本地时间：%Y-%m-%d %H:%M:%S"))
+                  self.runtime_var.set(f"本次运行 {format_duration(self.runtime_clock.actual)}  ·  已运行 {format_duration(self.runtime_clock.displayed)}")
+
+              def tick_clock(self) -> None:
+                  self.clock_timer = None
+                  self.refresh_clock_labels()
+                  self.clock_timer = self.root.after(1000, self.tick_clock)
+
+              def apply_runtime_duration(self, seconds: int) -> None:
+                  save_runtime_offset(self.runtime_path, seconds)
+                  self.runtime_clock.set_initial(seconds)
+                  self.refresh_clock_labels()
+                  self.log("计时", f"初始已运行时长已设为 {format_duration(seconds)}。")
+                  self.toast_var.set("计时设置已保存，已运行时长将从设定值继续累计。")
+
+              def open_runtime_settings(self) -> None:
+                  if self.runtime_dialog is not None and self.runtime_dialog.winfo_exists():
+                      self.runtime_dialog.lift()
+                      return
+                  dialog = tk.Toplevel(self.root)
+                  self.runtime_dialog = dialog
+                  dialog.title("计时设置")
+                  dialog.configure(bg=COLORS["card"])
+                  dialog.resizable(False, False)
+                  dialog.transient(self.root)
+                  content = tk.Frame(dialog, bg=COLORS["card"])
+                  content.pack(fill="both", expand=True, padx=24, pady=20)
+                  self.label(content, "初始已运行时长", 15, bold=True).pack(anchor="w")
+                  self.label(content, "保存后从设定值继续计数，下一次启动沿用此初始值。", 9, "muted").pack(anchor="w", pady=(8, 12))
+                  current = self.runtime_clock.initial_seconds
+                  self.runtime_form = [tk.StringVar(value=str(value)) for value in (current // 3600, current // 60 % 60, current % 60)]
+                  row = tk.Frame(content, bg=COLORS["card"])
+                  row.pack(fill="x", pady=8)
+                  for variable, caption, maximum in zip(self.runtime_form, ("时", "分", "秒"), (99999, 59, 59)):
+                      tk.Spinbox(row, from_=0, to=maximum, width=5, textvariable=variable, bg=COLORS["input"],
+                                 fg=COLORS["text"], buttonbackground=COLORS["line"], relief="flat").pack(side="left", ipady=6)
+                      self.label(row, caption, 10, "muted").pack(side="left", padx=(5, 14))
+                  self.label(content, f"本次运行：{format_duration(self.runtime_clock.actual)}", 9, "muted").pack(anchor="w", pady=(8, 12))
+                  def close_dialog():
+                      dialog.grab_release()
+                      dialog.destroy()
+                      self.runtime_dialog = None
+                  def save():
+                      try:
+                          self.apply_runtime_duration(duration_seconds(*(variable.get() for variable in self.runtime_form)))
+                      except (ValueError, OSError) as exc:
+                          messagebox.showerror("保存失败", str(exc), parent=dialog)
+                          return
+                      close_dialog()
+                  actions = tk.Frame(content, bg=COLORS["card"])
+                  actions.pack(fill="x", pady=(8, 0))
+                  self.button(actions, "从零开始", lambda: [v.set("0") for v in self.runtime_form], padx=10).pack(side="left")
+                  self.runtime_save_button = self.button(actions, "保存设置", save, primary=True)
+                  self.runtime_save_button.pack(side="right")
+                  self.button(actions, "取消", close_dialog, padx=10).pack(side="right", padx=8)
+                  dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+                  dialog.bind("<Escape>", lambda _event: close_dialog())
+                  dialog.update_idletasks()
+                  dialog.grab_set()
+
+              def set_media_file(self, path: Path) -> None:
+                  asset = inspect_media(path)
+                  if self.media_queue.pending:
+                      self.cancel_media_tasks()
+                  self.media_asset = asset
+                  self.media_name_var.set(asset.name)
+                  size = f"{asset.size / 1024 / 1024:.2f} MB" if asset.size >= 1024 * 1024 else f"{asset.size / 1024:.1f} KB"
+                  self.media_info_var.set(f"{asset.kind}  ·  {size}")
+                  self.refresh_media_status()
+                  self.log("媒体", f"已选择 {asset.name}。")
+
+              def choose_media(self) -> None:
+                  filename = filedialog.askopenfilename(title="选择关注后发送的媒体文件", filetypes=[
+                      ("媒体文件", " ".join("*" + suffix for suffix in MEDIA_EXTENSIONS)), ("所有文件", "*.*")])
+                  if not filename:
+                      return
+                  try:
+                      self.set_media_file(Path(filename))
+                  except (ValueError, OSError) as exc:
+                      messagebox.showerror("媒体文件不可用", str(exc), parent=self.root)
+
+              def clear_media(self) -> None:
+                  self.cancel_media_tasks()
+                  self.media_asset = None
+                  self.follow_media_var.set(False)
+                  self.media_name_var.set("尚未选择媒体文件")
+                  self.media_info_var.set("支持图片、视频、音频")
+                  self.refresh_media_status()
+
+              def toggle_follow_media(self) -> None:
+                  if not self.follow_media_var.get():
+                      self.cancel_media_tasks()
+                  self.refresh_media_status()
+
+              def refresh_media_status(self) -> None:
+                  if not self.follow_media_var.get():
+                      state = "关注后媒体规则未启用"
+                  elif self.media_asset is None:
+                      state = "请选择媒体文件"
+                  else:
+                      state = "等待关注回执" if not self.media_queue.pending else "正在处理媒体任务"
+                  self.media_status_var.set(f"{state}\n待处理 {len(self.media_queue.pending)} · 已处理 {self.media_queue.completed} · 异常 {self.media_queue.failed}")
+                  self.stop_button.configure(state="normal" if self.session.active or self.media_queue.pending else "disabled")
+
+              def accept_follow_receipts(self, receipts: list[Recipient]) -> tuple[int, int, int]:
+                  if not self.follow_media_var.get():
+                      raise ValueError("请先启用“对方关注后发送媒体文件”。")
+                  if self.media_asset is None:
+                      raise ValueError("请先导入媒体文件。")
+                  targets = {record.douyin_id: record for record in self.target_records()}
+                  matched = [targets[receipt.douyin_id] for receipt in receipts if receipt.douyin_id in targets]
+                  skipped = len(receipts) - len(matched)
+                  added, duplicate = self.media_queue.submit(matched, self.media_asset)
+                  self.log("关注", f"回执匹配后新增媒体任务 {added} 条，合并重复 {duplicate} 条，范围外 {skipped} 条。")
+                  self.refresh_media_status()
+                  if self.media_queue.pending and self.media_timer is None:
+                      self.media_timer = self.root.after(500, self.process_media_tick)
+                  return added, duplicate, skipped
+
+              def import_follow_receipts(self) -> None:
+                  if not self.follow_media_var.get() or self.media_asset is None:
+                      messagebox.showinfo("媒体规则", "请先启用关注后媒体规则，并选择媒体文件。", parent=self.root)
+                      return
+                  filenames = filedialog.askopenfilenames(title="导入关注回执名单", filetypes=[("名单文件", "*.txt *.csv *.tsv"), ("所有文件", "*.*")])
+                  if not filenames:
+                      return
+                  try:
+                      receipts = []
+                      for filename in filenames:
+                          merge_records(receipts, read_list(Path(filename)).records)
+                      added, duplicate, skipped = self.accept_follow_receipts(receipts)
+                      self.toast_var.set(f"关注回执已导入：新增媒体任务 {added} 条，重复 {duplicate} 条，范围外 {skipped} 条。")
+                  except (ValueError, OSError) as exc:
+                      messagebox.showerror("回执导入失败", str(exc), parent=self.root)
+
+              def process_media_tick(self) -> None:
+                  self.media_timer = None
+                  task = self.media_queue.process_next()
+                  if task is not None:
+                      detail = f"{task.recipient.nickname or task.recipient.douyin_id} ({task.recipient.douyin_id}) · {task.asset.name} · {task.status}"
+                      self.log("媒体", detail + (f"：{task.error}" if task.error else ""))
+                  self.refresh_media_status()
+                  if self.media_queue.pending:
+                      self.media_timer = self.root.after(500, self.process_media_tick)
+
+              def cancel_media_tasks(self) -> None:
+                  if self.media_timer is not None:
+                      self.root.after_cancel(self.media_timer)
+                      self.media_timer = None
+                  count = self.media_queue.cancel_pending()
+                  if count:
+                      self.log("媒体", f"已取消尚未处理的媒体任务 {count} 条。")
+                  self.refresh_media_status()
 
               def refresh_account_display(self) -> None:
                   text = profile_display_text(self.account_profile)
@@ -882,6 +1282,12 @@ jobs:
                       variables["mask_account"].set(False)
 
                   actions = tk.Frame(content, bg=COLORS["card"])
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (6/8)
+        run: |
+          $payload = @'
                   actions.pack(side="bottom", fill="x", pady=(4, 0))
                   self.button(actions, "清空信息", clear_fields, danger=True, padx=10).pack(side="left")
                   self.account_save_button = self.button(actions, "保存设置", save, primary=True)
@@ -1006,12 +1412,6 @@ jobs:
                   dialog.minsize(460, 420)
                   dialog.transient(self.root)
                   self.label(dialog, "接收人资料", 16, bold=True).pack(anchor="w", padx=20, pady=(18, 8))
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (5/6)
-        run: |
-          $payload = @'
                   self.label(dialog, "完整字段与导入原文，可选中复制。", 9, "muted").pack(anchor="w", padx=20, pady=(0, 10))
                   details = recipient_details_text(record, self.session.statuses.get(record.douyin_id, "待开始"))
                   frame = tk.Frame(dialog, bg=COLORS["input"])
@@ -1082,6 +1482,9 @@ jobs:
                       return
                   if not messagebox.askyesno("清空名单", "确定清空当前名单和任务状态？原始文件会保留。", parent=self.root):
                       return
+                  self.cancel_media_tasks()
+                  self.media_queue = FollowMediaQueue()
+                  self.refresh_media_status()
                   self.records.clear()
                   self.session = Session()
                   self.import_duplicates = 0
@@ -1118,7 +1521,7 @@ jobs:
                       widget.configure(state="disabled" if busy else "normal")
                   self.message.configure(state="disabled" if busy else "normal")
                   self.pause_button.configure(state="normal" if busy else "disabled")
-                  self.stop_button.configure(state="normal" if busy else "disabled")
+                  self.stop_button.configure(state="normal" if busy or self.media_queue.pending else "disabled")
                   self.scope_combo.configure(state="disabled" if busy else "readonly")
                   self.pause_button.configure(text="继续" if self.session.state == "paused" else "暂停")
 
@@ -1128,6 +1531,12 @@ jobs:
                       if not math.isfinite(interval) or not 0.1 <= interval <= 10:
                           raise ValueError("发送间隔请填写 0.1 至 10 秒之间的数字。")
                       targets = self.target_records()
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (7/8)
+        run: |
+          $payload = @'
                       self.session.start(targets, self.message.get("1.0", "end-1c"))
                   except ValueError as exc:
                       messagebox.showinfo("请检查任务设置", str(exc), parent=self.root)
@@ -1184,7 +1593,11 @@ jobs:
                   self.update_stats()
 
               def stop(self) -> None:
+                  had_media = bool(self.media_queue.pending)
+                  self.cancel_media_tasks()
                   if not self.session.active:
+                      if had_media:
+                          self.toast_var.set("尚未处理的媒体任务已停止。")
                       return
                   self.cancel_tick()
                   self.session.stop()
@@ -1238,10 +1651,17 @@ jobs:
                       return
                   self.toast_var.set(f"运行日志已导出：{Path(filename).name}")
 
+              def shutdown_timers(self) -> None:
+                  for name in ("timer", "search_timer", "clock_timer", "media_timer"):
+                      identifier = getattr(self, name, None)
+                      if identifier is not None:
+                          self.root.after_cancel(identifier)
+                          setattr(self, name, None)
+
               def close(self) -> None:
-                  if self.session.active and not messagebox.askyesno("退出工作台", "当前任务尚未结束，确定退出？", parent=self.root):
+                  if (self.session.active or self.media_queue.pending) and not messagebox.askyesno("退出工作台", "当前任务尚未结束，确定退出？", parent=self.root):
                       return
-                  self.cancel_tick()
+                  self.shutdown_timers()
                   self.root.destroy()
 
 
@@ -1262,6 +1682,29 @@ jobs:
                   app.account_save_button.invoke()
                   root.update_idletasks()
                   assert app.account_dialog is None
+                  app.open_runtime_settings()
+                  for variable, value in zip(app.runtime_form, ("1", "2", "3")):
+                      variable.set(value)
+                  actual_anchor = app.runtime_clock.started
+                  app.runtime_save_button.invoke()
+                  assert app.runtime_dialog is None
+                  assert load_runtime_offset(app.runtime_path) == 3723
+                  assert app.runtime_clock.started == actual_anchor
+                  assert 3723 <= app.runtime_clock.displayed < 3733
+                  app.refresh_clock_labels()
+                  assert app.local_time_var.get().startswith("本地时间：")
+                  parsed_time = datetime.strptime(app.local_time_var.get().split("：", 1)[1], "%Y-%m-%d %H:%M:%S")
+                  assert abs((datetime.now() - parsed_time).total_seconds()) < 3
+                  old_width = app.table.winfo_width()
+                  app.toggle_list_width()
+                  root.update_idletasks()
+                  assert app.list_expanded and app.table.winfo_width() >= old_width
+                  app.focus_editor()
+                  assert not app.list_expanded
+                  assert not app.log_expanded
+                  app.toggle_logs()
+                  assert app.log_expanded
+                  app.toggle_logs()
                   root.withdraw()
                   assert load_profile(profile_path).account == "0000012345"
                   assert app.account_display_var.get() == "工作账号\n账号：000****345"
@@ -1277,12 +1720,6 @@ jobs:
                   app.cancel_tick()
                   assert app.session.cursor == 1
                   app.toggle_pause()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (6/6)
-        run: |
-          $payload = @'
                   assert app.session.state == "paused" and app.timer is None
                   app.toggle_pause()
                   app.cancel_tick()
@@ -1339,14 +1776,41 @@ jobs:
                   assert len(app.table.get_children()) == 0
                   app.reset_filters()
                   assert len(app.table.get_children()) == 6
+                  media_path = Path(profile_directory.name) / "关注后发送的媒体.PNG"
+                  media_path.write_bytes(b"media-name-preview-fixture")
+                  app.set_media_file(media_path)
+                  app.follow_media_var.set(True)
+                  app.toggle_follow_media()
+                  assert app.media_name_var.get() == media_path.name
+                  assert app.accept_follow_receipts([Recipient("demo_001"), Recipient("outside_001")]) == (1, 0, 1)
+                  app.root.after_cancel(app.media_timer)
+                  app.media_timer = None
+                  app.process_media_tick()
+                  assert app.media_queue.completed == 1
+                  assert app.accept_follow_receipts([Recipient("demo_001")]) == (0, 1, 0)
+                  assert app.accept_follow_receipts([Recipient("demo_002")]) == (1, 0, 0)
+                  app.stop()
+                  assert not app.media_queue.pending and app.media_timer is None
+                  app.clear_media()
+                  assert app.media_asset is None and not app.follow_media_var.get()
                   report_path.write_text(json.dumps({"ok": True, "mode": "local_queue", "version": VERSION,
                                                      "tk_version": root.tk.call("info", "patchlevel"),
                                                      "checks": ["widgets", "account_dialog", "account_save", "account_mask", "account_hide",
                                                                 "sample_import", "start", "pause", "resume", "stop", "complete", "filter",
                                                                 "metadata_columns", "combined_filters", "age_sort", "details", "target_scope",
-                                                                "invalid_age_range", "empty_filter_result"]},
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (8/8)
+        run: |
+          $payload = @'
+                                                                "invalid_age_range", "empty_filter_result", "wide_list", "collapsible_logs",
+                                                                "local_clock", "custom_runtime", "media_filename", "follow_receipts",
+                                                                "media_deduplication", "media_cancel"]},
                                                     ensure_ascii=False, indent=2), encoding="utf-8")
               finally:
+                  if "app" in locals():
+                      app.shutdown_timers()
                   root.destroy()
                   profile_directory.cleanup()
 
@@ -1404,9 +1868,11 @@ jobs:
           from unittest import mock
           from pathlib import Path
 
-          from app import (AccountProfile, Recipient, Session, csv_cell, decode_file, filter_records, load_profile,
+          from app import (MAX_MESSAGE, AccountProfile, FollowMediaQueue, Recipient, RuntimeClock, Session,
+                           csv_cell, decode_file, duration_seconds, filter_records, format_duration, inspect_media, load_profile,
+                           load_runtime_offset,
                            merge_records, normalize_profile, parse_age, parse_text, profile_display_text,
-                           read_list, recipient_details_text, render_message, save_profile, sort_records, valid_id)
+                           read_list, recipient_details_text, render_message, save_profile, save_runtime_offset, sort_records, valid_id)
 
 
           class AccountProfileTests(unittest.TestCase):
@@ -1627,14 +2093,14 @@ jobs:
                                   Recipient("00004", "联系人丁", ["评论区"])]
 
               def test_combined_filters_are_intersection_with_inclusive_age_bounds(self):
-                  result = filter_records(self.records, query="联系人", source="关注", gender="女", min_age=19,
-                                          max_age=31, region_query="江苏", region_field="资料地区")
           '@
           [IO.File]::WriteAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded test_app.py (2/2)
         run: |
           $payload = @'
+                  result = filter_records(self.records, query="联系人", source="关注", gender="女", min_age=19,
+                                          max_age=31, region_query="江苏", region_field="资料地区")
                   self.assertEqual([r.douyin_id for r in result], ["00001", "00003"])
                   result = filter_records(self.records, gender="女", min_age=31, max_age=31)
                   self.assertEqual([r.douyin_id for r in result], ["00001"])
@@ -1668,6 +2134,138 @@ jobs:
                   details = recipient_details_text(self.records[0])
                   for value in ("性别：女", "年龄：31 岁", "资料地区：江苏 镇江", "IP属地：上海", "保留完整导入行"):
                       self.assertIn(value, details)
+
+
+          class RuntimeClockTests(unittest.TestCase):
+              def test_duration_components_and_formatting(self):
+                  self.assertEqual(duration_seconds("12", "34", "56"), 45296)
+                  self.assertEqual(format_duration(45296.9), "12:34:56")
+                  self.assertEqual(format_duration(360000), "100:00:00")
+                  for values in (("-1", "0", "0"), ("1", "60", "0"), ("0", "0", "60"),
+                                 ("x", "0", "0"), ("100000", "0", "0")):
+                      with self.assertRaises(ValueError):
+                          duration_seconds(*values)
+
+              def test_custom_offset_does_not_change_actual_runtime(self):
+                  with mock.patch("app.time.monotonic", return_value=100) as monotonic:
+                      clock = RuntimeClock(3600)
+                      monotonic.return_value = 110
+                      self.assertEqual((clock.actual, clock.displayed), (10, 3610))
+                      clock.set_initial(7200)
+                      monotonic.return_value = 120
+                      self.assertEqual((clock.actual, clock.displayed), (20, 7210))
+                      with self.assertRaises(ValueError):
+                          clock.set_initial(-1)
+
+              def test_runtime_setting_survives_restart_and_is_separate_from_account(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "runtime-settings.json"
+                      self.assertEqual(load_runtime_offset(path), 0)
+                      save_runtime_offset(path, 3723)
+                      self.assertEqual(load_runtime_offset(path), 3723)
+                      save_profile(path.with_name("settings.json"), AccountProfile("00123", "工作账号"))
+                      self.assertEqual(load_runtime_offset(path), 3723)
+                      for value in (-1, "1", True):
+                          with self.assertRaises(ValueError):
+                              save_runtime_offset(path, value)
+
+              def test_runtime_write_failure_retains_previous_value(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "runtime-settings.json"
+                      save_runtime_offset(path, 123)
+                      with mock.patch("app.os.replace", side_effect=PermissionError("文件被占用")):
+                          with self.assertRaises(PermissionError):
+                              save_runtime_offset(path, 456)
+                      self.assertEqual(load_runtime_offset(path), 123)
+                      self.assertEqual(list(path.parent.glob("*.tmp")), [])
+
+
+          class FollowMediaTests(unittest.TestCase):
+              def test_file_metadata_and_invalid_inputs(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "欢迎关注 文件.PNG"
+                      path.write_bytes(b"image-file")
+                      asset = inspect_media(path)
+                      self.assertEqual((asset.name, asset.kind, asset.size), (path.name, "图片", 10))
+                      for filename, content in (("empty.mp4", b""), ("script.exe", b"data")):
+                          invalid = Path(directory) / filename
+                          invalid.write_bytes(content)
+                          with self.assertRaises(ValueError):
+                              inspect_media(invalid)
+
+              def test_receipts_are_deduplicated_before_and_after_processing(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "welcome.mp4"
+                      path.write_bytes(b"video-file")
+                      asset = inspect_media(path)
+                      queue = FollowMediaQueue()
+                      recipients = [Recipient("00123"), Recipient("00456")]
+                      self.assertEqual(queue.submit(recipients, asset), (2, 0))
+                      self.assertEqual(queue.submit(recipients, asset), (0, 2))
+                      self.assertEqual(queue.process_next().status, "已处理")
+                      self.assertEqual(queue.submit(recipients, asset), (0, 2))
+                      queue.process_next()
+                      self.assertEqual((queue.completed, len(queue.pending)), (2, 0))
+                      self.assertIsNone(queue.process_next())
+
+              def test_changed_media_is_rejected_and_can_be_reselected(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "welcome.mp4"
+                      path.write_bytes(b"old-video")
+                      asset = inspect_media(path)
+                      recipient = Recipient("00123")
+                      queue = FollowMediaQueue()
+                      queue.submit([recipient], asset)
+                      path.write_bytes(b"new-longer-video")
+                      with self.assertRaises(ValueError):
+                          queue.submit([Recipient("00456")], asset)
+                      failed = queue.process_next()
+                      self.assertEqual(failed.status, "文件不可用")
+                      self.assertEqual((queue.completed, queue.failed), (0, 1))
+                      self.assertEqual(queue.submit([recipient], inspect_media(path)), (1, 0))
+                      self.assertEqual(queue.process_next().status, "已处理")
+
+              def test_missing_file_and_cancelled_tasks_can_be_retried(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "welcome.mp3"
+                      path.write_bytes(b"audio-file")
+                      asset = inspect_media(path)
+                      recipients = [Recipient("00123"), Recipient("00456")]
+                      queue = FollowMediaQueue()
+                      queue.submit(recipients, asset)
+                      self.assertEqual(queue.cancel_pending(), 2)
+                      self.assertEqual(queue.submit(recipients, asset), (2, 0))
+                      path.unlink()
+                      self.assertEqual(queue.process_next().status, "文件不可用")
+                      self.assertEqual(queue.failed, 1)
+
+              def test_each_different_file_has_its_own_deduplication_key(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      queue = FollowMediaQueue()
+                      record = Recipient("00123")
+                      for filename in ("one.jpg", "two.jpg"):
+                          path = Path(directory) / filename
+                          path.write_bytes(b"image-file")
+                          self.assertEqual(queue.submit([record], inspect_media(path)), (1, 0))
+                      self.assertEqual(queue.process_next().asset.name, "one.jpg")
+                      self.assertEqual(queue.process_next().asset.name, "two.jpg")
+
+
+          class MessageLimitTests(unittest.TestCase):
+              def test_limit_accepts_boundary_and_rejects_overflow(self):
+                  session = Session()
+                  session.start([Recipient("00123")], "文" * MAX_MESSAGE)
+                  session.stop()
+                  with self.assertRaises(ValueError):
+                      session.start([Recipient("00123")], "文" * (MAX_MESSAGE + 1))
+
+              def test_personalized_message_also_obeys_limit(self):
+                  session = Session()
+                  template = "文" * (MAX_MESSAGE - len("{昵称}")) + "{昵称}"
+                  self.assertEqual(len(template), MAX_MESSAGE)
+                  with self.assertRaises(ValueError):
+                      session.start([Recipient("00123", "一个较长的接收人昵称")], template)
+                  self.assertEqual(session.state, "idle")
 
 
           if __name__ == "__main__":
@@ -1736,7 +2334,7 @@ jobs:
           - 表格包含昵称、抖音号、性别、年龄、资料地区、IP 属地、来源和状态；可拖动列宽或使用底部横向滚动条。
           - 点击任意表头切换升降序；年龄按数值排序，缺失值始终排在最后。双击接收人或选中后按 Enter 查看完整字段与导入原文。
           - 消息支持 `{昵称}`、`{抖音号}`，右侧预览会替换为对应接收人的信息。
-          - 消息上限 2,000 字，发送间隔可填 0.1–10 秒 / 人。
+          - 消息上限 200 字，发送间隔可填 0.1–10 秒 / 人。变量替换后的每条消息也必须在 200 字以内。
           - 任务范围默认采用“当前筛选结果”，可切换“全部导入名单”或“仅选中的接收人”。点击“全选结果”或在表格按 Ctrl+A 可选中当前结果。
           - 开始后固定本轮接收人和顺序；运行期间改变筛选只影响显示，下次开始才采用新的结果。
           - 任务开始后锁定名单和编辑器；暂停后可继续，停止后保留本轮状态，再次开始创建新一轮。
@@ -1768,7 +2366,28 @@ jobs:
           若先前导入的是只包含 ID、昵称和来源的旧 CSV，请重新导入原始 TXT 或本次新版完整资料 CSV。
           旧版 CSV 仍可导入，但其中没有保存的资料会显示为“未填写”。
 
-          当前版本保留自动构建；上传工作流后，重新下载本次构建的 EXE 即可看到调整。
+          ## v1.5.0 列表、媒体规则和计时
+
+          接收人列表采用更紧凑的行高，右侧设置区可滚动，操作按钮始终保留在下方。
+          点击“全宽名单”可将名单扩展至整个工作区，点击“恢复双栏”或左侧“群发任务”可回到编辑区。
+          日志默认折叠，可点“展开日志”查看；全部记录仍可正常导出。
+
+          在“关注后媒体”中点击“导入媒体”可选择图片、视频或音频，界面显示完整文件名、类型与大小。
+          勾选“对方关注后发送媒体文件”后，点击“关注回执”导入回执 TXT / CSV / TSV；回执 ID 与当前任务范围匹配后，自动加入本地媒体任务队列。
+          同一 ID 和同一媒体文件的重复回执只生成一次任务；选择其他文件可以生成新任务。
+          文件丢失或变更会标为异常；重新选择可用文件后可重新导入回执。
+          关闭规则、清除媒体或点击“停止”会取消未处理的媒体任务。规则不主动轮询抖音，也不自行生成关注事件；尚未接入真实关注通知和媒体发送接口。
+          文件类型依据扩展名识别，此版本提供文件名预览；不包含媒体解码与缩略图播放。
+
+          右下角每秒读取运行电脑的本地日期和时间；Windows 时区与系统时间改变后，显示也随之更新。
+          底部“本次运行”从程序启动起计数；“已运行”支持设置初始时长，然后从设定值继续累计。
+          点击“计时设置”可填写时、分、秒，保存后立即生效；初始值写入 `%LOCALAPPDATA%/DouyinSender/runtime-settings.json`，下次启动从该初始值开始。
+          计时采用单调时钟，不受手动调整 Windows 系统时间影响。
+
+          本程序的消息上限调整为 200 字；这是一项界面产品设置，不作为抖音官方私信规则说明。
+          字数包含模板字符与替换后的个性化内容，超过上限会提示修改。
+
+          当前版本保留任意 push 自动构建；上传工作流后，重新下载本次构建的 EXE 即可看到调整。
 
           ## 本地运行与构建
 
