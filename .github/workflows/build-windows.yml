@@ -33,7 +33,7 @@ jobs:
           architecture: x64
 
 
-      - name: Write embedded app.py (1/4)
+      - name: Write embedded app.py (1/6)
         run: |
           $payload = @'
           """Desktop messaging workbench with a local task queue."""
@@ -46,6 +46,7 @@ jobs:
           import os
           import re
           import sys
+          import tempfile
           import time
           import traceback
           from dataclasses import dataclass, field
@@ -54,7 +55,7 @@ jobs:
 
 
           APP_NAME = "抖音群发工作台"
-          VERSION = "1.2.0"
+          VERSION = "1.4.0"
           MAX_FILE_BYTES = 5 * 1024 * 1024
           MAX_RECIPIENTS = 20000
           MAX_MESSAGE = 2000
@@ -63,6 +64,16 @@ jobs:
           ID_HEADERS = {"抖音号", "抖音id", "douyin_id", "douyinid", "id", "账号"}
           NAME_HEADERS = {"昵称", "nickname", "name", "姓名"}
           SOURCE_HEADERS = {"来源", "source", "分组"}
+          GENDER_HEADERS = {"性别", "gender", "sex"}
+          AGE_HEADERS = {"年龄", "age", "岁数"}
+          REGION_HEADERS = {"资料位置", "资料地区", "地区", "所在地", "region", "location"}
+          IP_REGION_HEADERS = {"ip属地", "ip地区", "ip_region", "ip_location"}
+          TABLE_COLUMNS = {
+              "name": ("昵称", 145, 100), "id": ("抖音号", 165, 120),
+              "gender": ("性别", 75, 65), "age": ("年龄", 75, 65),
+              "region": ("资料地区", 185, 125), "ip_region": ("IP属地", 130, 95),
+              "source": ("来源", 145, 95), "status": ("状态", 100, 85),
+          }
           COLORS = {
               "bg": "#0B1019", "side": "#101722", "card": "#151E2C",
               "input": "#0E1622", "line": "#263449", "text": "#F0F4FC",
@@ -76,6 +87,11 @@ jobs:
               douyin_id: str
               nickname: str = ""
               sources: list[str] = field(default_factory=list)
+              gender: str = ""
+              age: int | None = None
+              region: str = ""
+              ip_region: str = ""
+              raw_details: list[str] = field(default_factory=list)
 
 
           @dataclass
@@ -84,6 +100,91 @@ jobs:
               parsed: int = 0
               skipped: int = 0
               duplicates: int = 0
+
+
+          @dataclass
+          class AccountProfile:
+              account: str = ""
+              nickname: str = ""
+              show_account: bool = True
+              show_nickname: bool = True
+              mask_account: bool = False
+
+
+          def normalize_profile(profile: AccountProfile) -> AccountProfile:
+              if not isinstance(profile.account, str) or not isinstance(profile.nickname, str):
+                  raise ValueError("账号和昵称必须是文本。")
+              account = profile.account.strip().removeprefix("@")
+              nickname = profile.nickname.strip()
+              if account and not valid_id(account):
+                  raise ValueError("账号限 1–64 位字母、数字、下划线、短横线或小数点。")
+              if len(nickname) > 40 or any(ord(char) < 32 for char in nickname):
+                  raise ValueError("昵称最多 40 字，不能包含换行或控制字符。")
+              flags = (profile.show_account, profile.show_nickname, profile.mask_account)
+              if any(type(flag) is not bool for flag in flags):
+                  raise ValueError("账号显示选项格式不正确。")
+              return AccountProfile(account, nickname, *flags)
+
+
+          def profile_display_text(profile: AccountProfile) -> str:
+              lines = []
+              if profile.show_nickname and profile.nickname:
+                  nickname = profile.nickname
+                  lines.append(nickname if len(nickname) <= 20 else nickname[:19] + "…")
+              if profile.show_account and profile.account:
+                  account = profile.account
+                  if profile.mask_account:
+                      account = account[:3] + "****" + account[-3:] if len(account) > 6 else "*" * len(account)
+                  elif len(account) > 28:
+                      account = account[:16] + "…" + account[-8:]
+                  lines.append(f"账号：{account}")
+              return "\n".join(lines)
+
+
+          def default_profile_path() -> Path:
+              if sys.platform == "win32":
+                  base = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+              else:
+                  base = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+              return base / "DouyinSender" / "settings.json"
+
+
+          def load_profile(path: Path) -> AccountProfile:
+              if not path.exists():
+                  return AccountProfile()
+              if path.stat().st_size > 32768:
+                  raise ValueError("账号设置文件过大。")
+              data = json.loads(path.read_text(encoding="utf-8"))
+              if not isinstance(data, dict) or data.get("schema_version") != 1:
+                  raise ValueError("账号设置文件格式不正确。")
+              values = data.get("profile")
+              if not isinstance(values, dict):
+                  raise ValueError("账号设置内容不正确。")
+              defaults = AccountProfile()
+              fields = ("account", "nickname", "show_account", "show_nickname", "mask_account")
+              return normalize_profile(AccountProfile(**{name: values.get(name, getattr(defaults, name)) for name in fields}))
+
+
+          def save_profile(path: Path, profile: AccountProfile) -> AccountProfile:
+              profile = normalize_profile(profile)
+              data = {"schema_version": 1, "profile": {
+                  "account": profile.account, "nickname": profile.nickname,
+                  "show_account": profile.show_account, "show_nickname": profile.show_nickname,
+                  "mask_account": profile.mask_account,
+              }}
+              path.parent.mkdir(parents=True, exist_ok=True)
+              temporary_path = None
+              try:
+                  with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                                   prefix="settings-", suffix=".tmp", delete=False) as handle:
+                      temporary_path = Path(handle.name)
+                      json.dump(data, handle, ensure_ascii=False, indent=2)
+                      handle.write("\n")
+                  os.replace(temporary_path, path)
+              finally:
+                  if temporary_path is not None:
+                      temporary_path.unlink(missing_ok=True)
+              return profile
 
 
           def valid_id(value: str) -> bool:
@@ -113,6 +214,93 @@ jobs:
               return stem[:60] or "导入名单"
 
 
+          def optional_text(value: str) -> str:
+              value = value.strip()
+              return "" if value.casefold() in {"", "空", "无", "未知", "不详", "未填写", "未填", "none", "null", "n/a", "-", "—"} else value
+
+
+          def parse_age(value: str) -> int | None:
+              match = re.fullmatch(r"(\d{1,3})\s*岁?", optional_text(value))
+              if match and 0 <= int(match.group(1)) <= 150:
+                  return int(match.group(1))
+              return None
+
+
+          def parse_gender(value: str) -> str:
+              value = optional_text(value)
+              mapping = {"m": "男", "male": "男", "男性": "男", "f": "女", "female": "女", "女性": "女"}
+              if re.fullmatch(r"[男女](?:\s*\d{1,3}\s*岁)?", value):
+                  return value[0]
+              return mapping.get(value.casefold(), value)
+
+
+          def merge_recipient_details(current: Recipient, incoming: Recipient) -> None:
+              for name in ("nickname", "gender", "region", "ip_region"):
+                  if not getattr(current, name) and getattr(incoming, name):
+                      setattr(current, name, getattr(incoming, name))
+              if current.age is None and incoming.age is not None:
+                  current.age = incoming.age
+              for name in ("sources", "raw_details"):
+                  target = getattr(current, name)
+                  target.extend(value for value in getattr(incoming, name) if value not in target)
+
+
+          def filter_records(records: list[Recipient], query: str = "", source: str = "全部来源",
+                             gender: str = "全部性别", age_mode: str = "全部年龄", min_age: int | None = None,
+                             max_age: int | None = None, region_query: str = "", region_field: str = "任一地区") -> list[Recipient]:
+              if (min_age is not None and not 0 <= min_age <= 150) or (max_age is not None and not 0 <= max_age <= 150):
+                  raise ValueError("年龄范围请填写 0–150 之间的整数。")
+              if min_age is not None and max_age is not None and min_age > max_age:
+                  raise ValueError("最小年龄不能大于最大年龄。")
+              query = query.strip().casefold()
+              region_query = re.sub(r"\s+", "", region_query).casefold()
+              matches = []
+              for record in records:
+                  if query and query not in (record.nickname + " " + record.douyin_id).casefold():
+                      continue
+                  if source != "全部来源" and source not in record.sources:
+                      continue
+                  if (gender == "未填写" and record.gender) or (gender not in {"全部性别", "未填写"} and record.gender != gender):
+                      continue
+                  if (age_mode == "已填年龄" and record.age is None) or (age_mode == "未填年龄" and record.age is not None):
+                      continue
+                  if min_age is not None and (record.age is None or record.age < min_age):
+                      continue
+                  if max_age is not None and (record.age is None or record.age > max_age):
+                      continue
+                  regions = [record.region] if region_field == "资料地区" else [record.ip_region] if region_field == "IP属地" else [record.region, record.ip_region]
+                  if region_query and not any(region_query in re.sub(r"\s+", "", text).casefold() for text in regions):
+                      continue
+                  matches.append(record)
+              return matches
+
+
+          def sort_records(records: list[Recipient], column: str = "", descending: bool = False,
+                           statuses: dict[str, str] | None = None) -> list[Recipient]:
+              if not column:
+                  return list(records)
+              def key(record):
+                  values = {"name": record.nickname, "id": record.douyin_id, "gender": record.gender,
+                            "age": record.age, "region": record.region, "ip_region": record.ip_region,
+                            "source": " / ".join(record.sources), "status": (statuses or {}).get(record.douyin_id, "待开始")}
+                  value = values.get(column, "")
+                  return value.casefold() if isinstance(value, str) else value
+              known = [record for record in records if key(record) not in (None, "")]
+              missing = [record for record in records if key(record) in (None, "")]
+              return sorted(known, key=key, reverse=descending) + missing
+
+
+          def recipient_details_text(record: Recipient, status: str = "待开始") -> str:
+              fields = [("昵称", record.nickname), ("抖音号", record.douyin_id), ("性别", record.gender),
+                        ("年龄", f"{record.age} 岁" if record.age is not None else ""),
+                        ("资料地区", record.region), ("IP属地", record.ip_region),
+                        ("来源", " / ".join(record.sources)), ("状态", status)]
+              text = "\n\n".join(f"{label}：{value or '未填写'}" for label, value in fields)
+              if record.raw_details:
+                  text += "\n\n原始资料：\n\n" + "\n\n".join(record.raw_details)
+              return text
+
+
           def parse_text(text: str, source: str = "导入名单") -> ImportResult:
               """Accept supplied labeled TXT, one ID per line, and headed CSV/TSV."""
               result = ImportResult([])
@@ -128,25 +316,33 @@ jobs:
               id_column = next((i for i, h in enumerate(headers) if h in ID_HEADERS), None)
               name_column = next((i for i, h in enumerate(headers) if h in NAME_HEADERS), None)
               source_column = next((i for i, h in enumerate(headers) if h in SOURCE_HEADERS), None)
+              gender_column = next((i for i, h in enumerate(headers) if h in GENDER_HEADERS), None)
+              age_column = next((i for i, h in enumerate(headers) if h in AGE_HEADERS), None)
+              region_column = next((i for i, h in enumerate(headers) if h in REGION_HEADERS), None)
+              ip_column = next((i for i, h in enumerate(headers) if h in IP_REGION_HEADERS), None)
               seen: dict[str, Recipient] = {}
 
-              def add(value: str, nickname: str = "", label: str = source) -> None:
+              def add(value: str, nickname: str = "", label: str = source, gender: str = "", age: str = "",
+                      region: str = "", ip_region: str = "", raw: str = "") -> None:
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (2/6)
+        run: |
+          $payload = @'
                   value = value.strip().lstrip("\ufeff").removeprefix("@").strip()
                   if not valid_id(value):
                       result.skipped += 1
                       return
                   result.parsed += 1
                   labels = [part.strip() for part in label.split(" / ") if part.strip()] or [source]
+                  record = Recipient(value, nickname.strip(), list(dict.fromkeys(labels)), parse_gender(gender),
+                                     parse_age(age), optional_text(region), optional_text(ip_region),
+                                     [f"{source}：{raw}"] if raw else [])
                   if value in seen:
                       result.duplicates += 1
-                      existing = seen[value]
-                      if not existing.nickname and nickname:
-                          existing.nickname = nickname.strip()
-                      for group in labels:
-                          if group not in existing.sources:
-                              existing.sources.append(group)
+                      merge_recipient_details(seen[value], record)
                       return
-                  record = Recipient(value, nickname.strip(), list(dict.fromkeys(labels)))
                   seen[value] = record
                   result.records.append(record)
 
@@ -158,7 +354,14 @@ jobs:
                               continue
                           nickname = row[name_column] if name_column is not None and len(row) > name_column else ""
                           label = row[source_column] if source_column is not None and len(row) > source_column else source
-                          add(row[id_column], nickname, label)
+                          def cell(column):
+                              return row[column] if column is not None and len(row) > column else ""
+                          gender = cell(gender_column)
+                          age = cell(age_column)
+                          if not age and (match := re.fullmatch(r"[男女]\s*(\d{1,3}\s*岁)", gender.strip())):
+                              age = match.group(1)
+                          raw = " | ".join(f"{headers[i]}：{value}" for i, value in enumerate(row) if i < len(headers))
+                          add(row[id_column], nickname, label, gender, age, cell(region_column), cell(ip_column), raw)
                   except csv.Error as exc:
                       raise ValueError(f"CSV 格式有误：{exc}") from exc
                   return result
@@ -167,12 +370,21 @@ jobs:
                   match = LABELED_ID.search(line)
                   if match:
                       nickname = ""
+                      gender = age = ""
                       before_id = line[:match.start()]
                       if "昵称" in before_id:
                           nickname = before_id.split("昵称", 1)[1].strip()
-                          # Remove the final demographics field, preserving spaces inside nicknames.
-                          nickname = re.sub(r"\s{2,}(?:空|[男女](?:\d{1,3}岁)?)\s*$", "", nickname).strip()
-                      add(match.group(1), nickname)
+                          demographic = re.search(r"\s{2,}(空|[男女](?:\s*\d{1,3}\s*岁)?|\d{1,3}\s*岁)\s*$", nickname)
+                          if demographic:
+                              value = demographic.group(1)
+                              nickname = nickname[:demographic.start()].strip()
+                              gender = value[0] if value[0] in "男女" else ""
+                              age_match = re.search(r"\d{1,3}\s*岁", value)
+                              age = age_match.group(0) if age_match else ""
+                      region_match = re.search(r"(?:资料位置|资料地区)\s*[:：]?\s*(.*?)(?=\s{2,}(?:IP属地|评论次数)|$)", line)
+                      ip_match = re.search(r"IP属地\s*[:：]?\s*(.*?)(?=\s{2,}(?:资料位置|评论次数)|$)", line, re.I)
+                      add(match.group(1), nickname, source, gender, age,
+                          region_match.group(1) if region_match else "", ip_match.group(1) if ip_match else "", line)
                   elif "昵称" in line or "资料位置" in line:
                       result.skipped += 1
                   else:
@@ -199,11 +411,10 @@ jobs:
                   current = by_id.get(record.douyin_id)
                   if current is not None:
                       repeated += 1
-                      if not current.nickname:
-                          current.nickname = record.nickname
-                      current.sources.extend(s for s in record.sources if s not in current.sources)
+                      merge_recipient_details(current, record)
                   else:
-                      clone = Recipient(record.douyin_id, record.nickname, list(record.sources))
+                      clone = Recipient(record.douyin_id, record.nickname, list(record.sources), record.gender, record.age,
+                                        record.region, record.ip_region, list(record.raw_details))
                       existing.append(clone)
                       by_id[clone.douyin_id] = clone
                       added += 1
@@ -293,8 +504,17 @@ jobs:
 
 
           class MessengerApp:
-              def __init__(self, root: tk.Tk) -> None:
+              def __init__(self, root: tk.Tk, profile_path: Path | None = None) -> None:
                   self.root = root
+                  self.profile_path = profile_path if profile_path is not None else default_profile_path()
+                  self.profile_load_error = False
+                  try:
+                      self.account_profile = load_profile(self.profile_path)
+                  except (OSError, ValueError):
+                      self.account_profile = AccountProfile()
+                      self.profile_load_error = True
+                  self.account_dialog = None
+                  self.account_display_var = tk.StringVar()
                   self.records: list[Recipient] = []
                   self.session = Session()
                   self.logs: list[tuple[str, str, str]] = []
@@ -303,7 +523,17 @@ jobs:
                   self.search_timer: str | None = None
                   self.search_var = tk.StringVar()
                   self.source_var = tk.StringVar(value="全部来源")
-                  self.selected_only = tk.BooleanVar(value=False)
+                  self.gender_var = tk.StringVar(value="全部性别")
+                  self.age_mode_var = tk.StringVar(value="全部年龄")
+                  self.min_age_var = tk.StringVar()
+                  self.max_age_var = tk.StringVar()
+                  self.region_var = tk.StringVar()
+                  self.region_field_var = tk.StringVar(value="任一地区")
+                  self.scope_var = tk.StringVar(value="当前筛选结果")
+                  self.filter_hint_var = tk.StringVar(value="搜索昵称 / 抖音号 · 表头排序 · 双击查看完整资料")
+                  self.visible_records: list[Recipient] = []
+                  self.sort_column = ""
+                  self.sort_descending = False
                   self.interval_var = tk.StringVar(value="0.8")
                   self.toast_var = tk.StringVar(value="就绪 · 点击“导入名单”开始")
                   self.count_var = tk.StringVar(value=f"0 / {MAX_MESSAGE} 字")
@@ -312,16 +542,20 @@ jobs:
                   self.preview_target = tk.StringVar(value="选择名单中的一位用户以预览")
                   root.title(APP_NAME)
                   root.configure(bg=COLORS["bg"])
-                  root.geometry("1240x850")
+                  root.geometry("1400x850")
                   root.minsize(1060, 760)
                   root.protocol("WM_DELETE_WINDOW", self.close)
                   root.option_add("*Font", ("Microsoft YaHei UI", 10))
                   self.configure_styles()
                   self.build_ui()
+                  self.refresh_account_display()
                   root.bind("<Control-o>", lambda _event: self.import_files())
-                  self.search_var.trace_add("write", self.search_changed)
-                  self.source_var.trace_add("write", lambda *_: self.refresh_table())
+                  for variable in (self.search_var, self.source_var, self.gender_var, self.age_mode_var,
+                                   self.min_age_var, self.max_age_var, self.region_var, self.region_field_var):
+                      variable.trace_add("write", self.search_changed)
                   self.log("系统", "工作台已就绪，请导入接收人名单。")
+                  if self.profile_load_error:
+                      self.log("设置", "账号设置未能读取，已恢复默认显示，可在“账号设置”中重新保存。")
                   self.update_stats()
 
               def configure_styles(self) -> None:
@@ -342,13 +576,9 @@ jobs:
                   style.map("Treeview.Heading", background=[("active", COLORS["hover"])])
                   style.configure("Vertical.TScrollbar", background=COLORS["line"], troughcolor=COLORS["input"],
                                   borderwidth=0, arrowcolor=COLORS["muted"])
+                  style.configure("Horizontal.TScrollbar", background=COLORS["line"], troughcolor=COLORS["input"],
+                                  borderwidth=0, arrowcolor=COLORS["muted"])
                   style.configure("Horizontal.TProgressbar", troughcolor=COLORS["input"],
-          '@
-          [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (2/4)
-        run: |
-          $payload = @'
                                   background=COLORS["accent"], borderwidth=0, thickness=7)
                   self.root.option_add("*TCombobox*Listbox.background", COLORS["input"])
                   self.root.option_add("*TCombobox*Listbox.foreground", COLORS["text"])
@@ -358,6 +588,12 @@ jobs:
                                   font=("Microsoft YaHei UI", size, "bold" if bold else "normal"), **options)
 
               def button(self, parent, text, command, primary=False, danger=False, **options):
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (3/6)
+        run: |
+          $payload = @'
                   bg = COLORS["accent"] if primary else COLORS["hover"]
                   fg = COLORS["bg"] if primary else COLORS["red"] if danger else COLORS["text"]
                   padding = {"padx": 14, "pady": 8}
@@ -384,6 +620,7 @@ jobs:
                       ("01    群发任务", lambda: self.message.focus_set()),
                       ("02    导入名单", self.import_files),
                       ("03    导出日志", self.export_logs),
+                      ("04    账号设置", self.open_account_settings),
                   ]:
                       self.button(side, text, command, anchor="w").pack(fill="x", padx=14, pady=4)
                   note = tk.Frame(side, bg=COLORS["side"])
@@ -400,7 +637,12 @@ jobs:
                   title_row = tk.Frame(header, bg=COLORS["bg"])
                   title_row.pack(fill="x", pady=(4, 2))
                   self.label(title_row, "抖音群发工作台", 23, bold=True).pack(side="left")
-                  self.label(title_row, f"v{VERSION}", 10, "muted").pack(side="right", pady=7)
+                  account_box = tk.Frame(title_row, bg=COLORS["bg"])
+                  account_box.pack(side="right", pady=3)
+                  self.button(account_box, "账号设置", self.open_account_settings, padx=10, pady=6).pack(side="right", padx=(12, 0))
+                  self.account_display_label = self.label(account_box, size=9, textvariable=self.account_display_var,
+                                                           justify="right", anchor="e")
+                  self.account_display_label.pack(side="right")
                   self.label(header, "集中管理接收人名单、消息内容与任务进度。", 10, "muted").pack(anchor="w")
 
                   stats = tk.Frame(main, bg=COLORS["bg"])
@@ -416,7 +658,7 @@ jobs:
 
                   body = tk.Frame(main, bg=COLORS["bg"])
                   body.pack(fill="both", expand=True)
-                  body.columnconfigure(0, weight=6, minsize=395)
+                  body.columnconfigure(0, weight=8, minsize=410)
                   body.columnconfigure(1, weight=5, minsize=340)
                   body.rowconfigure(0, weight=1)
                   list_card = self.card(body)
@@ -430,37 +672,67 @@ jobs:
                   self.import_button.pack(side="right")
                   filters = tk.Frame(list_card, bg=COLORS["card"])
                   filters.grid(row=1, column=0, sticky="ew", padx=14)
-                  self.search_entry = tk.Entry(filters, textvariable=self.search_var, bg=COLORS["input"],
+                  first_filter = tk.Frame(filters, bg=COLORS["card"])
+                  first_filter.pack(fill="x")
+                  self.search_entry = tk.Entry(first_filter, textvariable=self.search_var, bg=COLORS["input"],
                                                fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat", width=15)
                   self.search_entry.pack(side="left", fill="x", expand=True, ipady=7)
-                  self.source_combo = ttk.Combobox(filters, textvariable=self.source_var,
+                  self.source_combo = ttk.Combobox(first_filter, textvariable=self.source_var,
                                                    values=["全部来源"], state="readonly", width=9)
                   self.source_combo.pack(side="left", padx=(8, 0))
-                  self.label(list_card, "搜索昵称 / 抖音号  ·  Ctrl+O 导入  ·  支持多选", 8, "muted").grid(
+                  second_filter = tk.Frame(filters, bg=COLORS["card"])
+                  second_filter.pack(fill="x", pady=7)
+                  self.gender_combo = ttk.Combobox(second_filter, textvariable=self.gender_var,
+                                                    values=["全部性别", "男", "女", "未填写"], state="readonly", width=7)
+                  self.gender_combo.pack(side="left")
+                  ttk.Combobox(second_filter, textvariable=self.age_mode_var, values=["全部年龄", "已填年龄", "未填年龄"],
+                               state="readonly", width=7).pack(side="left", padx=7)
+                  self.label(second_filter, "年龄", 9, "muted").pack(side="left", padx=(2, 4))
+                  for index, variable in enumerate((self.min_age_var, self.max_age_var)):
+                      if index:
+                          self.label(second_filter, "至", 9, "muted").pack(side="left", padx=4)
+                      tk.Entry(second_filter, textvariable=variable, width=3, bg=COLORS["input"], fg=COLORS["text"],
+                               insertbackground=COLORS["accent"], relief="flat").pack(side="left", ipady=5)
+                  self.label(second_filter, "岁", 9, "muted").pack(side="left", padx=4)
+                  third_filter = tk.Frame(filters, bg=COLORS["card"])
+                  third_filter.pack(fill="x")
+                  ttk.Combobox(third_filter, textvariable=self.region_field_var, values=["任一地区", "资料地区", "IP属地"],
+                               state="readonly", width=7).pack(side="left")
+                  self.region_combo = ttk.Combobox(third_filter, textvariable=self.region_var, values=[], width=10)
+                  self.region_combo.pack(side="left", fill="x", expand=True, padx=7)
+                  self.button(third_filter, "重置", self.reset_filters, padx=8, pady=4).pack(side="right")
+                  self.filter_hint_label = self.label(list_card, size=8, color="muted", textvariable=self.filter_hint_var)
+                  self.filter_hint_label.grid(
                       row=2, column=0, sticky="w", padx=14, pady=(5, 8))
                   table_frame = tk.Frame(list_card, bg=COLORS["input"])
                   table_frame.grid(row=3, column=0, sticky="nsew", padx=14)
-                  self.table = ttk.Treeview(table_frame, columns=("name", "id", "source", "status"),
+                  table_frame.rowconfigure(0, weight=1)
+                  table_frame.columnconfigure(0, weight=1)
+                  self.table = ttk.Treeview(table_frame, columns=tuple(TABLE_COLUMNS),
                                             show="headings", selectmode="extended", height=8)
-                  for column, caption, width, minimum in [
-                      ("name", "昵称", 110, 70), ("id", "抖音号", 120, 80),
-                      ("source", "来源", 72, 48), ("status", "状态", 78, 65),
-                  ]:
-                      self.table.heading(column, text=caption)
-                      self.table.column(column, width=width, minwidth=minimum, stretch=True)
+                  for column, (caption, width, minimum) in TABLE_COLUMNS.items():
+                      self.table.heading(column, text=caption, command=lambda key=column: self.sort_by(key))
+                      self.table.column(column, width=width, minwidth=minimum, stretch=False,
+                                        anchor="center" if column in {"gender", "age"} else "w")
                   yscroll = ttk.Scrollbar(table_frame, command=self.table.yview)
-                  self.table.configure(yscrollcommand=yscroll.set)
-                  yscroll.pack(side="right", fill="y")
-                  self.table.pack(side="left", fill="both", expand=True)
+                  self.xscroll = ttk.Scrollbar(table_frame, orient="horizontal", command=self.table.xview)
+                  self.table.configure(yscrollcommand=yscroll.set, xscrollcommand=self.xscroll.set)
+                  yscroll.grid(row=0, column=1, sticky="ns")
+                  self.xscroll.grid(row=1, column=0, sticky="ew")
+                  self.table.grid(row=0, column=0, sticky="nsew")
                   self.table.tag_configure("done", foreground=COLORS["accent"])
                   self.table.tag_configure("stopped", foreground=COLORS["muted"])
                   self.table.bind("<<TreeviewSelect>>", lambda _event: self.update_preview())
+                  self.table.bind("<Double-1>", self.show_clicked_recipient)
+                  self.table.bind("<Return>", lambda _event: self.open_recipient_details())
+                  self.table.bind("<Control-a>", lambda _event: self.select_visible())
                   bottom = tk.Frame(list_card, bg=COLORS["card"])
                   bottom.grid(row=4, column=0, sticky="ew", padx=14, pady=10)
                   self.visible_var = tk.StringVar(value="显示 0 / 0 人")
                   self.label(bottom, size=9, color="muted", textvariable=self.visible_var).pack(side="left")
                   self.clear_button = self.button(bottom, "清空", self.clear_list, danger=True)
                   self.clear_button.pack(side="right")
+                  self.button(bottom, "全选结果", self.select_visible, padx=8).pack(side="right", padx=7)
 
                   compose = self.card(body)
                   compose.grid(row=0, column=1, sticky="nsew")
@@ -488,14 +760,21 @@ jobs:
                                                   buttonbackground=COLORS["line"], insertbackground=COLORS["text"], relief="flat")
                   self.interval_spin.pack(side="left", padx=(8, 4), ipady=3)
                   self.label(settings, "秒 / 人", 9, "muted").pack(side="left")
-                  self.selection_check = tk.Checkbutton(compose, text="仅处理选中的接收人（默认处理全部名单）",
-                                                         variable=self.selected_only, bg=COLORS["card"], fg=COLORS["muted"],
-                                                         activebackground=COLORS["card"], activeforeground=COLORS["text"],
-                                                         selectcolor=COLORS["input"], font=("Microsoft YaHei UI", 9))
-                  self.selection_check.pack(anchor="w", padx=12)
+                  scope_row = tk.Frame(compose, bg=COLORS["card"])
+                  scope_row.pack(fill="x", padx=16, pady=(5, 2))
+                  self.label(scope_row, "任务范围", 9, "muted").pack(side="left", padx=(0, 8))
+                  self.scope_combo = ttk.Combobox(scope_row, textvariable=self.scope_var, state="readonly", width=15,
+                                                   values=["当前筛选结果", "全部导入名单", "仅选中的接收人"])
+                  self.scope_combo.pack(side="left", fill="x", expand=True)
                   actions = tk.Frame(compose, bg=COLORS["card"])
                   actions.pack(fill="x", padx=16, pady=(8, 8))
                   self.start_button = self.button(actions, "开始群发", self.start, primary=True)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (4/6)
+        run: |
+          $payload = @'
                   self.start_button.pack(side="left", fill="x", expand=True)
                   self.pause_button = self.button(actions, "暂停", self.toggle_pause, state="disabled")
                   self.pause_button.pack(side="left", padx=7)
@@ -517,42 +796,246 @@ jobs:
                   self.label(main, size=9, color="muted", textvariable=self.toast_var, anchor="w").pack(fill="x", pady=(8, 0))
                   self.update_preview()
 
+              def refresh_account_display(self) -> None:
+                  text = profile_display_text(self.account_profile)
+                  if not text and (self.account_profile.show_account or self.account_profile.show_nickname):
+                      text = "未设置账号信息"
+                  self.account_display_var.set(text)
+
+              def apply_account_profile(self, profile: AccountProfile) -> None:
+                  saved = save_profile(self.profile_path, profile)
+                  self.account_profile = saved
+                  self.refresh_account_display()
+                  self.toast_var.set("账号显示设置已保存，下次启动自动恢复。")
+                  self.log("设置", "已更新账号显示设置。")
+
+              def open_account_settings(self) -> None:
+                  if self.account_dialog is not None and self.account_dialog.winfo_exists():
+                      self.account_dialog.lift()
+                      return
+                  dialog = tk.Toplevel(self.root)
+                  self.account_dialog = dialog
+                  dialog.title("账号设置")
+                  dialog.configure(bg=COLORS["card"])
+                  dialog.resizable(False, False)
+                  dialog.transient(self.root)
+                  dialog.geometry("470x470")
+                  profile = self.account_profile
+                  variables = {
+                      "account": tk.StringVar(value=profile.account),
+                      "nickname": tk.StringVar(value=profile.nickname),
+                      "show_account": tk.BooleanVar(value=profile.show_account),
+                      "show_nickname": tk.BooleanVar(value=profile.show_nickname),
+                      "mask_account": tk.BooleanVar(value=profile.mask_account),
+                  }
+                  self.account_form = variables
+                  content = tk.Frame(dialog, bg=COLORS["card"])
+                  content.pack(fill="both", expand=True, padx=24, pady=20)
+                  self.label(content, "账号信息", 16, bold=True).pack(anchor="w")
+                  self.label(content, "设置窗口中显示的账号和昵称。", 9, "muted").pack(anchor="w", pady=(4, 12))
+                  entries = []
+                  for name, caption in (("account", "账号 / 抖音号"), ("nickname", "昵称")):
+                      self.label(content, caption, 10).pack(anchor="w", pady=(6, 4))
+                      entry = tk.Entry(content, textvariable=variables[name], bg=COLORS["input"], fg=COLORS["text"],
+                                       insertbackground=COLORS["accent"], relief="flat")
+                      entry.pack(fill="x", ipady=7)
+                      entries.append(entry)
+                  options = tk.Frame(content, bg=COLORS["card"])
+                  options.pack(fill="x", pady=(12, 8))
+                  for name, caption in (("show_account", "显示账号"), ("show_nickname", "显示昵称"), ("mask_account", "遮挡账号")):
+                      tk.Checkbutton(options, text=caption, variable=variables[name], bg=COLORS["card"],
+                                     fg=COLORS["muted"], activebackground=COLORS["card"], activeforeground=COLORS["text"],
+                                     selectcolor=COLORS["input"], font=("Microsoft YaHei UI", 10)).pack(side="left", padx=(0, 10))
+                  self.label(content, "显示预览", 9, "muted").pack(anchor="w")
+                  preview_var = tk.StringVar()
+                  self.label(content, size=10, textvariable=preview_var, justify="left", anchor="w", height=2).pack(fill="x", pady=(5, 8))
+
+                  def get_profile():
+                      return AccountProfile(**{name: variable.get() for name, variable in variables.items()})
+
+                  def update_preview(*_args):
+                      try:
+                          candidate = normalize_profile(get_profile())
+                          text = profile_display_text(candidate)
+                          if not candidate.show_account and not candidate.show_nickname:
+                              text = "账号与昵称均已隐藏"
+                          preview_var.set(text or "未设置账号信息")
+                      except ValueError as exc:
+                          preview_var.set(str(exc))
+
+                  def close_dialog():
+                      dialog.grab_release()
+                      dialog.destroy()
+                      self.account_dialog = None
+
+                  def save():
+                      try:
+                          self.apply_account_profile(get_profile())
+                      except (ValueError, OSError) as exc:
+                          messagebox.showerror("保存失败", str(exc), parent=dialog)
+                          return
+                      close_dialog()
+
+                  def clear_fields():
+                      variables["account"].set("")
+                      variables["nickname"].set("")
+                      variables["show_account"].set(True)
+                      variables["show_nickname"].set(True)
+                      variables["mask_account"].set(False)
+
+                  actions = tk.Frame(content, bg=COLORS["card"])
+                  actions.pack(side="bottom", fill="x", pady=(4, 0))
+                  self.button(actions, "清空信息", clear_fields, danger=True, padx=10).pack(side="left")
+                  self.account_save_button = self.button(actions, "保存设置", save, primary=True)
+                  self.account_save_button.pack(side="right")
+                  self.button(actions, "取消", close_dialog, padx=10).pack(side="right", padx=8)
+                  dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+                  dialog.bind("<Escape>", lambda _event: close_dialog())
+                  for variable in variables.values():
+                      variable.trace_add("write", update_preview)
+                  update_preview()
+                  dialog.update_idletasks()
+                  dialog.grab_set()
+                  entries[0].focus_set()
+
               def search_changed(self, *_args) -> None:
                   if self.search_timer is not None:
                       self.root.after_cancel(self.search_timer)
                   self.search_timer = self.root.after(180, self.refresh_table)
 
               def refresh_table(self) -> None:
-                  self.search_timer = None
+                  if self.search_timer is not None:
+                      self.root.after_cancel(self.search_timer)
+                      self.search_timer = None
+                  try:
+                      visible_records = self.filtered_records()
+                  except ValueError as exc:
+                      self.filter_hint_var.set(str(exc))
+                      self.filter_hint_label.configure(fg=COLORS["red"])
+                      return
+                  self.filter_hint_var.set("搜索昵称 / 抖音号 · 表头排序 · 双击查看完整资料")
+                  self.filter_hint_label.configure(fg=COLORS["muted"])
+                  self.visible_records = visible_records
                   selected = set(self.table.selection())
                   children = self.table.get_children()
                   if children:
                       self.table.delete(*children)
-                  query = self.search_var.get().strip().casefold()
-                  group = self.source_var.get()
                   visible = []
-                  for recipient in self.records:
-                      if query and query not in (recipient.nickname + " " + recipient.douyin_id).casefold():
-                          continue
-                      if group != "全部来源" and group not in recipient.sources:
-                          continue
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (3/4)
-        run: |
-          $payload = @'
+                  for recipient in visible_records:
                       status = self.session.statuses.get(recipient.douyin_id, "待开始")
                       tag = "done" if status == "已处理" else "stopped" if status == "已停止" else ""
                       self.table.insert("", "end", iid=recipient.douyin_id,
-                                        values=(recipient.nickname or "—", recipient.douyin_id,
-                                                " / ".join(recipient.sources), status), tags=(tag,))
+                                        values=(recipient.nickname or "未填写", recipient.douyin_id, recipient.gender or "未填写",
+                                                recipient.age if recipient.age is not None else "未填写", recipient.region or "未填写",
+                                                recipient.ip_region or "未填写", " / ".join(recipient.sources), status), tags=(tag,))
                       visible.append(recipient.douyin_id)
                   remaining_selection = selected.intersection(visible)
                   if remaining_selection:
                       self.table.selection_set(*remaining_selection)
                   self.visible_var.set(f"显示 {len(visible):,} / {len(self.records):,} 人")
+                  for column, (caption, _width, _minimum) in TABLE_COLUMNS.items():
+                      arrow = (" ▼" if self.sort_descending else " ▲") if column == self.sort_column else ""
+                      self.table.heading(column, text=caption + arrow)
                   self.update_preview()
+
+              def filtered_records(self) -> list[Recipient]:
+                  def age_bound(variable):
+                      text = variable.get().strip()
+                      if not text:
+                          return None
+                      if not re.fullmatch(r"\d{1,3}", text):
+                          raise ValueError("年龄范围请填写 0–150 之间的整数。")
+                      return int(text)
+                  records = filter_records(self.records, self.search_var.get(), self.source_var.get(),
+                                           self.gender_var.get(), self.age_mode_var.get(), age_bound(self.min_age_var),
+                                           age_bound(self.max_age_var), self.region_var.get(), self.region_field_var.get())
+                  return sort_records(records, self.sort_column, self.sort_descending, self.session.statuses)
+
+              def target_records(self) -> list[Recipient]:
+                  visible = self.filtered_records()
+                  if self.scope_var.get() == "全部导入名单":
+                      return sort_records(self.records, self.sort_column, self.sort_descending, self.session.statuses)
+                  if self.scope_var.get() == "仅选中的接收人":
+                      selected = set(self.table.selection())
+                      return [record for record in visible if record.douyin_id in selected]
+                  return visible
+
+              def sync_filter_choices(self) -> None:
+                  groups = list(dict.fromkeys(s for record in self.records for s in record.sources))
+                  self.source_combo.configure(values=["全部来源", *groups])
+                  genders = list(dict.fromkeys(["男", "女", *[r.gender for r in self.records if r.gender]]))
+                  self.gender_combo.configure(values=["全部性别", *genders, "未填写"])
+                  regions = sorted({value for record in self.records for value in (record.region, record.ip_region) if value})
+                  self.region_combo.configure(values=regions)
+
+              def reset_filters(self) -> None:
+                  for variable, value in ((self.search_var, ""), (self.source_var, "全部来源"),
+                                          (self.gender_var, "全部性别"), (self.age_mode_var, "全部年龄"),
+                                          (self.min_age_var, ""), (self.max_age_var, ""), (self.region_var, ""),
+                                          (self.region_field_var, "任一地区")):
+                      variable.set(value)
+                  self.sort_column = ""
+                  self.sort_descending = False
+                  self.refresh_table()
+
+              def sort_by(self, column: str) -> None:
+                  self.sort_descending = not self.sort_descending if self.sort_column == column else False
+                  self.sort_column = column
+                  self.refresh_table()
+
+              def select_visible(self):
+                  children = self.table.get_children()
+                  if children:
+                      self.table.selection_set(*children)
+                  return "break"
+
+              def show_clicked_recipient(self, event) -> None:
+                  row = self.table.identify_row(event.y)
+                  if row and self.table.identify_region(event.x, event.y) in {"cell", "tree"}:
+                      self.open_recipient_details(row)
+
+              def open_recipient_details(self, identifier: str | None = None):
+                  if identifier is None:
+                      selection = self.table.selection()
+                      identifier = selection[0] if selection else None
+                  record = next((record for record in self.records if record.douyin_id == identifier), None)
+                  if record is None:
+                      return None
+                  dialog = tk.Toplevel(self.root)
+                  dialog.title("接收人资料")
+                  dialog.configure(bg=COLORS["card"])
+                  dialog.geometry("680x620")
+                  dialog.minsize(460, 420)
+                  dialog.transient(self.root)
+                  self.label(dialog, "接收人资料", 16, bold=True).pack(anchor="w", padx=20, pady=(18, 8))
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (5/6)
+        run: |
+          $payload = @'
+                  self.label(dialog, "完整字段与导入原文，可选中复制。", 9, "muted").pack(anchor="w", padx=20, pady=(0, 10))
+                  details = recipient_details_text(record, self.session.statuses.get(record.douyin_id, "待开始"))
+                  frame = tk.Frame(dialog, bg=COLORS["input"])
+                  frame.pack(fill="both", expand=True, padx=20)
+                  body = tk.Text(frame, wrap="word", bg=COLORS["input"], fg=COLORS["text"], relief="flat", padx=12, pady=12,
+                                 font=("Microsoft YaHei UI", 10))
+                  scrollbar = ttk.Scrollbar(frame, command=body.yview)
+                  body.configure(yscrollcommand=scrollbar.set)
+                  scrollbar.pack(side="right", fill="y")
+                  body.pack(side="left", fill="both", expand=True)
+                  body.insert("1.0", details)
+                  body.configure(state="disabled")
+                  self.details_text = body
+                  actions = tk.Frame(dialog, bg=COLORS["card"])
+                  actions.pack(fill="x", padx=20, pady=12)
+                  def copy_details():
+                      self.root.clipboard_clear()
+                      self.root.clipboard_append(details)
+                  self.button(actions, "复制资料", copy_details).pack(side="left")
+                  self.button(actions, "关闭", dialog.destroy, primary=True).pack(side="right")
+                  dialog.bind("<Escape>", lambda _event: dialog.destroy())
+                  return dialog
 
               def import_files(self) -> None:
                   if self.session.active:
@@ -574,11 +1057,8 @@ jobs:
                       except (OSError, ValueError, UnicodeError) as exc:
                           errors.append(f"{path.name}：{exc}")
                   self.import_duplicates += repeated
-                  groups = list(dict.fromkeys(s for r in self.records for s in r.sources))
-                  self.source_combo.configure(values=["全部来源", *groups])
-                  self.source_var.set("全部来源")
-                  self.search_var.set("")
-                  self.refresh_table()
+                  self.sync_filter_choices()
+                  self.reset_filters()
                   self.update_stats()
                   summary = f"导入完成：新增 {added} 人，合并重复 {repeated} 条，跳过无效项 {skipped} 条。"
                   self.toast_var.set(summary)
@@ -589,11 +1069,11 @@ jobs:
               def load_sample(self) -> None:
                   if self.session.active:
                       return
-                  sample = [Recipient(f"demo_{i:03d}", f"示例用户 {i:02d}", ["示例名单"]) for i in range(1, 7)]
+                  sample = [Recipient(f"demo_{i:03d}", f"示例用户 {i:02d}", ["示例名单"], "女" if i % 2 else "男", 18 + i * 3,
+                                      "江苏 镇江" if i % 2 else "上海 静安", "江苏" if i % 2 else "上海") for i in range(1, 7)]
                   new, duplicate = merge_records(self.records, sample)
                   self.import_duplicates += duplicate
-                  groups = list(dict.fromkeys(s for r in self.records for s in r.sources))
-                  self.source_combo.configure(values=["全部来源", *groups])
+                  self.sync_filter_choices()
                   self.refresh_table()
                   self.update_stats()
                   self.toast_var.set(f"已加入 {new} 位示例联系人，可编辑消息后开始任务。")
@@ -607,9 +1087,8 @@ jobs:
                   self.records.clear()
                   self.session = Session()
                   self.import_duplicates = 0
-                  self.source_combo.configure(values=["全部来源"])
-                  self.source_var.set("全部来源")
-                  self.refresh_table()
+                  self.sync_filter_choices()
+                  self.reset_filters()
                   self.update_stats()
                   self.toast_var.set("名单已清空。")
                   self.log("名单", "已清空当前名单。")
@@ -625,8 +1104,8 @@ jobs:
                   self.counter_label.configure(fg=COLORS["red"] if len(template) > MAX_MESSAGE else COLORS["muted"])
                   selection = self.table.selection()
                   record = next((r for r in self.records if selection and r.douyin_id == selection[0]), None)
-                  if record is None and self.records:
-                      record = self.records[0]
+                  if record is None and self.visible_records:
+                      record = self.visible_records[0]
                   if record is None:
                       self.preview_target.set("尚未选择接收人")
                   else:
@@ -637,12 +1116,12 @@ jobs:
                   self.preview.configure(state="disabled")
 
               def set_busy(self, busy: bool) -> None:
-                  for widget in [self.import_button, self.clear_button, self.start_button,
-                                 self.interval_spin, self.selection_check]:
+                  for widget in [self.import_button, self.clear_button, self.start_button, self.interval_spin]:
                       widget.configure(state="disabled" if busy else "normal")
                   self.message.configure(state="disabled" if busy else "normal")
                   self.pause_button.configure(state="normal" if busy else "disabled")
                   self.stop_button.configure(state="normal" if busy else "disabled")
+                  self.scope_combo.configure(state="disabled" if busy else "readonly")
                   self.pause_button.configure(text="继续" if self.session.state == "paused" else "暂停")
 
               def start(self) -> None:
@@ -650,10 +1129,7 @@ jobs:
                       interval = float(self.interval_var.get())
                       if not math.isfinite(interval) or not 0.1 <= interval <= 10:
                           raise ValueError("发送间隔请填写 0.1 至 10 秒之间的数字。")
-                      targets = self.records
-                      if self.selected_only.get():
-                          selected = set(self.table.selection())
-                          targets = [r for r in self.records if r.douyin_id in selected]
+                      targets = self.target_records()
                       self.session.start(targets, self.message.get("1.0", "end-1c"))
                   except ValueError as exc:
                       messagebox.showinfo("请检查任务设置", str(exc), parent=self.root)
@@ -661,7 +1137,7 @@ jobs:
                   self.interval_ms = round(interval * 1000)
                   self.set_busy(True)
                   self.refresh_table()
-                  self.log("开始", f"任务已创建，共 {len(targets)} 位接收人，间隔 {interval:g} 秒 / 人。")
+                  self.log("开始", f"任务已创建，范围：{self.scope_var.get()}，共 {len(targets)} 位接收人，间隔 {interval:g} 秒 / 人。")
                   self.toast_var.set("任务进行中 · 可随时暂停或停止")
                   self.update_stats()
                   self.schedule_tick()
@@ -684,6 +1160,8 @@ jobs:
                   if self.table.exists(recipient.douyin_id):
                       self.table.set(recipient.douyin_id, "status", "已处理")
                       self.table.item(recipient.douyin_id, tags=("done",))
+                  if self.sort_column == "status":
+                      self.refresh_table()
                   self.log("处理", f"{recipient.nickname or recipient.douyin_id} ({recipient.douyin_id}) · 已处理")
                   self.update_stats()
                   if self.session.state == "completed":
@@ -733,7 +1211,7 @@ jobs:
                       self.progress_text.set(f"{states[self.session.state]}  {self.session.cursor} / {total} 人  ·  {percent:.0f}%\n"
                                              f"用时 {seconds // 60:02d}:{seconds % 60:02d}  ·  预计剩余 {remaining:.0f} 秒")
                   else:
-                      self.progress_text.set("等待开始 · 默认处理全部名单，筛选仅影响列表显示")
+                      self.progress_text.set("等待开始 · 默认处理当前筛选结果，可在任务范围中切换")
 
               def log(self, category: str, text: str) -> None:
                   stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -773,8 +1251,25 @@ jobs:
               """Run on the Windows builder, from both source and the packaged EXE."""
               root = tk.Tk()
               root.withdraw()
+              profile_directory = tempfile.TemporaryDirectory(prefix="douyin-sender-gui-")
               try:
-                  app = MessengerApp(root)
+                  profile_path = Path(profile_directory.name) / "settings.json"
+                  app = MessengerApp(root, profile_path=profile_path)
+                  root.deiconify()
+                  root.update()
+                  app.open_account_settings()
+                  app.account_form["account"].set("0000012345")
+                  app.account_form["nickname"].set("工作账号")
+                  app.account_form["mask_account"].set(True)
+                  app.account_save_button.invoke()
+                  root.update_idletasks()
+                  assert app.account_dialog is None
+                  root.withdraw()
+                  assert load_profile(profile_path).account == "0000012345"
+                  assert app.account_display_var.get() == "工作账号\n账号：000****345"
+                  app.apply_account_profile(AccountProfile("0000012345", "工作账号", False, False))
+                  assert app.account_display_var.get() == ""
+                  app.apply_account_profile(AccountProfile("0000012345", "工作账号"))
                   app.load_sample()
                   root.update_idletasks()
                   assert len(app.table.get_children()) == 6
@@ -784,6 +1279,12 @@ jobs:
                   app.cancel_tick()
                   assert app.session.cursor == 1
                   app.toggle_pause()
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (6/6)
+        run: |
+          $payload = @'
                   assert app.session.state == "paused" and app.timer is None
                   app.toggle_pause()
                   app.cancel_tick()
@@ -800,23 +1301,61 @@ jobs:
                   app.search_var.set("demo_003")
                   app.refresh_table()
                   assert len(app.table.get_children()) == 1
+                  app.reset_filters()
+                  assert app.table.set("demo_001", "gender") == "女"
+                  assert app.table.set("demo_001", "age") == "21"
+                  assert app.table.set("demo_001", "region") == "江苏 镇江"
+                  assert app.table.set("demo_001", "ip_region") == "江苏"
+                  app.gender_var.set("女")
+                  app.min_age_var.set("20")
+                  app.max_age_var.set("30")
+                  app.region_field_var.set("资料地区")
+                  app.region_var.set("江苏")
+                  app.refresh_table()
+                  assert app.table.get_children() == ("demo_001", "demo_003")
+                  app.sort_by("age")
+                  assert app.table.get_children() == ("demo_001", "demo_003")
+                  app.sort_by("age")
+                  assert app.table.get_children() == ("demo_003", "demo_001")
+                  dialog = app.open_recipient_details("demo_001")
+                  assert "年龄：21 岁" in app.details_text.get("1.0", "end")
+                  assert "IP属地：江苏" in app.details_text.get("1.0", "end")
+                  dialog.destroy()
+                  assert [r.douyin_id for r in app.target_records()] == ["demo_003", "demo_001"]
+                  app.start()
+                  app.cancel_tick()
+                  assert len(app.session.queue) == 2
+                  app.stop()
+                  app.select_visible()
+                  app.table.selection_remove("demo_003")
+                  app.scope_var.set("仅选中的接收人")
+                  assert [r.douyin_id for r in app.target_records()] == ["demo_001"]
+                  app.scope_var.set("全部导入名单")
+                  assert len(app.target_records()) == 6
+                  app.min_age_var.set("40")
+                  app.refresh_table()
+                  assert "最小年龄" in app.filter_hint_var.get()
+                  app.reset_filters()
+                  app.gender_var.set("未填写")
+                  app.refresh_table()
+                  assert len(app.table.get_children()) == 0
+                  app.reset_filters()
+                  assert len(app.table.get_children()) == 6
                   report_path.write_text(json.dumps({"ok": True, "mode": "local_queue", "version": VERSION,
                                                      "tk_version": root.tk.call("info", "patchlevel"),
-                                                     "checks": ["widgets", "sample_import", "start", "pause", "resume", "stop", "complete", "filter"]},
+                                                     "checks": ["widgets", "account_dialog", "account_save", "account_mask", "account_hide",
+                                                                "sample_import", "start", "pause", "resume", "stop", "complete", "filter",
+                                                                "metadata_columns", "combined_filters", "age_sort", "details", "target_scope",
+                                                                "invalid_age_range", "empty_filter_result"]},
                                                     ensure_ascii=False, indent=2), encoding="utf-8")
               finally:
                   root.destroy()
+                  profile_directory.cleanup()
 
 
           def main() -> int:
               # Delay Tk loading so importer/queue tests also run on headless systems.
               global tk, filedialog, messagebox, ttk
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (4/4)
-        run: |
-          $payload = @'
               parser = argparse.ArgumentParser(description=APP_NAME)
               parser.add_argument("--smoke-test", type=Path, metavar="REPORT_JSON")
               args = parser.parse_args()
@@ -859,15 +1398,76 @@ jobs:
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded test_app.py (1/1)
+      - name: Write embedded test_app.py (1/2)
         run: |
           $payload = @'
           import tempfile
           import unittest
+          from unittest import mock
           from pathlib import Path
 
-          from app import (Recipient, Session, csv_cell, decode_file, merge_records,
-                           parse_text, read_list, render_message, valid_id)
+          from app import (AccountProfile, Recipient, Session, csv_cell, decode_file, filter_records, load_profile,
+                           merge_records, normalize_profile, parse_age, parse_text, profile_display_text,
+                           read_list, recipient_details_text, render_message, save_profile, sort_records, valid_id)
+
+
+          class AccountProfileTests(unittest.TestCase):
+              def test_missing_file_and_round_trip(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "settings" / "profile.json"
+                      self.assertEqual(load_profile(path), AccountProfile())
+                      saved = save_profile(path, AccountProfile(" @00000123 ", "  工作账号🧡  ", mask_account=True))
+                      self.assertEqual(saved.account, "00000123")
+                      self.assertEqual(saved.nickname, "工作账号🧡")
+                      self.assertEqual(load_profile(path), saved)
+
+              def test_visibility_and_masking(self):
+                  profile = AccountProfile("0000012345", "张三")
+                  self.assertIn("张三", profile_display_text(profile))
+                  self.assertIn("0000012345", profile_display_text(profile))
+                  profile.show_account = False
+                  self.assertEqual(profile_display_text(profile), "张三")
+                  profile.show_account = True
+                  profile.show_nickname = False
+                  profile.mask_account = True
+                  text = profile_display_text(profile)
+                  self.assertNotIn("张三", text)
+                  self.assertNotIn("0000012345", text)
+                  self.assertIn("000****345", text)
+                  profile.show_account = False
+                  self.assertEqual(profile_display_text(profile), "")
+
+              def test_short_identifier_is_fully_masked(self):
+                  profile = AccountProfile("123", mask_account=True)
+                  self.assertEqual(profile_display_text(profile), "账号：***")
+
+              def test_invalid_profile_is_rejected(self):
+                  for profile in (AccountProfile("含中文账号"), AccountProfile("a b"),
+                                  AccountProfile(nickname="a" * 41), AccountProfile(nickname="a\nb"),
+                                  AccountProfile(show_account="false"), AccountProfile(account=123)):
+                      with self.assertRaises(ValueError):
+                          normalize_profile(profile)
+
+              def test_corrupt_or_wrong_schema_is_rejected(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "settings.json"
+                      for contents in ('not json', '[]', '{"schema_version":2,"profile":{}}',
+                                       '{"schema_version":1,"profile":{"account":123}}',
+                                       '{"schema_version":1,"profile":{"show_account":"false"}}'):
+                          path.write_text(contents, encoding="utf-8")
+                          with self.assertRaises(ValueError):
+                              load_profile(path)
+
+              def test_failed_write_preserves_previous_settings(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "settings.json"
+                      original = AccountProfile("00001", "原账号")
+                      save_profile(path, original)
+                      with mock.patch("app.os.replace", side_effect=PermissionError("文件被占用")):
+                          with self.assertRaises(PermissionError):
+                              save_profile(path, AccountProfile("00002", "新账号"))
+                      self.assertEqual(load_profile(path), original)
+                      self.assertEqual(list(path.parent.glob("*.tmp")), [])
 
 
           class ImportTests(unittest.TestCase):
@@ -881,6 +1481,50 @@ jobs:
                   self.assertEqual([r.nickname for r in result.records], ["示例用户 A", "Example Display Name", "示例餐馆  二号门店", "昵称带空格 A B"])
                   self.assertEqual(result.parsed, 4)
                   self.assertEqual(result.skipped, 0)
+                  self.assertEqual((result.records[0].gender, result.records[0].age), ("女", 19))
+                  self.assertEqual((result.records[0].region, result.records[0].ip_region), ("江苏 镇江", "江苏"))
+                  self.assertEqual((result.records[1].gender, result.records[1].age), ("", None))
+                  self.assertEqual(result.records[1].ip_region, "")
+                  self.assertIn("评论次数", result.records[1].raw_details[0])
+
+              def test_full_csv_fields_and_legacy_csv(self):
+                  result = parse_text('抖音号,昵称,性别,年龄,资料地区,IP属地,来源\n00001,用户甲,女,31岁,江苏 镇江,上海,关注 / 粉丝\n')
+                  record = result.records[0]
+                  self.assertEqual((record.douyin_id, record.gender, record.age, record.region, record.ip_region),
+                                   ("00001", "女", 31, "江苏 镇江", "上海"))
+                  self.assertEqual(record.sources, ["关注", "粉丝"])
+                  legacy = parse_text('抖音号,昵称,来源\n00002,用户乙,关注')
+                  self.assertEqual((legacy.records[0].gender, legacy.records[0].age, legacy.records[0].region), ("", None, ""))
+
+              def test_merge_enriches_metadata_without_overwriting_known_values(self):
+                  records = [Recipient("00001", "甲", ["评论区"], "女")]
+                  incoming = Recipient("00001", "另一个昵称", ["粉丝"], "男", 29, "江苏 镇江", "江苏", ["完整原文"])
+                  self.assertEqual(merge_records(records, [incoming]), (0, 1))
+                  record = records[0]
+                  self.assertEqual((record.nickname, record.gender, record.age, record.region, record.ip_region),
+                                   ("甲", "女", 29, "江苏 镇江", "江苏"))
+                  self.assertEqual(record.raw_details, ["完整原文"])
+                  self.assertEqual(record.sources, ["评论区", "粉丝"])
+                  # A second copy must not duplicate provenance or share a mutable list.
+                  merge_records(records, [incoming])
+                  self.assertEqual(record.raw_details, ["完整原文"])
+
+              def test_comment_location_counts_are_not_mistaken_for_ip_location(self):
+                  record = parse_text('好朋友 昵称 用户甲  男36岁  抖音号 abc01  评论次数 5  （江苏3次 山东2次）').records[0]
+                  self.assertEqual((record.gender, record.age, record.region, record.ip_region), ("男", 36, "", ""))
+
+              def test_age_values_preserve_unknowns_and_numeric_range(self):
+                  for value, expected in (("19岁", 19), (" 31 ", 31), ("0", 0), ("150", 150),
+                                          ("空", None), ("未知", None), ("999", None), ("30.5", None)):
+                      self.assertEqual(parse_age(value), expected)
+
+              def test_duplicate_rows_enrich_metadata_within_one_file(self):
+                  text = '昵称 甲  空  抖音号 abc01  资料位置 空  IP属地 空\n昵称 甲  女30岁  抖音号 abc01  资料位置 上海 静安  IP属地 浙江'
+                  result = parse_text(text)
+                  self.assertEqual((len(result.records), result.duplicates), (1, 1))
+                  record = result.records[0]
+                  self.assertEqual((record.gender, record.age, record.region, record.ip_region), ("女", 30, "上海 静安", "浙江"))
+                  self.assertEqual(len(record.raw_details), 2)
 
               def test_csv_with_quoted_name_and_headers(self):
                   result = parse_text('抖音号,昵称,来源\n001234,"名字,含逗号",关注 / 粉丝\nabc,用户,评论区\n')
@@ -977,10 +1621,61 @@ jobs:
                   self.assertEqual(csv_cell("普通文本"), "普通文本")
 
 
+          class FilterSortTests(unittest.TestCase):
+              def setUp(self):
+                  self.records = [Recipient("00001", "联系人甲", ["关注"], "女", 31, "江苏 镇江", "上海"),
+                                  Recipient("00002", "联系人乙", ["粉丝"], "男", 100, "上海 静安", "江苏"),
+                                  Recipient("00003", "联系人丙", ["关注", "粉丝"], "女", 19, "江苏 南京", "江苏"),
+                                  Recipient("00004", "联系人丁", ["评论区"])]
+
+              def test_combined_filters_are_intersection_with_inclusive_age_bounds(self):
+                  result = filter_records(self.records, query="联系人", source="关注", gender="女", min_age=19,
+                                          max_age=31, region_query="江苏", region_field="资料地区")
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (2/2)
+        run: |
+          $payload = @'
+                  self.assertEqual([r.douyin_id for r in result], ["00001", "00003"])
+                  result = filter_records(self.records, gender="女", min_age=31, max_age=31)
+                  self.assertEqual([r.douyin_id for r in result], ["00001"])
+
+              def test_region_fields_are_separate_and_ignore_spacing(self):
+                  self.assertEqual([r.douyin_id for r in filter_records(self.records, region_query="江苏镇江", region_field="资料地区")], ["00001"])
+                  self.assertEqual([r.douyin_id for r in filter_records(self.records, region_query="上海", region_field="IP属地")], ["00001"])
+                  self.assertEqual([r.douyin_id for r in filter_records(self.records, region_query="上海")], ["00001", "00002"])
+
+              def test_missing_and_known_metadata_filters(self):
+                  self.assertEqual([r.douyin_id for r in filter_records(self.records, gender="未填写")], ["00004"])
+                  self.assertEqual([r.douyin_id for r in filter_records(self.records, age_mode="未填年龄")], ["00004"])
+                  self.assertEqual(len(filter_records(self.records, age_mode="已填年龄")), 3)
+                  self.assertEqual(len(filter_records(self.records, min_age=0)), 3)
+
+              def test_invalid_age_bounds_are_rejected(self):
+                  for minimum, maximum in ((-1, None), (None, 151), (40, 20)):
+                      with self.assertRaises(ValueError):
+                          filter_records(self.records, min_age=minimum, max_age=maximum)
+
+              def test_numeric_age_sort_both_directions_with_missing_last(self):
+                  self.assertEqual([r.age for r in sort_records(self.records, "age")], [19, 31, 100, None])
+                  self.assertEqual([r.age for r in sort_records(self.records, "age", True)], [100, 31, 19, None])
+                  self.assertEqual([r.douyin_id for r in self.records], ["00001", "00002", "00003", "00004"])
+
+              def test_text_and_status_sorts_and_complete_details(self):
+                  self.assertEqual([r.douyin_id for r in sort_records(self.records, "id", True)], ["00004", "00003", "00002", "00001"])
+                  result = sort_records(self.records, "status", statuses={"00002": "已处理"})
+                  self.assertEqual({r.douyin_id for r in result}, {r.douyin_id for r in self.records})
+                  self.records[0].raw_details = ["保留完整导入行，不截断原文"]
+                  details = recipient_details_text(self.records[0])
+                  for value in ("性别：女", "年龄：31 岁", "资料地区：江苏 镇江", "IP属地：上海", "保留完整导入行"):
+                      self.assertIn(value, details)
+
+
           if __name__ == "__main__":
               unittest.main()
           '@
-          [IO.File]::WriteAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded README.md (1/1)
         run: |
@@ -1011,7 +1706,7 @@ jobs:
           程序直接从“抖音号”字段取 ID，并提取昵称；会识别共同好友、关注、粉丝和评论区来源。
 
           本次四份附件共 282 条记录，按抖音号**原样精确匹配**后有 225 个不同 ID、57 条重复。
-          也可以导入单独交付的 `导入名单_225人.csv`。真实名单不嵌入构建工作流和源码压缩包。
+          也可以导入单独交付的新版 `导入名单_225人.csv`，包含性别、年龄、资料地区和 IP 属地。真实名单不嵌入构建工作流和源码压缩包。
           若导入原始四份 TXT，会显示“已合并重复 57”；若导入已去重 CSV，则显示“已合并重复 0”。
 
           支持 UTF-8、UTF-8 BOM、带 BOM 的 UTF-16 / UTF-32 和 GB18030 编码。
@@ -1027,9 +1722,9 @@ jobs:
           ```
 
           ```csv
-          抖音号,昵称,来源
-          demo_001,联系人甲,示例名单
-          demo_002,联系人乙,示例名单
+          抖音号,昵称,性别,年龄,资料地区,IP属地,来源
+          demo_001,联系人甲,女,29,江苏 镇江,江苏,导入名单
+          demo_002,联系人乙,男,31,上海 静安,上海,导入名单
           ```
 
           单个文件上限 5 MB，当前名单最多 20,000 人。导入为追加模式，重复 ID 合并来源和缺失昵称。
@@ -1037,19 +1732,42 @@ jobs:
 
           ## 界面细节
 
-          - 昵称 / 抖音号搜索、来源筛选、批量选中。
+          - 昵称 / 抖音号搜索、来源、性别、年龄区间、年龄是否填写、地区组合筛选、批量选中。
+          - 表格包含昵称、抖音号、性别、年龄、资料地区、IP 属地、来源和状态；可拖动列宽或使用底部横向滚动条。
+          - 点击任意表头切换升降序；年龄按数值排序，缺失值始终排在最后。双击接收人或选中后按 Enter 查看完整字段与导入原文。
           - 消息支持 `{昵称}`、`{抖音号}`，右侧预览会替换为对应接收人的信息。
           - 消息上限 2,000 字，发送间隔可填 0.1–10 秒 / 人。
-          - 默认处理全部已导入名单；搜索和来源筛选只影响显示。勾选“仅处理选中”后，才限定为表格中选中的人。
+          - 任务范围默认采用“当前筛选结果”，可切换“全部导入名单”或“仅选中的接收人”。点击“全选结果”或在表格按 Ctrl+A 可选中当前结果。
+          - 开始后固定本轮接收人和顺序；运行期间改变筛选只影响显示，下次开始才采用新的结果。
           - 任务开始后锁定名单和编辑器；暂停后可继续，停止后保留本轮状态，再次开始创建新一轮。
           - 实时进度、用时、本轮待处理数量、运行日志；日志导出为带 BOM 的 UTF-8 CSV。
-          - 名单和群发内容只在当前窗口内存中保存，关闭后清除；仅手动导出日志会写出所选文件。
-          - 标题、按钮、进度、提示和运行日志采用常规任务管理文案，右上角显示当前版本。
+          - 名单和群发内容只在当前窗口内存中保存，关闭后清除；账号显示设置单独保存，下次启动自动恢复。
+          - 标题、按钮、进度、提示和运行日志采用常规任务管理文案，左侧底部显示版本，右上角显示设置的账号信息。
 
-          ## v1.2.0 界面调整
+          ## v1.3.0 账号显示设置
 
-          统一标题、按钮、状态、提示与日志的任务管理文案；移除模式角标和示例入口。
-          主按钮为“开始群发”，名单状态为“等待处理 / 已处理”，进度为“正在处理 / 任务完成”。
+          点击窗口右上角或左侧菜单的“账号设置”，填写账号和昵称，再点击“保存设置”。
+          支持仅显示账号、仅显示昵称、同时显示两项或全部隐藏；还可勾选“遮挡账号”隐藏中间部分。
+          长账号或昵称会在页头缩略显示，设置窗口中保留完整内容；“清空信息”后点击保存可清除已存信息。
+          取消设置窗口会保留原设置。
+
+          这些字段用于自定义工作台显示，不会生成登录凭据、改变真实认证状态或改变消息模板中的接收人变量。
+          程序不会索取或保存抖音密码、Cookie、验证码。
+          Windows 设置文件位于 `%LOCALAPPDATA%/DouyinSender/settings.json`，只存账号、昵称与显示选项。
+          账号设置文件损坏时会恢复默认显示，原文件不会自动覆盖，可在设置中重新保存。
+
+          ## v1.4.0 名单资料、筛选与排序
+
+          TXT 导入会保留原文中的性别、年龄、资料地区和 IP 属地；重复 ID 合并来源，并补全缺失资料。
+          同一字段存在不同值时保留首次导入的非空值，原始行可在资料详情中核对。
+          未提供的信息显示“未填写”，不从昵称或评论地区分布推断性别、年龄和 IP 属地。
+          资料地区与 IP 属地分开显示、分开筛选；地区支持省、市关键词和可选的完整地区值。
+          年龄区间两端均包含，允许单独设置下限或上限；可单独查看已填或未填年龄。
+          “重置”会清除筛选和排序，恢复原始导入顺序；不会清除名单。
+
+          若先前导入的是只包含 ID、昵称和来源的旧 CSV，请重新导入原始 TXT 或本次新版完整资料 CSV。
+          旧版 CSV 仍可导入，但其中没有保存的资料会显示为“未填写”。
+
           当前版本保留自动构建；上传工作流后，重新下载本次构建的 EXE 即可看到调整。
 
           ## 本地运行与构建
