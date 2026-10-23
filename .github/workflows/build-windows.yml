@@ -1,7 +1,7 @@
 # Upload this single file as .github/workflows/build-windows.yml
 # It embeds all source and uses no real recipient data, Secrets, or account logins.
 name: Build Windows App
-run-name: Windows v1.13.0 · ${{ github.ref_name }}
+run-name: Windows v1.14.0 · ${{ github.ref_name }}
 
 on:
   push:
@@ -62,7 +62,7 @@ jobs:
 
 
           APP_NAME = "抖音群发工作台"
-          VERSION = "1.13.0"
+          VERSION = "1.14.0"
           UI_SCALE = 0.85
           MAX_FILE_BYTES = 5 * 1024 * 1024
           MAX_RECIPIENTS = 20000
@@ -918,6 +918,10 @@ jobs:
               nickname: str = ""
               fans_private: bool = False
               following_private: bool = False
+              fans_count: int | None = None
+              following_count: int | None = None
+              region: str = ""
+              live_ip: str = ""
 
 
           @dataclass
@@ -926,6 +930,24 @@ jobs:
               targets: dict[str, TargetProfile] = field(default_factory=dict)
 
 
+          def parse_target_count(value: str) -> int | None:
+              text = value.strip()
+              if not text:
+                  return None
+              if not re.fullmatch(r"\d+|\d{1,3}(?:,\d{3})+", text):
+                  raise ValueError("粉丝和关注人数请填写非负整数，或留空。")
+              count = int(text.replace(",", ""))
+              if count > 999999999999:
+                  raise ValueError("粉丝和关注人数最大为 999999999999。")
+              return count
+
+
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (4/17)
+        run: |
+          $payload = @'
           def normalize_collection_preferences(preferences: CollectionPreferences) -> CollectionPreferences:
               if not isinstance(preferences.last_target, str) or not isinstance(preferences.targets, dict):
                   raise ValueError("目标资料设置格式不正确。")
@@ -934,12 +956,6 @@ jobs:
                   raise ValueError("目标资料设置最多保存 2000 个账号。")
               targets = {}
               for target, profile in preferences.targets.items():
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (4/17)
-        run: |
-          $payload = @'
                   if not isinstance(target, str) or not isinstance(profile, TargetProfile):
                       raise ValueError("目标资料内容不正确。")
                   target = collection_target(target)
@@ -950,9 +966,16 @@ jobs:
                       raise ValueError("目标昵称最多 40 字，不能包含换行或控制字符。")
                   if type(profile.fans_private) is not bool or type(profile.following_private) is not bool:
                       raise ValueError("隐私标记必须为开或关。")
+                  for count in (profile.fans_count, profile.following_count):
+                      if count is not None and (type(count) is not int or not 0 <= count <= 999999999999):
+                          raise ValueError("粉丝和关注人数请填写 0–999999999999 之间的整数，或留空。")
+                  for caption, value, limit in (("资料位置", profile.region, 80), ("实时IP", profile.live_ip, 64)):
+                      if not isinstance(value, str) or len(value.strip()) > limit or any(ord(char) < 32 for char in value):
+                          raise ValueError(f"{caption}最多 {limit} 字，不能包含换行或控制字符。")
                   if target in targets:
                       raise ValueError("目标抖音号设置重复。")
-                  targets[target] = TargetProfile(nickname, profile.fans_private, profile.following_private)
+                  targets[target] = TargetProfile(nickname, profile.fans_private, profile.following_private,
+                                                 profile.fans_count, profile.following_count, profile.region.strip(), profile.live_ip.strip())
               return CollectionPreferences(last_target, targets)
 
 
@@ -968,7 +991,8 @@ jobs:
               for target, values in data["targets"].items():
                   if not isinstance(values, dict):
                       raise ValueError("目标资料设置内容不正确。")
-                  targets[target] = TargetProfile(values.get("nickname", ""), values.get("fans_private", False), values.get("following_private", False))
+                  targets[target] = TargetProfile(values.get("nickname", ""), values.get("fans_private", False), values.get("following_private", False),
+                                                 values.get("fans_count"), values.get("following_count"), values.get("region", ""), values.get("live_ip", ""))
               return normalize_collection_preferences(CollectionPreferences(data.get("last_target", ""), targets))
 
 
@@ -976,31 +1000,41 @@ jobs:
               preferences = normalize_collection_preferences(preferences)
               write_json_atomic(path, {"schema_version": 1, "last_target": preferences.last_target,
                   "targets": {target: {"nickname": profile.nickname, "fans_private": profile.fans_private,
-                                       "following_private": profile.following_private}
+                                       "following_private": profile.following_private, "fans_count": profile.fans_count,
+                                       "following_count": profile.following_count, "region": profile.region, "live_ip": profile.live_ip}
                               for target, profile in preferences.targets.items()}})
               return preferences
 
 
           def target_lookup_text(value: str, preferences: CollectionPreferences, records: list[Recipient]) -> str:
               if not value.strip():
-                  return "填写目标抖音号 · 昵称可在“目标设置”中配置"
+                  return "填写目标抖音号，点击“搜索账号”设置账号资料"
               try:
                   target = collection_target(value)
               except ValueError:
                   return "获取失败 · 目标抖音号格式不正确"
-              profile = preferences.targets.get(target)
-              if profile is not None and profile.nickname:
-                  return f"获取成功 · 昵称：{profile.nickname}（本地配置）"
+              profile = preferences.targets.get(target, TargetProfile())
               record = next((record for record in records if record.douyin_id == target and record.nickname), None)
-              if record is not None:
-                  return f"获取成功 · 昵称：{record.nickname}（本地名单）"
-              return "获取失败 · 未配置该目标的昵称"
+              nickname = profile.nickname or (record.nickname if record is not None else "")
+              if not nickname:
+                  return "获取失败 · 请先设置账号资料"
+
+              def brief(text: str, maximum: int) -> str:
+                  return text if len(text) <= maximum else text[:maximum - 1] + "…"
+
+              fans = f"{profile.fans_count:,}" if profile.fans_count is not None else "—"
+              following = f"{profile.following_count:,}" if profile.following_count is not None else "—"
+              region = profile.region or (record.region if record is not None else "") or "未填写"
+              live_ip = profile.live_ip or (record.ip_region if record is not None else "") or "未填写"
+              return (f"获取成功 · 昵称：{brief(nickname, 20)}\n"
+                      f"粉丝 {fans} 人 · 关注 {following} 人\n"
+                      f"资料位置：{brief(region, 18)} · 实时IP：{brief(live_ip, 24)}")
 
 
           def privacy_failure_reason(preferences: CollectionPreferences, target: str, kind: str) -> str:
               profile = preferences.targets.get(target)
               if profile is not None and ((kind == "粉丝" and profile.fans_private) or (kind == "关注" and profile.following_private)):
-                  return "账号已设置隐私，采集失败（手动标记）。"
+                  return "账号已设置隐私，采集失败。"
               return ""
 
 
@@ -1167,6 +1201,12 @@ jobs:
 
           class Session:
               """Deterministic local queue, with no network or account integration."""
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (5/17)
+        run: |
+          $payload = @'
               def __init__(self) -> None:
                   self.state = "idle"
                   self.queue: list[Recipient] = []
@@ -1225,12 +1265,6 @@ jobs:
 
               def pause(self) -> None:
                   if self.state == "running":
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (5/17)
-        run: |
-          $payload = @'
                       self._freeze_clock()
                       self.state = "paused"
 
@@ -1286,7 +1320,7 @@ jobs:
                   self.collection_kind_var = tk.StringVar(value="评论区")
                   self.collection_lookup_var = tk.StringVar()
                   self.collection_status_var = tk.StringVar(value="采集失败")
-                  self.collection_detail_var = tk.StringVar(value="尚未选择本地数据文件，点击“一键采集”选择。")
+                  self.collection_detail_var = tk.StringVar(value="尚未选择名单，点击“一键采集”开始。")
                   self.collection_files_var = tk.StringVar(value="尚未选择名单文件")
                   self.collection_saved_var = tk.StringVar(value="尚未保存文件")
                   self.collection_totals_var = tk.StringVar(value="已采集：评论区 0 人 · 粉丝 0 人 · 关注 0 人")
@@ -1323,7 +1357,7 @@ jobs:
                   self.account_display_var = tk.StringVar()
                   self.records: list[Recipient] = []
                   self.imported_files: list[Path] = []
-                  self.imported_names_var = tk.StringVar(value="数据来源：本地文件")
+                  self.imported_names_var = tk.StringVar(value="")
                   self.table_layout_timer = None
                   self.table_widths: dict[str, int] = {}
                   self.session = Session()
@@ -1366,7 +1400,7 @@ jobs:
                   for variable in (self.search_var, self.gender_var, self.age_mode_var,
                                    self.min_age_var, self.max_age_var, self.region_var, self.region_field_var):
                       variable.trace_add("write", self.search_changed)
-                  self.log("系统", "工作台已就绪，请填写目标抖音号并选择本地数据。")
+                  self.log("系统", "工作台已就绪，请填写目标抖音号并选择采集类型。")
                   if self.profile_load_error:
                       self.log("设置", "账号设置未能读取，已恢复默认显示，可在“账号设置”中重新保存。")
                   if self.runtime_load_error:
@@ -1374,7 +1408,7 @@ jobs:
                   if self.view_load_error:
                       self.log("设置", "列表显示设置未能读取，已恢复显示评论次数。")
                   if self.collection_preferences_error:
-                      self.log("设置", "目标资料设置未能读取，可在“目标设置”中重新配置。")
+                      self.log("设置", "账号资料未能读取，可在“搜索账号”中重新填写。")
                   self.update_stats()
                   self.tick_clock()
 
@@ -1415,6 +1449,12 @@ jobs:
                                   font=("Microsoft YaHei UI", size, "bold" if bold else "normal"), **options)
 
               def button(self, parent, text, command, primary=False, danger=False, **options):
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (6/17)
+        run: |
+          $payload = @'
                   bg = COLORS["accent"] if primary else COLORS["hover"]
                   fg = COLORS["bg"] if primary else COLORS["red"] if danger else COLORS["text"]
                   padding = {"padx": 14, "pady": 8}
@@ -1454,12 +1494,6 @@ jobs:
                           if option in options:
                               widget.configure(**{option: ui_pixels(widget.winfo_pixels(widget.cget(option)))})
                       if isinstance(widget, tk.Canvas):
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (6/17)
-        run: |
-          $payload = @'
                           widget.configure(width=ui_pixels(widget.winfo_pixels(widget.cget("width"))),
                                            height=ui_pixels(widget.winfo_pixels(widget.cget("height"))))
                       manager = widget.winfo_manager()
@@ -1483,13 +1517,13 @@ jobs:
 
               def build_ui(self) -> None:
                   main = tk.Frame(self.root, bg=COLORS["bg"])
-                  main.pack(fill="both", expand=True, padx=14, pady=10)
+                  main.pack(fill="both", expand=True, padx=14, pady=9)
                   main.columnconfigure(0, weight=1)
                   # The roster uses the full workspace height. Compact task controls and
                   # logs sit below the two right-hand panels instead of across the window.
                   main.rowconfigure(2, weight=1)
                   header = tk.Frame(main, bg=COLORS["bg"])
-                  header.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+                  header.grid(row=0, column=0, sticky="ew", pady=(0, 4))
                   self.label(header, "抖音群发工作台", 17, bold=True).pack(side="left")
                   self.label(header, f"v{VERSION}", 8, "muted").pack(side="left", padx=10)
                   self.button(header, "账号设置", self.open_account_settings, padx=10, pady=5).pack(side="right")
@@ -1499,7 +1533,7 @@ jobs:
                   self.account_display_label.pack(side="right", padx=12)
 
                   stats = self.stats_frame = tk.Frame(main, bg=COLORS["bg"])
-                  stats.grid(row=1, column=0, sticky="ew", pady=(0, 7))
+                  stats.grid(row=1, column=0, sticky="ew", pady=(0, 5))
                   self.stat_vars = [tk.StringVar(value="0") for _ in range(4)]
                   for i, (caption, color) in enumerate([("名单人数", "text"), ("已合并重复", "blue"),
                                                         ("已处理", "accent"), ("本轮待处理", "amber")]):
@@ -1521,36 +1555,20 @@ jobs:
                   list_card.rowconfigure(3, weight=1)
                   list_header = tk.Frame(list_card, bg=COLORS["card"])
                   list_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(9, 7))
-                  list_header.columnconfigure(1, weight=1)
-                  self.label(list_header, "接收人名单", 12, bold=True).grid(row=0, column=0, sticky="w", pady=(0, 6))
-                  search_box = tk.Frame(list_header, bg=COLORS["card"])
-                  search_box.grid(row=0, column=1, sticky="ew", padx=(8, 6), pady=(0, 6))
-                  self.label(search_box, "搜索", 8, "muted").pack(side="left", padx=(0, 4))
-                  self.search_entry = tk.Entry(search_box, textvariable=self.search_var, bg=COLORS["input"],
-                                               fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat", width=1)
-                  self.search_entry.pack(side="left", fill="x", expand=True, ipady=4)
-                  self.comment_column_check = tk.Checkbutton(
-                      list_header, text="评论次数", variable=self.show_comment_count_var, command=self.toggle_comment_column,
-                      bg=COLORS["card"], fg=COLORS["muted"], activebackground=COLORS["card"],
-                      activeforeground=COLORS["text"], selectcolor=COLORS["input"], font=("Microsoft YaHei UI", 8))
-                  self.comment_column_check.grid(row=0, column=2, sticky="e", pady=(0, 6))
+                  list_header.columnconfigure(0, weight=1)
                   target_row = tk.Frame(list_header, bg=COLORS["card"])
-                  target_row.grid(row=1, column=0, columnspan=3, sticky="ew")
-                  self.label(target_row, "目标抖音号", 8, "muted").pack(side="left", padx=(0, 7))
+                  target_row.grid(row=0, column=0, sticky="ew")
+                  self.label(target_row, "目标抖音号", 10, "muted").pack(side="left", padx=(0, 7))
                   self.main_target_entry = tk.Entry(target_row, textvariable=self.collection_target_var, width=10,
-                      bg=COLORS["input"], fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat")
+                      bg=COLORS["input"], fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat", font=("Microsoft YaHei UI", 11))
                   self.main_target_entry.pack(side="left", fill="x", expand=True, ipady=5)
                   self.main_target_entry.bind("<Return>", lambda _event: self.lookup_collection_target())
-                  self.target_config_button = self.button(target_row, "目标设置", self.open_target_settings, padx=6, pady=4)
+                  self.target_config_button = self.button(target_row, "搜索账号", self.open_target_settings, padx=8, pady=5)
                   self.target_config_button.pack(side="right", padx=(6, 0))
-                  self.target_result_label = self.label(list_header, size=8, color="blue", textvariable=self.collection_lookup_var,
+                  self.target_result_label = self.label(list_header, size=10, color="text", textvariable=self.collection_lookup_var,
                                                        anchor="w", justify="left", width=1, wraplength=1)
-                  self.target_result_label.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(4, 2))
+                  self.target_result_label.grid(row=1, column=0, sticky="ew", pady=(6, 2))
                   self.target_result_label.bind("<Configure>", lambda e: self.target_result_label.configure(wraplength=max(1, e.width)))
-                  self.import_name_label = self.label(list_header, size=8, color="muted", textvariable=self.imported_names_var,
-                                                      anchor="w", justify="left", width=1, wraplength=1)
-                  self.import_name_label.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(2, 0))
-                  self.import_name_label.bind("<Configure>", lambda event: self.import_name_label.configure(wraplength=max(1, event.width)))
                   filters = tk.Frame(list_card, bg=COLORS["card"])
                   filters.grid(row=1, column=0, sticky="ew", padx=10)
                   collection_nav = self.collection_nav = tk.Frame(filters, bg=COLORS["card"])
@@ -1565,7 +1583,7 @@ jobs:
                       button.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 3, 0 if index == 2 else 3))
                       self.collection_buttons[kind] = button
                       self.collection_status_vars[kind] = tk.StringVar(value="采集失败\n未选择数据")
-                      status = self.label(collection_nav, size=8, color="red", textvariable=self.collection_status_vars[kind],
+                      status = self.label(collection_nav, size=9, color="red", textvariable=self.collection_status_vars[kind],
                                           width=1, height=2, wraplength=1, justify="center", cursor="hand2")
                       status.grid(row=1, column=index, sticky="ew", padx=2, pady=(3, 0))
                       status.bind("<Configure>", lambda event, label=status: label.configure(wraplength=max(1, event.width)))
@@ -1585,6 +1603,12 @@ jobs:
                       tk.Entry(second_filter, textvariable=variable, width=3, bg=COLORS["input"], fg=COLORS["text"],
                                insertbackground=COLORS["accent"], relief="flat").pack(side="left", ipady=4)
                   self.label(second_filter, "岁", 8, "muted").pack(side="left", padx=3)
+                  search_box = tk.Frame(second_filter, bg=COLORS["card"])
+                  search_box.pack(side="right", fill="x", expand=True, padx=(4, 0))
+                  self.label(search_box, "筛选", 8, "muted").pack(side="left", padx=(0, 3))
+                  self.search_entry = tk.Entry(search_box, textvariable=self.search_var, bg=COLORS["input"],
+                                               fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat", width=1)
+                  self.search_entry.pack(side="left", fill="x", expand=True, ipady=4)
                   third_filter = tk.Frame(filters, bg=COLORS["card"])
                   third_filter.pack(fill="x")
                   ttk.Combobox(third_filter, textvariable=self.region_field_var, values=["任一地区", "资料地区", "IP属地"],
@@ -1609,6 +1633,12 @@ jobs:
                   yscroll = ttk.Scrollbar(table_frame, command=self.table.yview)
                   self.table.configure(yscrollcommand=yscroll.set)
                   yscroll.grid(row=0, column=1, sticky="ns")
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (7/17)
+        run: |
+          $payload = @'
                   self.table.grid(row=0, column=0, sticky="nsew")
                   self.table.bind("<Configure>", self.schedule_table_layout)
                   self.table.bind("<Button-1>", self.block_column_resize, add="+")
@@ -1622,14 +1652,13 @@ jobs:
                   bottom.grid(row=4, column=0, sticky="ew", padx=10, pady=7)
                   self.visible_var = tk.StringVar(value="显示 0 / 0 人")
                   self.label(bottom, size=8, color="muted", textvariable=self.visible_var).pack(side="left")
+                  self.comment_column_check = tk.Checkbutton(
+                      bottom, text="评论次数", variable=self.show_comment_count_var, command=self.toggle_comment_column,
+                      bg=COLORS["card"], fg=COLORS["muted"], activebackground=COLORS["card"],
+                      activeforeground=COLORS["text"], selectcolor=COLORS["input"], font=("Microsoft YaHei UI", 9))
+                  self.comment_column_check.pack(side="left", padx=(5, 0))
                   self.clear_button = self.button(bottom, "清空", self.clear_list, danger=True, padx=9, pady=5)
                   self.clear_button.pack(side="right")
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (7/17)
-        run: |
-          $payload = @'
                   self.button(bottom, "全选结果", self.select_visible, padx=9, pady=5).pack(side="right", padx=6)
                   self.collection_totals_label = self.label(list_card, size=8, color="blue", textvariable=self.collection_totals_var,
                                                             width=1, wraplength=1, justify="left", anchor="w")
@@ -1730,15 +1759,15 @@ jobs:
                   log_content.pack(fill="both", expand=True, padx=(4, 0), pady=(0, 4))
                   log_scroll = ttk.Scrollbar(log_content)
                   log_scroll.pack(side="right", fill="y")
-                  self.log_text = tk.Text(log_content, height=3, width=1, wrap="word", bg=COLORS["card"], fg=COLORS["muted"],
-                                          relief="flat", state="disabled", font=("Consolas", 8), padx=5, pady=5,
+                  self.log_text = tk.Text(log_content, height=2, width=1, wrap="word", bg=COLORS["card"], fg=COLORS["muted"],
+                                          relief="flat", state="disabled", font=("Consolas", 9), padx=5, pady=5,
                                           yscrollcommand=log_scroll.set)
                   self.log_text.pack(side="left", fill="both", expand=True)
                   log_scroll.configure(command=self.log_text.yview)
                   controls = self.controls_card = self.card(body)
                   controls.grid(row=1, column=1, sticky="nsew", padx=(0, 8), pady=(7, 0))
                   actions = self.task_actions = tk.Frame(controls, bg=COLORS["card"])
-                  actions.pack(fill="x", padx=10, pady=(7, 5))
+                  actions.pack(fill="x", padx=10, pady=(5, 3))
                   self.start_button = self.button(actions, "开始群发", self.start, primary=True, padx=12, pady=5)
                   self.start_button.pack(side="left")
                   self.pause_button = self.button(actions, "暂停", self.toggle_pause, state="disabled", padx=8, pady=5)
@@ -1746,9 +1775,9 @@ jobs:
                   self.stop_button = self.button(actions, "停止", self.stop, danger=True, state="disabled", padx=8, pady=5)
                   self.stop_button.pack(side="left")
                   progress = tk.Frame(controls, bg=COLORS["card"])
-                  progress.pack(fill="x", padx=10, pady=(0, 6))
+                  progress.pack(fill="x", padx=10, pady=(0, 4))
                   ttk.Progressbar(progress, variable=self.progress_var, maximum=100).pack(fill="x", pady=(0, 4))
-                  progress_label = self.label(progress, size=8, color="muted", textvariable=self.progress_text,
+                  progress_label = self.label(progress, size=9, color="muted", textvariable=self.progress_text,
                                                width=1, height=2, anchor="nw", wraplength=1, justify="left")
                   progress_label.pack(fill="x")
                   progress_label.bind("<Configure>", lambda event: progress_label.configure(wraplength=max(1, event.width)))
@@ -1757,10 +1786,16 @@ jobs:
                   self.toast_label.grid(row=2, column=1, columnspan=2, sticky="ew", pady=(5, 0))
                   self.toast_label.bind("<Configure>", lambda event: self.toast_label.configure(wraplength=max(1, event.width)))
                   footer = self.footer = tk.Frame(main, bg=COLORS["bg"])
-                  footer.grid(row=3, column=0, sticky="ew", pady=(5, 0))
-                  self.local_time_label = self.label(footer, size=8, color="muted", textvariable=self.local_time_var)
+                  footer.grid(row=3, column=0, sticky="ew", pady=(3, 0))
+                  self.local_time_label = self.label(footer, size=12, bold=True, textvariable=self.local_time_var)
                   self.local_time_label.pack(side="right")
-                  self.runtime_label = self.label(footer, size=8, color="muted", textvariable=self.runtime_var)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (8/17)
+        run: |
+          $payload = @'
+                  self.runtime_label = self.label(footer, size=9, color="muted", textvariable=self.runtime_var)
                   self.runtime_label.pack(side="left")
                   self.scale_ui(main)
                   self.update_preview()
@@ -1769,7 +1804,7 @@ jobs:
                   self.message.focus_set()
 
               def refresh_clock_labels(self) -> None:
-                  self.local_time_var.set(datetime.now().strftime("本地时间：%Y-%m-%d %H:%M:%S"))
+                  self.local_time_var.set(datetime.now().strftime("当前时间：%Y-%m-%d %H:%M:%S"))
                   self.runtime_var.set(f"本次运行 {format_duration(self.runtime_clock.actual)}  ·  已运行 {format_duration(self.runtime_clock.displayed)}")
 
               def tick_clock(self) -> None:
@@ -1791,12 +1826,6 @@ jobs:
 
               def refresh_target_summary(self) -> None:
                   self.collection_lookup_var.set(target_lookup_text(self.collection_target_var.get(), self.collection_preferences, self.records))
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (8/17)
-        run: |
-          $payload = @'
                   self.refresh_collection_cards()
 
               def current_collection_key(self, kind: str) -> tuple[str, str]:
@@ -1813,11 +1842,11 @@ jobs:
                       reason = privacy_failure_reason(self.collection_preferences, target, kind)
                       receipt = self.collection_receipts.get((target, kind), CollectionReceipt())
                       if reason:
-                          text, color = "账号已设置隐私\n采集失败（手动标记）", "red"
+                          text, color = "账号已设置隐私\n采集失败", "red"
                       elif receipt.state == "success":
                           text, color = f"采集成功\n已采集 {receipt.count:,} 人", "accent"
                       elif receipt.state == "running":
-                          text, color = "正在采集\n读取本地数据…", "blue"
+                          text, color = "正在采集\n请稍候…", "blue"
                       else:
                           brief = "文件不存在" if "文件不存在" in receipt.detail else receipt.detail
                           brief = brief if len(brief) <= 10 else brief[:9] + "…"
@@ -1832,36 +1861,41 @@ jobs:
                       self.target_settings_dialog.lift()
                       return
                   dialog = self.target_settings_dialog = tk.Toplevel(self.root)
-                  dialog.title("目标资料设置")
+                  dialog.title("搜索账号")
                   dialog.configure(bg=COLORS["card"])
                   dialog.transient(self.root)
                   content = tk.Frame(dialog, bg=COLORS["card"])
                   content.pack(fill="both", expand=True, padx=20, pady=16)
                   content.columnconfigure(1, weight=1)
-                  self.label(content, "目标资料设置", 14, bold=True).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
-                  self.label(content, "昵称和隐私状态由你填写，本地保存。", 9, "blue").grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 12))
+                  self.label(content, "账号资料", 14, bold=True).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+                  self.label(content, "填写目标账号资料，并设置各分类状态。", 10, "blue").grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 12))
                   target = self.current_collection_key("评论区")[0]
                   profile = self.collection_preferences.targets.get(target, TargetProfile())
                   self.target_form = {
                       "target": tk.StringVar(value=target), "nickname": tk.StringVar(value=profile.nickname),
                       "fans_private": tk.BooleanVar(value=profile.fans_private),
                       "following_private": tk.BooleanVar(value=profile.following_private),
+                      "fans_count": tk.StringVar(value="" if profile.fans_count is None else str(profile.fans_count)),
+                      "following_count": tk.StringVar(value="" if profile.following_count is None else str(profile.following_count)),
+                      "region": tk.StringVar(value=profile.region), "live_ip": tk.StringVar(value=profile.live_ip),
                   }
                   self.target_settings_entries = []
-                  for row, (key, caption) in enumerate((("target", "目标抖音号"), ("nickname", "目标昵称")), 2):
-                      self.label(content, caption, 9, "muted").grid(row=row, column=0, sticky="w", padx=(0, 10), pady=7)
+                  for row, (key, caption) in enumerate((("target", "目标抖音号"), ("nickname", "目标昵称"),
+                                                      ("fans_count", "粉丝人数"), ("following_count", "关注人数"),
+                                                      ("region", "资料位置"), ("live_ip", "实时IP")), 2):
+                      self.label(content, caption, 10, "muted").grid(row=row, column=0, sticky="w", padx=(0, 10), pady=6)
                       entry = tk.Entry(content, textvariable=self.target_form[key], width=28, bg=COLORS["input"],
-                                       fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat")
-                      entry.grid(row=row, column=1, sticky="ew", ipady=6, pady=7)
+                                       fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat", font=("Microsoft YaHei UI", 11))
+                      entry.grid(row=row, column=1, sticky="ew", ipady=6, pady=6)
                       self.target_settings_entries.append(entry)
-                  for row, key, caption in ((4, "fans_private", "粉丝：账号已设置隐私（手动标记）"),
-                                            (5, "following_private", "关注：账号已设置隐私（手动标记）")):
+                  for row, key, caption in ((8, "fans_private", "粉丝：账号已设置隐私"),
+                                            (9, "following_private", "关注：账号已设置隐私")):
                       tk.Checkbutton(content, text=caption, variable=self.target_form[key], bg=COLORS["card"],
                           fg=COLORS["text"], activebackground=COLORS["card"], selectcolor=COLORS["input"],
                           font=("Microsoft YaHei UI", 9)).grid(row=row, column=0, columnspan=2, sticky="w", pady=4)
-                  self.label(content, "隐私标记不联网核验；评论区不受此标记影响。", 8, "muted").grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 12))
+                  self.label(content, "粉丝、关注状态分别设置，评论区不受影响。", 9, "muted").grid(row=10, column=0, columnspan=2, sticky="w", pady=(8, 12))
                   actions = tk.Frame(content, bg=COLORS["card"])
-                  actions.grid(row=7, column=0, columnspan=2, sticky="e")
+                  actions.grid(row=11, column=0, columnspan=2, sticky="e")
 
                   def close_settings():
                       dialog.destroy()
@@ -1875,7 +1909,10 @@ jobs:
                           identifier = collection_target(self.target_form["target"].get())
                           targets = dict(self.collection_preferences.targets)
                           targets[identifier] = TargetProfile(self.target_form["nickname"].get(), self.target_form["fans_private"].get(),
-                                                             self.target_form["following_private"].get())
+                                                             self.target_form["following_private"].get(),
+                                                             parse_target_count(self.target_form["fans_count"].get()),
+                                                             parse_target_count(self.target_form["following_count"].get()),
+                                                             self.target_form["region"].get(), self.target_form["live_ip"].get())
                           preferences = save_collection_preferences(self.collection_preferences_path, CollectionPreferences(identifier, targets))
                       except (OSError, ValueError) as exc:
                           messagebox.showinfo("目标资料未保存", str(exc), parent=dialog)
@@ -1938,8 +1975,8 @@ jobs:
                       self.toast_var.set(str(exc))
                       return
                   paths = filedialog.askopenfilenames(parent=self.collection_dialog or self.root,
-                      title=f"{self.collection_kind_var.get()} · 一键采集 · 选择本地数据文件",
-                      filetypes=[("数据文件", "*.txt *.csv *.tsv"), ("所有文件", "*.*")])
+                      title=f"{self.collection_kind_var.get()} · 一键采集 · 选择名单",
+                      filetypes=[("名单文件", "*.txt *.csv *.tsv"), ("所有文件", "*.*")])
                   if paths:
                       self.set_collection_paths(paths)
                       self.start_collection_import()
@@ -1955,7 +1992,7 @@ jobs:
                       self.collection_dialog.lift()
                       return
                   dialog = self.collection_dialog = tk.Toplevel(self.root)
-                  dialog.title("资料采集 · 本地数据")
+                  dialog.title("资料采集")
                   dialog.configure(bg=COLORS["card"])
                   dialog.transient(self.root)
                   content = tk.Frame(dialog, bg=COLORS["card"])
@@ -1965,11 +2002,17 @@ jobs:
                   heading = tk.Frame(content, bg=COLORS["card"])
                   heading.grid(row=0, column=0, sticky="ew", pady=(0, 12))
                   self.label(heading, "资料采集", 16, bold=True).pack(side="left")
-                  self.collection_source_label = self.label(heading, "数据来源：本地文件", 9, "blue")
+                  self.collection_source_label = self.label(heading, "账号资料与采集任务", 9, "blue")
                   self.collection_source_label.pack(side="right")
                   lookup = tk.Frame(content, bg=COLORS["card"])
                   lookup.grid(row=1, column=0, sticky="ew")
                   self.label(lookup, "目标抖音号", 9, "muted").pack(side="left", padx=(0, 8))
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (9/17)
+        run: |
+          $payload = @'
                   self.collection_target_entry = tk.Entry(lookup, textvariable=self.collection_target_var, width=12,
                       bg=COLORS["input"], fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat")
                   self.collection_target_entry.pack(side="left", fill="x", expand=True, ipady=7)
@@ -1998,12 +2041,6 @@ jobs:
                   self.label(files_row, "点击下方“一键采集”选择数据", 8, "muted").pack(side="right")
                   files_frame = tk.Frame(content, bg=COLORS["input"])
                   files_frame.grid(row=5, column=0, sticky="nsew")
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (9/17)
-        run: |
-          $payload = @'
                   self.collection_file_text = tk.Text(files_frame, width=1, height=3, wrap="word", state="disabled",
                       bg=COLORS["input"], fg=COLORS["muted"], relief="flat", padx=9, pady=8, font=("Microsoft YaHei UI", 9))
                   file_scroll = ttk.Scrollbar(files_frame, command=self.collection_file_text.yview)
@@ -2076,7 +2113,7 @@ jobs:
                   self.collection_saved_var.set("尚未保存文件")
                   self.collection_status_var.set("等待采集")
                   self.collection_status_color = "muted"
-                  self.collection_detail_var.set("已选择本地数据文件，等待读取并保存。")
+                  self.collection_detail_var.set("已选择名单，等待读取并保存。")
                   self.refresh_collection_files()
                   self.sync_collection_controls()
 
@@ -2109,7 +2146,7 @@ jobs:
                       if reason:
                           raise ValueError(reason)
                       if not self.collection_paths:
-                          raise ValueError("请点击“一键采集”选择本地数据文件。")
+                          raise ValueError("请点击“一键采集”选择名单。")
                       self.collection_target_var.set(target)
                       self.collection_importer.request(tuple(self.collection_paths), self.collection_kind_var.get(), target,
                           self.profile_path.parent / "collections", existing_ids=[r.douyin_id for r in self.records])
@@ -2124,7 +2161,7 @@ jobs:
                   self.collection_status_var.set("正在采集并保存…")
                   self.collection_status_color = "blue"
                   self.collection_detail_var.set(f"正在处理 {len(self.collection_paths)} 个本机名单文件。")
-                  self.toast_var.set("正在读取本地数据并保存，点击分类状态可查看详情。")
+                  self.toast_var.set("正在采集并保存，点击分类状态可查看详情。")
                   self.set_busy(False)
                   self.sync_collection_controls()
                   self.collection_timer = self.root.after(60, self.poll_collection_import)
@@ -2157,18 +2194,24 @@ jobs:
                           for path in batch.paths:
                               if path not in self.imported_files:
                                   self.imported_files.append(path)
-                          self.imported_names_var.set("数据文件：" + "\n".join(path.name for path in self.imported_files))
+                          self.imported_names_var.set("\n".join(path.name for path in self.imported_files))
                           self.sync_filter_choices()
                           self.reset_filters()
                           self.update_stats()
                           self.refresh_collection_totals()
                           self.collection_status_var.set("采集成功 · 已保存")
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (10/17)
+        run: |
+          $payload = @'
                           self.collection_status_color = "accent"
                           self.collection_detail_var.set(f"已采集{batch.kind} {len(batch.records):,} 人，新增 {added:,} 人，"
                               f"合并重复 {repeated + batch.duplicates:,} 条，跳过无效项 {batch.skipped:,} 条。")
                           self.collection_receipts[(batch.target, batch.kind)] = CollectionReceipt("success", len(batch.records), self.collection_detail_var.get(), batch.paths, result.saved_path)
                           self.toast_var.set(f"采集成功 · 已采集{batch.kind} {len(batch.records):,} 人。")
-                          self.log("资料采集", f"目标 {batch.target}：已采集{batch.kind} {len(batch.records):,} 人，来源为本地文件，已保存至 {result.saved_path.name}。")
+                          self.log("资料采集", f"目标 {batch.target}：已采集{batch.kind} {len(batch.records):,} 人，已保存至 {result.saved_path.name}。")
                   self.refresh_collection_cards()
                   self.set_busy(self.session.active)
                   self.sync_collection_controls()
@@ -2204,12 +2247,6 @@ jobs:
                   current = self.runtime_clock.initial_seconds
                   self.runtime_form = [tk.StringVar(value=str(value)) for value in (current // 3600, current // 60 % 60, current % 60)]
                   row = tk.Frame(content, bg=COLORS["card"])
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (10/17)
-        run: |
-          $payload = @'
                   row.pack(fill="x", pady=8)
                   for variable, caption, maximum in zip(self.runtime_form, ("时", "分", "秒"), (99999, 59, 59)):
                       tk.Spinbox(row, from_=0, to=maximum, width=5, textvariable=variable, bg=COLORS["input"],
@@ -2389,6 +2426,12 @@ jobs:
                                        fg=COLORS["accent"] if selected else COLORS["muted"])
 
               def set_media_zoom(self, original: bool) -> None:
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (11/17)
+        run: |
+          $payload = @'
                   if self.media_preview_dialog is None:
                       return
                   self.media_dialog_mode.set("original" if original else "fit")
@@ -2431,12 +2474,6 @@ jobs:
                   self.media_dialog_mode = tk.StringVar(value="fit")
                   self.media_fit_button = self.button(toolbar, "适应窗口", lambda: self.set_media_zoom(False), padx=12, pady=6)
                   self.media_fit_button.pack(side="left")
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (11/17)
-        run: |
-          $payload = @'
                   self.media_original_button = self.button(toolbar, "100% 原尺寸", lambda: self.set_media_zoom(True), padx=12, pady=6)
                   self.media_original_button.pack(side="left", padx=7)
                   footer = tk.Frame(dialog, bg=COLORS["card"])
@@ -2613,6 +2650,12 @@ jobs:
                   options.pack(fill="x", pady=(12, 8))
                   for name, caption in (("show_account", "显示账号"), ("show_nickname", "显示昵称"), ("mask_account", "遮挡账号")):
                       tk.Checkbutton(options, text=caption, variable=variables[name], bg=COLORS["card"],
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (12/17)
+        run: |
+          $payload = @'
                                      fg=COLORS["muted"], activebackground=COLORS["card"], activeforeground=COLORS["text"],
                                      selectcolor=COLORS["input"], font=("Microsoft YaHei UI", 10)).pack(side="left", padx=(0, 10))
                   self.label(content, "显示预览", 9, "muted").pack(anchor="w")
@@ -2668,12 +2711,6 @@ jobs:
                   dialog.grab_set()
                   entries[0].focus_set()
 
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (12/17)
-        run: |
-          $payload = @'
               def search_changed(self, *_args) -> None:
                   if self.search_timer is not None:
                       self.root.after_cancel(self.search_timer)
@@ -2854,6 +2891,12 @@ jobs:
                   self.label(dialog, "完整字段与导入原文，可选中复制。", 9, "muted").pack(anchor="w", padx=20, pady=(0, 10))
                   details = recipient_details_text(record, self.session.statuses.get(record.douyin_id, "待开始"))
                   frame = tk.Frame(dialog, bg=COLORS["input"])
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (13/17)
+        run: |
+          $payload = @'
                   frame.pack(fill="both", expand=True, padx=20)
                   body = tk.Text(frame, wrap="word", bg=COLORS["input"], fg=COLORS["text"], relief="flat", padx=12, pady=12,
                                  font=("Microsoft YaHei UI", 10))
@@ -2878,7 +2921,7 @@ jobs:
               def import_files(self) -> None:
                   if self.session.active or self.collection_importer.pending:
                       return
-                  paths = filedialog.askopenfilenames(title="导入接收人名单（支持多选）", filetypes=[
+                  paths = filedialog.askopenfilenames(title="选择名单（支持多选）", filetypes=[
                       ("名单文件", "*.txt *.csv *.tsv"), ("文本文件", "*.txt"), ("所有文件", "*.*")])
                   if not paths:
                       return
@@ -2908,14 +2951,7 @@ jobs:
                       except (OSError, ValueError, UnicodeError) as exc:
                           errors.append(f"{path.name}：{exc}")
                   self.import_duplicates += repeated
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (13/17)
-        run: |
-          $payload = @'
-                  self.imported_names_var.set("数据文件：" + "\n".join(path.name for path in self.imported_files)
-                                             if self.imported_files else "数据来源：本地文件")
+                  self.imported_names_var.set("\n".join(path.name for path in self.imported_files))
                   self.sync_filter_choices()
                   self.reset_filters()
                   self.update_stats()
@@ -2949,7 +2985,7 @@ jobs:
                   self.refresh_media_status()
                   self.records.clear()
                   self.imported_files.clear()
-                  self.imported_names_var.set("数据来源：本地文件")
+                  self.imported_names_var.set("")
                   self.collection_receipts.clear()
                   self.session = Session()
                   self.import_duplicates = 0
@@ -3120,6 +3156,12 @@ jobs:
                   self.media_preview_loader.shutdown()
                   for name in ("timer", "search_timer", "clock_timer", "media_timer", "table_layout_timer",
                                "media_preview_timer", "media_reveal_timer", "media_cover_draw_timer", "media_dialog_draw_timer", "collection_timer"):
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (14/17)
+        run: |
+          $payload = @'
                       identifier = getattr(self, name, None)
                       if identifier is not None:
                           self.root.after_cancel(identifier)
@@ -3173,16 +3215,12 @@ jobs:
                   app.runtime_save_button.invoke()
                   assert app.runtime_dialog is None
                   assert load_runtime_offset(app.runtime_path) == 3723
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (14/17)
-        run: |
-          $payload = @'
                   assert app.runtime_clock.started == actual_anchor
                   assert 3723 <= app.runtime_clock.displayed < 3733
                   app.refresh_clock_labels()
-                  assert app.local_time_var.get().startswith("本地时间：")
+                  assert app.local_time_var.get().startswith("当前时间：")
+                  assert tkfont.Font(root=root, font=app.local_time_label.cget("font")).actual("size") == ui_font_size(12)
+                  assert tkfont.Font(root=root, font=app.local_time_label.cget("font")).actual("weight") == "bold"
                   parsed_time = datetime.strptime(app.local_time_var.get().split("：", 1)[1], "%Y-%m-%d %H:%M:%S")
                   assert abs((datetime.now() - parsed_time).total_seconds()) < 3
                   layout_snapshots = []
@@ -3213,7 +3251,7 @@ jobs:
                           "comment_column_toggle": app.comment_column_check,
                           "collection_summary": app.collection_totals_label,
                           "target_input": app.main_target_entry, "target_settings": app.target_config_button,
-                          "target_result": app.target_result_label,
+                          "target_result": app.target_result_label, "list_filter": app.search_entry,
                           **{f"collection_{kind}": button for kind, button in app.collection_buttons.items()},
                           **{f"collection_status_{kind}": label for kind, label in app.collection_card_labels.items()},
                       }
@@ -3279,19 +3317,25 @@ jobs:
 
                   app.focus_editor()
                   assert_flat_layout()
-                  assert not hasattr(app, "source_combo") and not hasattr(app, "import_button")
+                  assert not hasattr(app, "source_combo") and not hasattr(app, "import_button") and not hasattr(app, "import_name_label")
+                  assert app.target_config_button.cget("text") == "搜索账号"
                   assert all("采集失败" in variable.get() for variable in app.collection_status_vars.values())
                   app.open_target_settings()
                   app.target_form["target"].set("task_fixture")
                   app.target_form["nickname"].set("后台配置昵称")
+                  app.target_form["fans_count"].set("1,234")
+                  app.target_form["following_count"].set("56")
+                  app.target_form["region"].set("广东 深圳")
+                  app.target_form["live_ip"].set("203.0.113.8")
                   app.target_form["fans_private"].set(True)
                   app.target_settings_save_button.invoke()
                   root.update()
                   assert app.target_settings_dialog is None
                   assert load_collection_preferences(app.collection_preferences_path).targets["task_fixture"].fans_private
-                  assert "获取成功" in app.collection_lookup_var.get() and "后台配置昵称（本地配置）" in app.collection_lookup_var.get()
+                  assert "获取成功" in app.collection_lookup_var.get() and "后台配置昵称" in app.collection_lookup_var.get()
+                  assert all(value in app.collection_lookup_var.get() for value in ("粉丝 1,234 人", "关注 56 人", "资料位置：广东 深圳", "实时IP：203.0.113.8"))
                   app.collection_buttons["粉丝"].invoke()
-                  assert "账号已设置隐私" in app.collection_detail_var.get() and "手动标记" in app.collection_status_vars["粉丝"].get()
+                  assert "账号已设置隐私" in app.collection_detail_var.get() and "采集失败" in app.collection_status_vars["粉丝"].get()
                   assert not app.collection_importer.pending and app.collection_saved_path is None
                   assert "账号已设置隐私" not in app.collection_status_vars["评论区"].get()
                   app.open_target_settings()
@@ -3303,6 +3347,12 @@ jobs:
                   second_list = Path(profile_directory.name) / "接收人完整文件名称_第二批_表格资料.csv"
                   missing_list = Path(profile_directory.name) / "不存在的文件.txt"
                   first_list.write_text("昵称 完整昵称需要换行显示的联系人  女31岁  抖音号 fixture_001 资料位置：江苏 镇江 IP 属地：上海 评论次数 2 （江苏2次）", encoding="utf-8")
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (15/17)
+        run: |
+          $payload = @'
                   second_list.write_text("抖音 ID,昵称,资料 位置,IP归属地,评论次数\nfixture_002,联系人乙,西藏 阿里地区,江苏,10\n", encoding="utf-8-sig")
                   errors = app.import_paths([first_list, second_list, missing_list])
                   assert len(errors) == 1 and missing_list.name in errors[0]
@@ -3337,7 +3387,7 @@ jobs:
                           for key in app.displayed_columns():
                               assert all(app.measure_table_text(line) <= app.table.column(key, "width") - 2 * ui_pixels(6)
                                          for line in app.table.set(iid, key).split("\n"))
-                      assert int(app.import_name_label.cget("wraplength")) == app.import_name_label.winfo_width()
+                      assert int(app.target_result_label.cget("wraplength")) == app.target_result_label.winfo_width()
                       app.comment_column_check.invoke()
                       root.update_idletasks()
                       assert "comment_count" not in app.displayed_columns()
@@ -3350,12 +3400,6 @@ jobs:
                       assert load_comment_column(app.view_path) is True
                       assert app.table.set("fixture_002", "comment_count") == "10"
                       assert_table_alignment()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (15/17)
-        run: |
-          $payload = @'
                   app.sort_by("comment_count")
                   assert app.table.get_children() == ("fixture_001", "fixture_002")
                   app.sort_by("comment_count")
@@ -3406,7 +3450,7 @@ jobs:
                                                              "collection_layout_checks": collection_layout_snapshots},
                                                             ensure_ascii=False, indent=2), encoding="utf-8")
                           raise
-                      assert app.collection_source_label.cget("text") == "数据来源：本地文件"
+                      assert app.collection_source_label.cget("text") == "账号资料与采集任务"
 
                   def wait_for_collection():
                       deadline = time.monotonic() + 15
@@ -3436,7 +3480,7 @@ jobs:
                   assert_collection_layout()
                   app.collection_target_var.set("@fixture_001")
                   app.lookup_collection_target()
-                  assert "获取成功" in app.collection_lookup_var.get() and "本地名单" in app.collection_lookup_var.get()
+                  assert "获取成功" in app.collection_lookup_var.get() and "昵称：完整昵称" in app.collection_lookup_var.get()
                   app.collection_target_var.set("unknown_fixture")
                   app.lookup_collection_target()
                   assert "获取失败" in app.collection_lookup_var.get()
@@ -3505,6 +3549,12 @@ jobs:
                               widget.configure(font=(actual["family"], size, actual["weight"], actual["slant"]))
 
                   try:
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (16/17)
+        run: |
+          $payload = @'
                       # Exercise larger font metrics as well as the builder's native DPI.
                       app.scale_ui = scale_larger_collection_fonts
                       app.open_collection()
@@ -3525,7 +3575,7 @@ jobs:
                   finally:
                       messagebox.askyesno = original_confirm
                   assert not app.records and not app.imported_files
-                  assert app.imported_names_var.get() == "数据来源：本地文件"
+                  assert app.imported_names_var.get() == ""
                   assert all("采集失败" in variable.get() for variable in app.collection_status_vars.values())
                   assert collection_counts(app.records) == {"评论区": 0, "粉丝": 0, "关注": 0}
                   root.withdraw()
@@ -3572,12 +3622,6 @@ jobs:
                   app.reset_filters()
                   assert app.table.set("demo_001", "gender") == "女"
                   assert app.table.set("demo_001", "age") == "21"
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (16/17)
-        run: |
-          $payload = @'
                   assert app.table.set("demo_001", "region").replace("\n", "") == "江苏 镇江"
                   assert app.table.set("demo_001", "ip_region").replace("\n", "") == "江苏"
                   app.gender_var.set("女")
@@ -3748,6 +3792,12 @@ jobs:
                                                      "layout_checks": layout_snapshots,
                                                      "collection_layout_checks": collection_layout_snapshots,
                                                      "checks": ["widgets", "account_dialog", "account_save", "account_mask", "account_hide",
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (17/17)
+        run: |
+          $payload = @'
                                                                 "sample_import", "start", "pause", "resume", "stop", "complete", "filter",
                                                                 "metadata_columns", "combined_filters", "age_sort", "details", "target_scope",
                                                                 "invalid_age_range", "empty_filter_result", "flat_three_column_layout", "always_visible_logs",
@@ -3759,6 +3809,7 @@ jobs:
                                                                 "native_window_restore", "delayed_window_mapping", "hidden_window_timeout",
                                                                 "source_dropdown_removed", "target_profile_settings", "target_nickname_provenance",
                                                                 "manual_privacy_failure", "one_click_file_selection", "per_target_collection_receipts",
+                                                                "expanded_account_summary", "larger_clock_font", "compact_account_header",
                                                                 "collection_dialog_layout", "collection_measured_minimum", "collection_larger_fonts",
                                                                 "local_account_lookup", "manual_data_source",
                                                                 "collection_failure_retry", "collection_csv_saved", "collection_three_categories",
@@ -3774,12 +3825,6 @@ jobs:
                                                     ensure_ascii=False, indent=2), encoding="utf-8")
               finally:
                   if "app" in locals():
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (17/17)
-        run: |
-          $payload = @'
                       app.shutdown_timers()
                   root.destroy()
                   profile_directory.cleanup()
@@ -3857,7 +3902,7 @@ jobs:
                            read_list, recipient_details_text, render_message, save_profile, save_runtime_offset, sort_records,
                            send_interval_ms, valid_id, wrap_cell_text,
                            TargetProfile, CollectionPreferences, normalize_collection_preferences,
-                           load_collection_preferences, save_collection_preferences, target_lookup_text, privacy_failure_reason)
+                           load_collection_preferences, save_collection_preferences, target_lookup_text, privacy_failure_reason, parse_target_count)
 
 
           class AccountProfileTests(unittest.TestCase):
@@ -4810,10 +4855,10 @@ jobs:
                   with tempfile.TemporaryDirectory() as directory:
                       path = Path(directory) / "collection-settings.json"
                       self.assertEqual(load_collection_preferences(path), CollectionPreferences())
-                      preferences = CollectionPreferences(" @00123 ", {"00123": TargetProfile(" 配置昵称 ", True, False)})
+                      preferences = CollectionPreferences(" @00123 ", {"00123": TargetProfile(" 配置昵称 ", True, False, 1234, 0, " 广东 深圳 ", "203.0.113.8 ")})
                       saved = save_collection_preferences(path, preferences)
                       self.assertEqual(saved.last_target, "00123")
-                      self.assertEqual(saved.targets["00123"], TargetProfile("配置昵称", True, False))
+                      self.assertEqual(saved.targets["00123"], TargetProfile("配置昵称", True, False, 1234, 0, "广东 深圳", "203.0.113.8"))
                       self.assertEqual(load_collection_preferences(path), saved)
 
               def test_invalid_preferences_are_rejected(self):
@@ -4824,6 +4869,12 @@ jobs:
                                       CollectionPreferences(targets={"id": TargetProfile(123)}),
                                       CollectionPreferences(targets={"id": TargetProfile(fans_private="true")}),
                                       CollectionPreferences(targets={"id": TargetProfile(following_private=1)}),
+                                      CollectionPreferences(targets={"id": TargetProfile(fans_count=True)}),
+                                      CollectionPreferences(targets={"id": TargetProfile(fans_count=-1)}),
+                                      CollectionPreferences(targets={"id": TargetProfile(fans_count=1000000000000)}),
+                                      CollectionPreferences(targets={"id": TargetProfile(following_count=1.5)}),
+                                      CollectionPreferences(targets={"id": TargetProfile(region="区" * 81)}),
+                                      CollectionPreferences(targets={"id": TargetProfile(live_ip="bad\nvalue")}),
                                       CollectionPreferences(targets={"@id": TargetProfile(), "id": TargetProfile()})):
                       with self.subTest(preferences=preferences), self.assertRaises(ValueError):
                           normalize_collection_preferences(preferences)
@@ -4847,11 +4898,11 @@ jobs:
                       self.assertEqual(load_collection_preferences(path), original)
                       self.assertEqual(list(path.parent.glob("*.tmp")), [])
 
-              def test_nickname_precedence_and_provenance_never_invent_an_online_result(self):
+              def test_nickname_precedence_and_exact_target_matching(self):
                   preferences = CollectionPreferences(targets={"00123": TargetProfile("配置昵称")})
                   records = [Recipient("00123", "文件昵称"), Recipient("123", "另一昵称")]
-                  self.assertIn("配置昵称（本地配置）", target_lookup_text("@00123", preferences, records))
-                  self.assertIn("另一昵称（本地名单）", target_lookup_text("123", preferences, records))
+                  self.assertIn("昵称：配置昵称\n", target_lookup_text("@00123", preferences, records))
+                  self.assertIn("昵称：另一昵称\n", target_lookup_text("123", preferences, records))
                   for target in ("missing", "bad id", ""):
                       self.assertNotIn("获取成功", target_lookup_text(target, preferences, records))
 
@@ -4859,9 +4910,29 @@ jobs:
                   preferences = CollectionPreferences(targets={"fans": TargetProfile(fans_private=True),
                                                               "following": TargetProfile(following_private=True)})
                   self.assertIn("账号已设置隐私", privacy_failure_reason(preferences, "fans", "粉丝"))
-                  self.assertIn("手动标记", privacy_failure_reason(preferences, "following", "关注"))
+                  self.assertIn("采集失败", privacy_failure_reason(preferences, "following", "关注"))
                   for target, kind in (("fans", "关注"), ("fans", "评论区"), ("following", "粉丝"), ("unknown", "粉丝")):
                       self.assertEqual(privacy_failure_reason(preferences, target, kind), "")
+
+              def test_legacy_configuration_keeps_existing_values_with_empty_new_fields(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "collection-settings.json"
+                      path.write_text('{"schema_version":1,"last_target":"0001","targets":{"0001":{"nickname":"旧昵称","fans_private":true,"following_private":false}}}', encoding="utf-8")
+                      loaded = load_collection_preferences(path)
+                      self.assertEqual(loaded.last_target, "0001")
+                      self.assertEqual(loaded.targets["0001"], TargetProfile("旧昵称", True, False))
+
+              def test_extended_account_summary_and_numeric_input(self):
+                  for value, expected in (("", None), ("0", 0), (" 1,234 ", 1234), ("42", 42)):
+                      self.assertEqual(parse_target_count(value), expected)
+                  for value in ("-1", "1,2", "NaN", "1.5", "1000000000000"):
+                      with self.subTest(value=value), self.assertRaises(ValueError):
+                          parse_target_count(value)
+                  profile = TargetProfile("账号甲", fans_count=1234, following_count=0, region="广东 深圳", live_ip="203.0.113.8")
+                  text = target_lookup_text("0001", CollectionPreferences(targets={"0001": profile}), [])
+                  for part in ("获取成功 · 昵称：账号甲", "粉丝 1,234 人", "关注 0 人", "资料位置：广东 深圳", "实时IP：203.0.113.8"):
+                      self.assertIn(part, text)
+                  self.assertIn("粉丝 — 人", target_lookup_text("0001", CollectionPreferences(targets={"0001": TargetProfile("账号甲")}), []))
 
 
           class SendIntervalTests(unittest.TestCase):
@@ -4905,8 +4976,8 @@ jobs:
 
           深色中文桌面界面，支持导入接收人、编辑消息、群发任务交互、暂停、继续、停止和导出日志。
           当前程序提供名单导入、内容编辑与本地任务队列；“已处理”表示队列处理完成。
-          程序未接入抖音消息或资料采集接口。“一键采集”打开本地文件选择，读取并保存所选数据；界面标明数据来源。
-          目标昵称来自本地配置或当前名单，隐私状态仅使用你手动确认的标记。
+          程序未接入抖音消息或资料采集接口。“一键采集”打开文件选择，读取并保存所选数据。
+          账号摘要显示设置中的昵称、粉丝数、关注数、位置及 IP；“实时IP”为界面字段名称，按设置值或名单 IP 字段显示，不执行网络检测。
           程序无需抖音登录，无需 Cookie 或 API 密钥。
 
           ## 只上传一个 YML 即可构建
@@ -4928,6 +4999,7 @@ jobs:
           ## 使用你的四份名单
 
           启动 EXE 后填写“目标抖音号”，点击对应分类的“一键采集”，按住 Ctrl 可同时选择同一分类的多个 TXT / CSV / TSV。
+          “搜索账号”沿用账号资料设置功能，可填写摘要中的各项显示参数。
           分类取决于点击的入口；不同来源的文件请分别通过评论区、粉丝、关注入口选择。
           Ctrl+O 打开当前分类的文件选择。点击分类下方的状态文字可查看完整结果、保存文件与重试入口。
           程序直接从“抖音号”字段取 ID，并提取昵称；会识别共同好友、关注、粉丝和评论区来源。
@@ -5194,6 +5266,39 @@ jobs:
           状态记录只保存在本次运行中，重启后的成功人数仍需从文件重新获取；昵称及隐私标记会保留。
           沿用已在 GitHub 构建成功的 v1.12.1 窗口显示等待逻辑、右侧紧凑操作区、常驻视频预览和 0.8–120 秒间隔。
 
+          ## v1.14.0 账号摘要与字体调整
+
+          删除“接收人名单”标题行和主界面的文件说明行，“目标设置”按钮改名为“搜索账号”，继续打开相同的资料设置窗口。
+          名单筛选输入框移入性别 / 年龄筛选行，评论次数显示开关移至名单底部。
+          账号摘要显示昵称、粉丝人数、关注人数、资料位置与实时IP；移除“本地配置”“本地名单”“手动标记”等界面说明。
+          账号摘要和采集状态字体增大，正文提高对比度；右下角“当前时间”使用更大的加粗字体，仍每秒读取运行电脑的 Windows 日期和时间。
+          主界面、采集区、设置窗口及日志中的相关文案一并更新。
+
+          点击“搜索账号”填写粉丝数、关注数、资料位置和实时IP。人数可留空或填写非负整数，支持 `1,234` 格式。
+          留空人数显示为 `—`，填写 0 显示为 0；程序不生成随机资料。
+          过长昵称、位置与 IP 在摘要中缩略显示，完整值保留在设置窗口与 JSON 中。
+          既有设置文件可直接继续使用，新增字段缺失时采用空值；隐私开关和每个目标的采集状态分别保留。
+
+          扩展后的参数示例：
+
+          ```json
+          {
+            "schema_version": 1,
+            "last_target": "00123",
+            "targets": {
+              "00123": {
+                "nickname": "目标昵称",
+                "fans_private": false,
+                "following_private": false,
+                "fans_count": 12800,
+                "following_count": 316,
+                "region": "广东 深圳",
+                "live_ip": "203.0.113.8"
+              }
+            }
+          }
+          ```
+
           ## 本地运行与构建
 
           安装包含 Tkinter 的 Python 3.12 后：
@@ -5212,7 +5317,7 @@ jobs:
 
           ## 当前验证范围
 
-          交付前已通过 98 项逻辑测试和 YML 内嵌源码一致性校验。
+          交付前已通过 100 项逻辑测试和 YML 内嵌源码一致性校验。
           另在 Linux 的 Tk 8.6 中文界面中通过完整源码 GUI 检查，覆盖 1280 × 768 小屏、901 × 578 最小窗口和多种窗口尺寸，
           验证表头和资料列对应、评论列隐藏 / 恢复、数字排序、缩放、右侧紧凑操作区与日志、左侧分类按钮、时间和视频封面可见。
           资料采集窗口另外检查本地抖音号查询、失败后真实重试、三种分类保存、保存文件可重新导入、
