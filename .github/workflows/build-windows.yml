@@ -31,14 +31,13 @@ jobs:
           architecture: x64
 
 
-      - name: Write embedded app.py (1/10)
+      - name: Write embedded app.py (1/11)
         run: |
           $payload = @'
           """Desktop messaging workbench with a local task queue."""
           from __future__ import annotations
 
           import argparse
-          import base64
           import csv
           import json
           import math
@@ -56,15 +55,17 @@ jobs:
           from dataclasses import dataclass, field
           from datetime import datetime
           from functools import lru_cache
+          from io import BytesIO
           from pathlib import Path
           from queue import Empty, SimpleQueue
 
 
           APP_NAME = "抖音群发工作台"
-          VERSION = "1.7.0"
+          VERSION = "1.8.0"
           MAX_FILE_BYTES = 5 * 1024 * 1024
           MAX_RECIPIENTS = 20000
           MAX_MESSAGE = 200
+          COVER_MAX_EDGE = 1920
           MEDIA_EXTENSIONS = {
               ".png": "图片", ".jpg": "图片", ".jpeg": "图片", ".gif": "图片", ".webp": "图片", ".bmp": "图片",
               ".mp4": "视频", ".mov": "视频", ".mkv": "视频", ".avi": "视频", ".webm": "视频",
@@ -92,9 +93,9 @@ jobs:
               "source": ("来源", 120, 64), "status": ("状态", 82, 76),
           }
           COLORS = {
-              "bg": "#0B1019", "side": "#101722", "card": "#151E2C",
-              "input": "#0E1622", "line": "#263449", "text": "#F0F4FC",
-              "muted": "#92A0B7", "accent": "#53E3C2", "blue": "#7EAAFF",
+              "bg": "#0B1020", "side": "#10182A", "card": "#151F33",
+              "input": "#0C1425", "line": "#293952", "text": "#F0F5FF",
+              "muted": "#A2B0C6", "accent": "#5EEAD4", "blue": "#8CB5FF",
               "amber": "#F4C981", "red": "#F595A5", "hover": "#233149",
           }
 
@@ -308,9 +309,9 @@ jobs:
                   raise ValueError("音频文件没有视频封面。")
               if inspect_media(asset.path) != asset:
                   raise ValueError("媒体文件已变更，请重新导入。")
-              scale = ("scale=w='max(2,trunc(min(864,540*dar)/2)*2)':"
-                       "h='max(2,trunc(min(540,864/dar)/2)*2)':flags=lanczos,setsar=1")
-              filters = scale + (",thumbnail=45" if asset.kind == "视频" else "")
+              scale = (f"scale=w='max(2,trunc(min(iw*sar,min({COVER_MAX_EDGE},{COVER_MAX_EDGE}*dar))/2)*2)':"
+                       f"h='max(2,trunc(min(ih,min({COVER_MAX_EDGE},{COVER_MAX_EDGE}/dar))/2)*2)':flags=lanczos,setsar=1")
+              filters = scale + (",thumbnail=12" if asset.kind == "视频" else "")
               command = [preview_executable(), "-nostdin", "-hide_banner", "-loglevel", "error", "-threads", "1",
                          "-filter_threads", "1", "-protocol_whitelist", "file,pipe", "-i", str(asset.path),
                          "-map", "0:v:0", "-an", "-sn", "-dn", "-vf", filters, "-frames:v", "1",
@@ -338,7 +339,7 @@ jobs:
                   if process.returncode or not png.startswith(b"\x89PNG\r\n\x1a\n") or len(png) < 24:
                       raise ValueError("无法读取封面，请确认媒体文件可以正常打开。")
                   width, height = struct.unpack(">II", png[16:24])
-                  if not 1 <= width <= 864 or not 1 <= height <= 540:
+                  if not 1 <= width <= COVER_MAX_EDGE or not 1 <= height <= COVER_MAX_EDGE:
                       raise ValueError("封面尺寸不正确，请重新导入文件。")
                   if inspect_media(asset.path) != asset:
                       raise ValueError("媒体文件已变更，请重新导入。")
@@ -349,19 +350,53 @@ jobs:
                   if process is not None:
                       if process.poll() is None:
                           process.kill()
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (2/11)
+        run: |
+          $payload = @'
                       process.communicate()
+
+
+          def decode_cover_image(png: bytes):
+              from PIL import Image
+              with Image.open(BytesIO(png)) as image:
+                  if not 1 <= image.width <= COVER_MAX_EDGE or not 1 <= image.height <= COVER_MAX_EDGE:
+                      raise ValueError("封面尺寸不正确。")
+                  return image.convert("RGB")
+
+
+          def fit_image_size(width: int, height: int, available_width: int, available_height: int) -> tuple[int, int]:
+              if width <= 0 or height <= 0:
+                  raise ValueError("图片尺寸必须大于零。")
+              available_width, available_height = max(1, available_width), max(1, available_height)
+              scale = min(1, available_width / width, available_height / height)
+              return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+          def render_cover_image(image, available_width: int, available_height: int, original: bool = False):
+              from PIL import Image
+              if original:
+                  return image
+              size = fit_image_size(image.width, image.height, available_width, available_height)
+              return image if size == image.size else image.resize(size, Image.Resampling.LANCZOS)
+
+
+          def cover_dimensions_text(width: int, height: int) -> str:
+              if width == height:
+                  orientation = "方形"
+              elif height > width:
+                  orientation = "9:16 竖屏" if abs(width / height - 9 / 16) < 0.01 else "竖屏"
+              else:
+                  orientation = "16:9 横屏" if abs(width / height - 16 / 9) < 0.01 else "横屏"
+              return f"{width} × {height} · {orientation}"
 
 
           @dataclass(frozen=True)
           class MediaPreviewResult:
               asset: MediaAsset
               png: bytes = b""
-          '@
-          [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (2/10)
-        run: |
-          $payload = @'
               error: str = ""
 
 
@@ -633,6 +668,12 @@ jobs:
               return matches
 
 
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (3/11)
+        run: |
+          $payload = @'
           def sort_records(records: list[Recipient], column: str = "", descending: bool = False,
                            statuses: dict[str, str] | None = None) -> list[Recipient]:
               if not column:
@@ -661,12 +702,6 @@ jobs:
 
           def parse_text(text: str, source: str = "导入名单") -> ImportResult:
               """Accept supplied labeled TXT, one ID per line, and headed CSV/TSV."""
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (3/10)
-        run: |
-          $payload = @'
               result = ImportResult([])
               lines = [line.strip() for line in text.lstrip("\ufeff").splitlines()
                        if line.strip() and not line.lstrip().startswith("#")]
@@ -890,16 +925,25 @@ jobs:
                   self.media_preview_source = None
                   self.media_preview_photo = None
                   self.media_preview_dialog = None
+                  self.media_cover_draw_timer = None
+                  self.media_dialog_draw_timer = None
                   self.media_preview_placeholder = "导入媒体后显示预览"
                   self.media_asset: MediaAsset | None = None
                   self.media_queue = FollowMediaQueue()
                   self.follow_media_var = tk.BooleanVar(value=False)
                   self.media_name_var = tk.StringVar(value="尚未选择媒体文件")
                   self.media_info_var = tk.StringVar(value="支持图片、视频、音频")
+                  self.media_dimensions_var = tk.StringVar(value="适配 1080 × 1920 竖屏视频")
                   self.media_status_var = tk.StringVar(value="关注后媒体规则未启用")
                   self.media_cover_state_var = tk.StringVar(value="支持视频封面与图片预览")
                   self.local_time_var = tk.StringVar()
                   self.runtime_var = tk.StringVar()
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (4/11)
+        run: |
+          $payload = @'
                   self.list_expanded = False
                   self.log_expanded = False
                   self.account_display_var = tk.StringVar()
@@ -935,13 +979,7 @@ jobs:
                   root.title(APP_NAME)
                   root.configure(bg=COLORS["bg"])
                   width = max(1060, min(1540, root.winfo_screenwidth() - 40))
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (4/10)
-        run: |
-          $payload = @'
-                  height = max(760, min(940, root.winfo_screenheight() - 80))
+                  height = max(760, min(1020, root.winfo_screenheight() - 80))
                   root.geometry(f"{width}x{height}")
                   root.minsize(1060, 760)
                   root.protocol("WM_DELETE_WINDOW", self.close)
@@ -990,6 +1028,11 @@ jobs:
                                   borderwidth=0, arrowcolor=COLORS["muted"])
                   style.configure("Horizontal.TProgressbar", troughcolor=COLORS["input"],
                                   background=COLORS["accent"], borderwidth=0, thickness=7)
+                  style.configure("Composer.TNotebook", background=COLORS["card"], borderwidth=0, tabmargins=(12, 10, 12, 5))
+                  style.configure("Composer.TNotebook.Tab", background=COLORS["input"], foreground=COLORS["muted"],
+                                  padding=(16, 8), font=("Microsoft YaHei UI", 10, "bold"))
+                  style.map("Composer.TNotebook.Tab", background=[("selected", "#254147"), ("active", COLORS["hover"])],
+                            foreground=[("selected", COLORS["accent"]), ("active", COLORS["text"])])
                   self.root.option_add("*TCombobox*Listbox.background", COLORS["input"])
                   self.root.option_add("*TCombobox*Listbox.foreground", COLORS["text"])
 
@@ -1097,6 +1140,12 @@ jobs:
                                                fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat", width=15)
                   self.search_entry.pack(side="left", fill="x", expand=True, ipady=7)
                   self.source_combo = ttk.Combobox(first_filter, textvariable=self.source_var,
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (5/11)
+        run: |
+          $payload = @'
                                                    values=["全部来源"], state="readonly", width=9)
                   self.source_combo.pack(side="left", padx=(8, 0))
                   second_filter = tk.Frame(filters, bg=COLORS["card"])
@@ -1127,12 +1176,6 @@ jobs:
                   table_frame.grid(row=3, column=0, sticky="nsew", padx=14)
                   table_frame.rowconfigure(0, weight=1)
                   table_frame.columnconfigure(0, weight=1)
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (5/10)
-        run: |
-          $payload = @'
                   self.table = ttk.Treeview(table_frame, columns=tuple(TABLE_COLUMNS),
                                             show="headings", selectmode="extended", height=20)
                   for column, (caption, width, minimum) in TABLE_COLUMNS.items():
@@ -1163,8 +1206,14 @@ jobs:
                   self.compose_shell.grid(row=0, column=1, sticky="nsew")
                   fixed_controls = tk.Frame(self.compose_shell, bg=COLORS["card"])
                   fixed_controls.pack(side="bottom", fill="x")
-                  self.compose_canvas = tk.Canvas(self.compose_shell, bg=COLORS["card"], highlightthickness=0, width=345)
-                  compose_scroll = ttk.Scrollbar(self.compose_shell, command=self.compose_canvas.yview)
+                  self.compose_tabs = ttk.Notebook(self.compose_shell, style="Composer.TNotebook")
+                  self.compose_tabs.pack(fill="both", expand=True)
+                  self.message_tab = tk.Frame(self.compose_tabs, bg=COLORS["card"])
+                  self.media_tab = tk.Frame(self.compose_tabs, bg=COLORS["card"])
+                  self.compose_tabs.add(self.message_tab, text="消息内容")
+                  self.compose_tabs.add(self.media_tab, text="媒体素材")
+                  self.compose_canvas = tk.Canvas(self.message_tab, bg=COLORS["card"], highlightthickness=0, width=345)
+                  compose_scroll = ttk.Scrollbar(self.message_tab, command=self.compose_canvas.yview)
                   compose_scroll.pack(side="right", fill="y")
                   self.compose_canvas.pack(side="left", fill="both", expand=True)
                   self.compose_canvas.configure(yscrollcommand=compose_scroll.set)
@@ -1172,13 +1221,34 @@ jobs:
                   compose_window = self.compose_canvas.create_window((0, 0), window=compose, anchor="nw")
                   compose.bind("<Configure>", lambda _event: self.compose_canvas.configure(scrollregion=self.compose_canvas.bbox("all")))
                   self.compose_canvas.bind("<Configure>", lambda event: self.compose_canvas.itemconfigure(compose_window, width=event.width))
+                  self.media_settings_canvas = tk.Canvas(self.media_tab, bg=COLORS["card"], highlightthickness=0, width=345)
+                  media_scroll = ttk.Scrollbar(self.media_tab, command=self.media_settings_canvas.yview)
+                  media_scroll.pack(side="right", fill="y")
+                  self.media_settings_canvas.pack(fill="both", expand=True)
+                  self.media_settings_canvas.configure(yscrollcommand=media_scroll.set)
+                  media_content = tk.Frame(self.media_settings_canvas, bg=COLORS["card"])
+                  media_window = self.media_settings_canvas.create_window((0, 0), window=media_content, anchor="nw")
+                  media_content.bind("<Configure>", lambda _event: self.media_settings_canvas.configure(scrollregion=self.media_settings_canvas.bbox("all")))
+
+                  def resize_media_tab(event):
+                      self.media_settings_canvas.itemconfigure(media_window, width=event.width)
+                      if hasattr(self, "media_cover_canvas"):
+                          height = max(240, min(480, event.height - 150))
+                          if int(self.media_cover_canvas.cget("height")) != height:
+                              self.media_cover_canvas.configure(height=height)
+
+                  self.media_settings_canvas.bind("<Configure>", resize_media_tab)
                   def scroll_compose(event):
-                      if str(event.widget).startswith(str(compose)) and not isinstance(event.widget, tk.Text):
-                          self.compose_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+                      if not isinstance(event.widget, tk.Text):
+                          for content, canvas in ((compose, self.compose_canvas), (media_content, self.media_settings_canvas)):
+                              if str(event.widget).startswith(str(content)):
+                                  units = -int(event.delta / 120) or (-1 if event.delta > 0 else 1)
+                                  canvas.yview_scroll(units, "units")
+                                  break
                   self.root.bind_all("<MouseWheel>", scroll_compose, add="+")
                   self.label(compose, "群发内容", 12, bold=True).pack(anchor="w", padx=16, pady=(14, 4))
                   self.label(compose, "支持 {昵称}、{抖音号} 个性化变量", 9, "muted").pack(anchor="w", padx=16, pady=(0, 8))
-                  self.message = tk.Text(compose, height=3, width=1, wrap="word", undo=True, bg=COLORS["input"],
+                  self.message = tk.Text(compose, height=6, width=1, wrap="word", undo=True, bg=COLORS["input"],
                                          fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat",
                                          padx=10, pady=10, font=("Microsoft YaHei UI", 10))
                   self.message.pack(fill="x", padx=16)
@@ -1189,44 +1259,57 @@ jobs:
                   self.counter_label.pack(anchor="e", padx=16, pady=(4, 7))
                   self.label(compose, "消息预览", 10, bold=True).pack(anchor="w", padx=16)
                   self.label(compose, size=8, color="muted", textvariable=self.preview_target).pack(anchor="w", padx=16, pady=(2, 4))
-                  self.preview = tk.Text(compose, height=2, width=1, wrap="word", bg=COLORS["input"], fg=COLORS["muted"],
+                  self.preview = tk.Text(compose, height=3, width=1, wrap="word", bg=COLORS["input"], fg=COLORS["muted"],
                                          relief="flat", padx=10, pady=8, state="disabled", font=("Microsoft YaHei UI", 9))
                   self.preview.pack(fill="x", padx=16)
-                  media_frame = tk.Frame(compose, bg=COLORS["card"])
+                  media_frame = tk.Frame(media_content, bg=COLORS["card"])
                   self.media_section = media_frame
-                  media_frame.pack(fill="x", padx=16, pady=(12, 4))
-                  self.label(media_frame, "关注后媒体", 11, bold=True).pack(anchor="w")
-                  tk.Checkbutton(media_frame, text="对方关注后发送媒体文件", variable=self.follow_media_var,
-                                 command=self.toggle_follow_media, bg=COLORS["card"], fg=COLORS["text"],
-                                 activebackground=COLORS["card"], activeforeground=COLORS["text"],
-                                 selectcolor=COLORS["input"]).pack(anchor="w", pady=(4, 5))
+                  media_frame.pack(fill="x", padx=16, pady=(10, 12))
                   media_actions = tk.Frame(media_frame, bg=COLORS["card"])
                   media_actions.pack(fill="x")
-                  self.button(media_actions, "导入媒体", self.choose_media, padx=10, pady=5).pack(side="left")
-                  self.button(media_actions, "清除", self.clear_media, padx=10, pady=5).pack(side="left", padx=6)
-                  self.button(media_actions, "关注回执", self.import_follow_receipts, padx=10, pady=5).pack(side="right")
-                  self.media_name_label = self.label(media_frame, size=9, textvariable=self.media_name_var,
+                  self.label(media_actions, "发送素材", 12, bold=True).pack(side="left")
+                  self.media_import_button = self.button(media_actions, "导入媒体", self.choose_media, primary=True, padx=10, pady=6)
+                  self.media_import_button.pack(side="right")
+                  self.media_name_label = self.label(media_frame, size=10, bold=True, textvariable=self.media_name_var,
                                                      width=1, anchor="w", wraplength=295, justify="left")
-                  self.media_name_label.pack(fill="x", pady=(8, 6))
+                  self.media_name_label.pack(fill="x", pady=(10, 4))
                   self.media_name_label.bind("<Configure>", lambda event: self.media_name_label.configure(wraplength=max(1, event.width)))
-                  self.media_cover_canvas = tk.Canvas(media_frame, height=180, width=1, bg=COLORS["input"],
-                                                      highlightthickness=1, highlightbackground=COLORS["line"])
-                  self.media_cover_canvas.pack(fill="x")
-                  self.media_cover_canvas.bind("<Configure>", self.render_media_cover)
-                  self.media_cover_canvas.bind("<Button-1>", lambda _event: self.open_media_preview())
                   media_info_row = tk.Frame(media_frame, bg=COLORS["card"])
-                  media_info_row.pack(fill="x", pady=(5, 0))
+                  media_info_row.pack(fill="x", pady=(0, 3))
                   self.label(media_info_row, size=8, color="muted", textvariable=self.media_info_var).pack(side="left")
-                  self.media_cover_button = self.button(media_info_row, "查看大图", self.open_media_preview, padx=8, pady=3, state="disabled")
+                  self.media_cover_button = self.button(media_info_row, "高清预览 ↗", self.open_media_preview, padx=8, pady=3, state="disabled")
                   self.media_cover_button.pack(side="right")
+                  self.label(media_frame, size=8, color="blue", textvariable=self.media_dimensions_var).pack(anchor="w", pady=(0, 8))
+                  self.media_cover_canvas = tk.Canvas(media_frame, height=400, width=1, bg="#080F1D",
+                                                      highlightthickness=1, highlightbackground="#34526B")
+                  self.media_cover_canvas.pack(fill="x")
+                  self.media_cover_canvas.bind("<Configure>", self.schedule_media_cover)
+                  self.media_cover_canvas.bind("<Button-1>", lambda _event: self.open_media_preview())
                   self.media_cover_state_label = self.label(media_frame, size=8, color="muted",
                                                            textvariable=self.media_cover_state_var, wraplength=295, justify="left")
-                  self.media_cover_state_label.pack(anchor="w", pady=(3, 0))
-                  self.label(media_frame, size=8, color="muted", textvariable=self.media_status_var, wraplength=295, justify="left").pack(anchor="w", pady=(5, 0))
+                  self.media_cover_state_label.pack(anchor="w", pady=(6, 8))
+                  rules = self.card(media_frame)
+                  rules.pack(fill="x", pady=(2, 0))
+                  self.label(rules, "发送规则", 10, bold=True).pack(anchor="w", padx=10, pady=(9, 3))
+                  tk.Checkbutton(rules, text="对方关注后发送媒体文件", variable=self.follow_media_var,
+                                 command=self.toggle_follow_media, bg=COLORS["card"], fg=COLORS["text"],
+                                 activebackground=COLORS["card"], activeforeground=COLORS["text"],
+                                 selectcolor=COLORS["input"]).pack(anchor="w", padx=7, pady=(0, 5))
+                  rule_actions = tk.Frame(rules, bg=COLORS["card"])
+                  rule_actions.pack(fill="x", padx=10)
+                  self.button(rule_actions, "关注回执", self.import_follow_receipts, padx=10, pady=5).pack(side="left")
+                  self.button(rule_actions, "清除素材", self.clear_media, danger=True, padx=10, pady=5).pack(side="right")
+                  self.label(rules, size=8, color="muted", textvariable=self.media_status_var, wraplength=270, justify="left").pack(anchor="w", padx=10, pady=(7, 10))
                   settings = tk.Frame(compose, bg=COLORS["card"])
                   settings.pack(fill="x", padx=16, pady=(10, 4))
                   self.label(settings, "发送间隔", 9, "muted").pack(side="left")
                   self.interval_spin = tk.Spinbox(settings, from_=0.1, to=10, increment=0.1, width=4,
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (6/11)
+        run: |
+          $payload = @'
                                                   textvariable=self.interval_var, bg=COLORS["input"], fg=COLORS["text"],
                                                   buttonbackground=COLORS["line"], insertbackground=COLORS["text"], relief="flat")
                   self.interval_spin.pack(side="left", padx=(8, 4), ipady=3)
@@ -1281,6 +1364,7 @@ jobs:
               def focus_editor(self) -> None:
                   if self.list_expanded:
                       self.toggle_list_width()
+                  self.compose_tabs.select(self.message_tab)
                   self.compose_canvas.yview_moveto(0)
                   self.message.focus_set()
 
@@ -1305,12 +1389,6 @@ jobs:
                   save_runtime_offset(self.runtime_path, seconds)
                   self.runtime_clock.set_initial(seconds)
                   self.refresh_clock_labels()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (6/10)
-        run: |
-          $payload = @'
                   self.log("计时", f"初始已运行时长已设为 {format_duration(seconds)}。")
                   self.toast_var.set("计时设置已保存，已运行时长将从设定值继续累计。")
 
@@ -1365,6 +1443,8 @@ jobs:
                       self.cancel_media_tasks()
                   self.media_asset = asset
                   self.media_name_var.set(asset.name)
+                  self.media_import_button.configure(text="更换文件")
+                  self.media_dimensions_var.set("正在读取画面尺寸…" if asset.kind != "音频" else "音频素材")
                   size = f"{asset.size / 1024 / 1024:.2f} MB" if asset.size >= 1024 * 1024 else f"{asset.size / 1024:.1f} KB"
                   self.media_info_var.set(f"{asset.kind}  ·  {size}")
                   self.start_media_preview(asset)
@@ -1376,10 +1456,11 @@ jobs:
 
               def reveal_media_preview(self) -> None:
                   self.media_reveal_timer = None
+                  if self.list_expanded:
+                      self.toggle_list_width()
+                  self.compose_tabs.select(self.media_tab)
                   self.root.update_idletasks()
-                  bounds = self.compose_canvas.bbox("all")
-                  if bounds:
-                      self.compose_canvas.yview_moveto(max(0, self.media_section.winfo_y() - 8) / max(1, bounds[3]))
+                  self.media_settings_canvas.yview_moveto(0)
 
               def reset_media_preview(self, placeholder: str = "导入媒体后显示预览") -> None:
                   self.media_preview_loader.cancel()
@@ -1387,6 +1468,9 @@ jobs:
                       self.root.after_cancel(self.media_preview_timer)
                       self.media_preview_timer = None
                   self.close_media_preview()
+                  if self.media_cover_draw_timer is not None:
+                      self.root.after_cancel(self.media_cover_draw_timer)
+                      self.media_cover_draw_timer = None
                   self.media_preview_source = None
                   self.media_preview_photo = None
                   self.media_preview_placeholder = placeholder
@@ -1415,33 +1499,63 @@ jobs:
                           try:
                               if inspect_media(result.asset.path) != result.asset:
                                   raise ValueError("媒体文件已变更，请重新导入。")
-                              self.media_preview_source = tk.PhotoImage(master=self.root, data=base64.b64encode(result.png), format="png")
+                              self.media_preview_source = decode_cover_image(result.png)
                           except (tk.TclError, OSError, ValueError):
                               error = "封面无法显示或文件已变更，请重新导入。"
                       if error:
                           self.media_preview_source = None
                           self.media_preview_placeholder = "封面暂不可用"
+                          self.media_dimensions_var.set("画面尺寸暂不可用")
                           self.media_cover_state_var.set(error)
                           self.media_cover_state_label.configure(fg=COLORS["red"])
                           self.log("媒体", f"{result.asset.name}：{error}")
                       else:
                           caption = "视频封面" if result.asset.kind == "视频" else "图片预览"
-                          self.media_cover_state_var.set(f"{caption} · 点击查看大图")
+                          self.media_cover_state_var.set(f"{caption} · 高清预览支持 100% 原尺寸查看")
+                          self.media_dimensions_var.set(cover_dimensions_text(*self.media_preview_source.size))
                           self.media_cover_button.configure(state="normal")
                           self.media_cover_canvas.configure(cursor="hand2")
                       self.render_media_cover()
                   if self.media_preview_loader.pending:
                       self.media_preview_timer = self.root.after(60, self.poll_media_preview)
 
-              def draw_media_image(self, canvas, source):
+              def draw_media_image(self, canvas, source, original: bool = False):
+                  from PIL import ImageTk
+
+                  old_scroll = (canvas.xview()[0], canvas.yview()[0])
                   canvas.delete("all")
                   width, height = max(24, canvas.winfo_width()), max(24, canvas.winfo_height())
-                  factor = max(1, math.ceil(source.width() / (width - 16)), math.ceil(source.height() / (height - 16)))
-                  photo = source.subsample(factor, factor) if factor > 1 else source
-                  canvas.create_image(width / 2, height / 2, image=photo, anchor="center")
+                  image = render_cover_image(source, width - 24, height - 24, original=original)
+                  photo = ImageTk.PhotoImage(image, master=self.root)
+                  x, y = max(12, (width - image.width) / 2), max(12, (height - image.height) / 2)
+                  canvas.create_rectangle(x - 1, y - 1, x + image.width + 1, y + image.height + 1,
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (7/11)
+        run: |
+          $payload = @'
+                                          outline="#3C5269", width=1)
+                  canvas.create_image(x, y, image=photo, anchor="nw", tags=("cover_image",))
+                  canvas.preview_scale = image.width / source.width
+                  canvas.configure(scrollregion=(0, 0, max(width, image.width + 24), max(height, image.height + 24)))
+                  if original:
+                      canvas.xview_moveto(old_scroll[0])
+                      canvas.yview_moveto(old_scroll[1])
+                  else:
+                      canvas.xview_moveto(0)
+                      canvas.yview_moveto(0)
                   return photo
 
+              def schedule_media_cover(self, _event=None) -> None:
+                  if self.media_cover_draw_timer is not None:
+                      self.root.after_cancel(self.media_cover_draw_timer)
+                  self.media_cover_draw_timer = self.root.after(80, self.render_media_cover)
+
               def render_media_cover(self, _event=None) -> None:
+                  if self.media_cover_draw_timer is not None:
+                      self.root.after_cancel(self.media_cover_draw_timer)
+                      self.media_cover_draw_timer = None
                   canvas = self.media_cover_canvas
                   if self.media_preview_source is not None:
                       self.media_preview_photo = self.draw_media_image(canvas, self.media_preview_source)
@@ -1452,9 +1566,44 @@ jobs:
                                          fill=COLORS["muted"], font=("Microsoft YaHei UI", 10), justify="center")
 
               def close_media_preview(self) -> None:
+                  if self.media_dialog_draw_timer is not None:
+                      self.root.after_cancel(self.media_dialog_draw_timer)
+                      self.media_dialog_draw_timer = None
                   if self.media_preview_dialog is not None:
                       self.media_preview_dialog.destroy()
                       self.media_preview_dialog = None
+
+              def schedule_media_dialog(self, _event=None) -> None:
+                  if self.media_dialog_draw_timer is not None:
+                      self.root.after_cancel(self.media_dialog_draw_timer)
+                  self.media_dialog_draw_timer = self.root.after(80, self.redraw_media_dialog)
+
+              def redraw_media_dialog(self) -> None:
+                  if self.media_dialog_draw_timer is not None:
+                      self.root.after_cancel(self.media_dialog_draw_timer)
+                      self.media_dialog_draw_timer = None
+                  if self.media_preview_dialog is None or self.media_preview_source is None:
+                      return
+                  original = self.media_dialog_mode.get() == "original"
+                  self.media_preview_dialog.preview_photo = self.draw_media_image(
+                      self.media_dialog_canvas, self.media_preview_source, original=original)
+                  self.media_dialog_zoom_var.set(f"{self.media_dialog_canvas.preview_scale:.0%} · "
+                                                 + cover_dimensions_text(*self.media_preview_source.size)
+                                                 + (" · 拖动查看细节" if original else ""))
+                  for button, selected in ((self.media_fit_button, not original), (self.media_original_button, original)):
+                      button.configure(bg="#254147" if selected else COLORS["hover"],
+                                       fg=COLORS["accent"] if selected else COLORS["muted"])
+
+              def set_media_zoom(self, original: bool) -> None:
+                  if self.media_preview_dialog is None:
+                      return
+                  self.media_dialog_mode.set("original" if original else "fit")
+                  for scroll in (self.media_dialog_xscroll, self.media_dialog_yscroll):
+                      scroll.grid() if original else scroll.grid_remove()
+                  self.media_dialog_canvas.configure(cursor="fleur" if original else "")
+                  self.media_dialog_canvas.xview_moveto(0)
+                  self.media_dialog_canvas.yview_moveto(0)
+                  self.redraw_media_dialog()
 
               def open_media_preview(self) -> None:
                   if self.media_preview_source is None or self.media_asset is None:
@@ -1473,24 +1622,56 @@ jobs:
                   dialog.title("视频封面预览" if self.media_asset.kind == "视频" else "图片预览")
                   dialog.configure(bg=COLORS["card"])
                   dialog.transient(self.root)
-                  width = min(940, max(480, self.root.winfo_screenwidth() - 80))
-                  height = min(680, max(360, self.root.winfo_screenheight() - 100))
-                  dialog.geometry(f"{width}x{height}")
+                  portrait = self.media_preview_source.height > self.media_preview_source.width
+                  width = min(720 if portrait else 1120, max(480, self.root.winfo_screenwidth() - 80))
+                  height = min(1040 if portrait else 820, max(360, self.root.winfo_screenheight() - 100))
+                  x = max(0, (self.root.winfo_screenwidth() - width) // 2)
+                  y = max(0, (self.root.winfo_screenheight() - height) // 2)
+                  dialog.geometry(f"{width}x{height}+{x}+{y}")
                   dialog.minsize(420, 320)
                   title = self.label(dialog, self.media_asset.name, 11, bold=True, anchor="w", justify="left", wraplength=width - 40)
-                  title.pack(fill="x", padx=20, pady=(16, 10))
+                  title.pack(fill="x", padx=20, pady=(16, 8))
                   title.bind("<Configure>", lambda event: title.configure(wraplength=max(1, event.width)))
-                  self.button(dialog, "关闭预览", self.close_media_preview, padx=12, pady=6).pack(side="bottom", pady=12)
-                  canvas = tk.Canvas(dialog, bg=COLORS["input"], highlightthickness=0)
-                  canvas.pack(fill="both", expand=True, padx=20)
-
-                  def redraw(_event=None):
-                      if self.media_preview_source is not None:
-                          dialog.preview_photo = self.draw_media_image(canvas, self.media_preview_source)
-
-                  canvas.bind("<Configure>", redraw)
+                  toolbar = tk.Frame(dialog, bg=COLORS["card"])
+                  toolbar.pack(fill="x", padx=20, pady=(0, 10))
+                  self.media_dialog_mode = tk.StringVar(value="fit")
+                  self.media_fit_button = self.button(toolbar, "适应窗口", lambda: self.set_media_zoom(False), padx=12, pady=6)
+                  self.media_fit_button.pack(side="left")
+                  self.media_original_button = self.button(toolbar, "100% 原尺寸", lambda: self.set_media_zoom(True), padx=12, pady=6)
+                  self.media_original_button.pack(side="left", padx=7)
+                  footer = tk.Frame(dialog, bg=COLORS["card"])
+                  footer.pack(side="bottom", fill="x", padx=20, pady=12)
+                  self.media_dialog_zoom_var = tk.StringVar()
+                  self.button(footer, "关闭预览", self.close_media_preview, padx=12, pady=6).pack(side="right")
+                  zoom_label = self.label(footer, size=8, color="muted", textvariable=self.media_dialog_zoom_var,
+                                          anchor="w", justify="left", width=1, wraplength=1)
+                  zoom_label.pack(side="left", fill="x", expand=True, padx=(0, 10))
+                  zoom_label.bind("<Configure>", lambda event: zoom_label.configure(wraplength=max(1, event.width)))
+                  picture_frame = tk.Frame(dialog, bg=COLORS["input"])
+                  picture_frame.pack(fill="both", expand=True, padx=20)
+                  picture_frame.rowconfigure(0, weight=1)
+                  picture_frame.columnconfigure(0, weight=1)
+                  canvas = self.media_dialog_canvas = tk.Canvas(picture_frame, bg="#080F1D", highlightthickness=0)
+                  canvas.grid(row=0, column=0, sticky="nsew")
+                  self.media_dialog_xscroll = ttk.Scrollbar(picture_frame, orient="horizontal", command=canvas.xview)
+                  self.media_dialog_xscroll.grid(row=1, column=0, sticky="ew")
+                  self.media_dialog_yscroll = ttk.Scrollbar(picture_frame, command=canvas.yview)
+                  self.media_dialog_yscroll.grid(row=0, column=1, sticky="ns")
+                  canvas.configure(xscrollcommand=self.media_dialog_xscroll.set, yscrollcommand=self.media_dialog_yscroll.set)
+                  self.media_dialog_xscroll.grid_remove()
+                  self.media_dialog_yscroll.grid_remove()
+                  canvas.bind("<Configure>", self.schedule_media_dialog)
+                  canvas.bind("<ButtonPress-1>", lambda event: canvas.scan_mark(event.x, event.y))
+                  canvas.bind("<B1-Motion>", lambda event: canvas.scan_dragto(event.x, event.y, gain=1)
+                              if self.media_dialog_mode.get() == "original" else None)
+                  canvas.bind("<MouseWheel>", lambda event: canvas.yview_scroll(-int(event.delta / 120) or (-1 if event.delta > 0 else 1), "units")
+                              if self.media_dialog_mode.get() == "original" else None)
                   dialog.protocol("WM_DELETE_WINDOW", self.close_media_preview)
                   dialog.bind("<Escape>", lambda _event: self.close_media_preview())
+                  dialog.bind("<Control-0>", lambda _event: self.set_media_zoom(False))
+                  dialog.bind("<Control-1>", lambda _event: self.set_media_zoom(True))
+                  dialog.update_idletasks()
+                  self.redraw_media_dialog()
                   return dialog
 
               def choose_media(self) -> None:
@@ -1513,7 +1694,9 @@ jobs:
                   self.media_asset = None
                   self.follow_media_var.set(False)
                   self.media_name_var.set("尚未选择媒体文件")
+                  self.media_import_button.configure(text="导入媒体")
                   self.media_info_var.set("支持图片、视频、音频")
+                  self.media_dimensions_var.set("适配 1080 × 1920 竖屏视频")
                   self.refresh_media_status()
 
               def toggle_follow_media(self) -> None:
@@ -1546,12 +1729,6 @@ jobs:
                       self.media_timer = self.root.after(500, self.process_media_tick)
                   return added, duplicate, skipped
 
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (7/10)
-        run: |
-          $payload = @'
               def import_follow_receipts(self) -> None:
                   if not self.follow_media_var.get() or self.media_asset is None:
                       messagebox.showinfo("媒体规则", "请先启用关注后媒体规则，并选择媒体文件。", parent=self.root)
@@ -1572,6 +1749,12 @@ jobs:
                   self.media_timer = None
                   task = self.media_queue.process_next()
                   if task is not None:
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (8/11)
+        run: |
+          $payload = @'
                       detail = f"{task.recipient.nickname or task.recipient.douyin_id} ({task.recipient.douyin_id}) · {task.asset.name} · {task.status}"
                       self.log("媒体", detail + (f"：{task.error}" if task.error else ""))
                   self.refresh_media_status()
@@ -1793,12 +1976,6 @@ jobs:
                   return visible
 
               def sync_filter_choices(self) -> None:
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (8/10)
-        run: |
-          $payload = @'
                   groups = list(dict.fromkeys(s for record in self.records for s in record.sources))
                   self.source_combo.configure(values=["全部来源", *groups])
                   genders = list(dict.fromkeys(["男", "女", *[r.gender for r in self.records if r.gender]]))
@@ -1816,6 +1993,12 @@ jobs:
                   self.sort_descending = False
                   self.refresh_table()
 
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (9/11)
+        run: |
+          $payload = @'
               def sort_by(self, column: str) -> None:
                   self.sort_descending = not self.sort_descending if self.sort_column == column else False
                   self.sort_column = column
@@ -2061,12 +2244,6 @@ jobs:
                   if total:
                       seconds = int(self.session.elapsed)
                       remaining = self.session.remaining * getattr(self, "interval_ms", 800) / 1000
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (9/10)
-        run: |
-          $payload = @'
                       self.progress_text.set(f"{states[self.session.state]}  {self.session.cursor} / {total} 人  ·  {percent:.0f}%\n"
                                              f"用时 {seconds // 60:02d}:{seconds % 60:02d}  ·  预计剩余 {remaining:.0f} 秒")
                   else:
@@ -2085,6 +2262,12 @@ jobs:
               def export_logs(self) -> None:
                   filename = filedialog.asksaveasfilename(title="导出运行日志", defaultextension=".csv",
                                                          initialfile=f"群发日志_{datetime.now():%Y%m%d_%H%M%S}.csv",
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (10/11)
+        run: |
+          $payload = @'
                                                          filetypes=[("CSV 日志", "*.csv")])
                   if not filename:
                       return
@@ -2102,7 +2285,7 @@ jobs:
               def shutdown_timers(self) -> None:
                   self.media_preview_loader.shutdown()
                   for name in ("timer", "search_timer", "clock_timer", "media_timer", "table_layout_timer",
-                               "media_preview_timer", "media_reveal_timer"):
+                               "media_preview_timer", "media_reveal_timer", "media_cover_draw_timer", "media_dialog_draw_timer"):
                       identifier = getattr(self, name, None)
                       if identifier is not None:
                           self.root.after_cancel(identifier)
@@ -2273,7 +2456,7 @@ jobs:
                       assert Path(decoder).resolve().is_relative_to(Path(sys._MEIPASS).resolve())
                   red_video = Path(profile_directory.name) / "即将发送的完整视频文件名 [中文 空格] 横屏.mp4"
                   blue_video = Path(profile_directory.name) / "即将发送的视频 竖屏.mp4"
-                  for path, size, color in ((red_video, "160x90", "red"), (blue_video, "90x160", "blue")):
+                  for path, size, color in ((red_video, "1920x1080", "red"), (blue_video, "1080x1920", "blue")):
                       subprocess.run([decoder, "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
                                       f"color=c={color}:s={size}:r=6:d=0.5", "-c:v", "mpeg4", "-q:v", "2",
                                       "-pix_fmt", "yuv420p", "-threads", "1", str(path)], check=True,
@@ -2287,9 +2470,11 @@ jobs:
                           root.update()
                           time.sleep(0.01)
                       root.update_idletasks()
+                      app.render_media_cover()
 
                   root.deiconify()
                   app.focus_editor()
+                  assert app.compose_tabs.select() == str(app.message_tab)
                   app.set_media_file(red_video)
                   assert app.media_preview_source is None
                   assert str(app.media_cover_button.cget("state")) == "disabled"
@@ -2297,36 +2482,55 @@ jobs:
                   assert app.media_preview_source is not None
                   assert app.media_name_var.get() == red_video.name
                   assert str(app.media_cover_button.cget("state")) == "normal"
+                  assert app.compose_tabs.select() == str(app.media_tab)
                   picture = app.media_preview_source
-                  assert picture.width() > picture.height()
-                  pixel = picture.get(picture.width() // 2, picture.height() // 2)
+                  assert picture.size == (1920, 1080)
+                  pixel = picture.getpixel((picture.width // 2, picture.height // 2))
                   assert pixel[0] > 180 and pixel[1] < 80 and pixel[2] < 80
-                  assert app.media_preview_photo.width() <= app.media_cover_canvas.winfo_width() - 16
-                  assert app.media_preview_photo.height() <= app.media_cover_canvas.winfo_height() - 16
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (10/10)
-        run: |
-          $payload = @'
+                  assert app.media_preview_photo.width() <= app.media_cover_canvas.winfo_width() - 24
+                  assert app.media_preview_photo.height() <= app.media_cover_canvas.winfo_height() - 24
+                  assert int(app.media_cover_canvas.cget("height")) >= 240
                   dialog = app.open_media_preview()
                   root.update()
                   assert dialog is app.media_preview_dialog and dialog.title() == "视频封面预览"
                   assert hasattr(dialog, "preview_photo")
                   media_path = Path(profile_directory.name) / "关注后发送的媒体.PNG"
-                  picture.write(str(media_path), format="png")
+                  picture.save(media_path, format="PNG")
                   app.set_media_file(blue_video)
                   assert app.media_preview_dialog is None and app.media_preview_source is None
                   wait_for_cover()
                   picture = app.media_preview_source
-                  assert picture is not None and picture.width() < picture.height()
-                  pixel = picture.get(picture.width() // 2, picture.height() // 2)
+                  assert picture is not None and picture.size == (1080, 1920)
+                  assert app.media_dimensions_var.get() == "1080 × 1920 · 9:16 竖屏"
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (11/11)
+        run: |
+          $payload = @'
+                  pixel = picture.getpixel((picture.width // 2, picture.height // 2))
                   assert pixel[2] > 180 and pixel[0] < 80 and pixel[1] < 80
+                  portrait_dialog = app.open_media_preview()
+                  root.update_idletasks()
+                  app.set_media_zoom(True)
+                  root.update_idletasks()
+                  assert portrait_dialog.preview_photo.width() == 1080
+                  assert portrait_dialog.preview_photo.height() == 1920
+                  assert app.media_dialog_canvas.preview_scale == 1
+                  app.media_dialog_canvas.yview_moveto(0.5)
+                  assert app.media_dialog_canvas.yview()[0] > 0
+                  app.set_media_zoom(False)
+                  root.update_idletasks()
+                  app.redraw_media_dialog()
+                  assert portrait_dialog.preview_photo.width() <= app.media_dialog_canvas.winfo_width() - 24
+                  assert portrait_dialog.preview_photo.height() <= app.media_dialog_canvas.winfo_height() - 24
+                  assert app.media_dialog_canvas.preview_scale < 1
+                  app.close_media_preview()
                   app.set_media_file(red_video)
                   app.set_media_file(blue_video)
                   wait_for_cover()
                   assert app.media_asset.path == blue_video.resolve()
-                  pixel = app.media_preview_source.get(10, 10)
+                  pixel = app.media_preview_source.getpixel((10, 10))
                   assert pixel[2] > 180 and pixel[0] < 80
                   app.set_media_file(red_video)
                   app.clear_media()
@@ -2371,7 +2575,9 @@ jobs:
                                                                 "complete_cell_wrapping", "imported_filenames", "partial_import",
                                                                 "filename_clear", "compact_stats", "region_aliases", "real_video_cover",
                                                                 "portrait_video_cover", "cover_enlargement", "cover_switch",
-                                                                "cover_clear", "audio_placeholder", "corrupt_cover_error", "image_cover"]},
+                                                                "cover_clear", "audio_placeholder", "corrupt_cover_error", "image_cover",
+                                                                "fullhd_frame", "portrait_media_tab", "original_zoom", "original_scroll",
+                                                                "smooth_preview", "fit_zoom"]},
                                                     ensure_ascii=False, indent=2), encoding="utf-8")
               finally:
                   if "app" in locals():
@@ -2425,7 +2631,7 @@ jobs:
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded test_app.py (1/3)
+      - name: Write embedded test_app.py (1/4)
         run: |
           $payload = @'
           import tempfile
@@ -2434,6 +2640,7 @@ jobs:
           import threading
           import time
           import unittest
+          from io import BytesIO
           from unittest import mock
           from pathlib import Path
 
@@ -2441,7 +2648,8 @@ jobs:
                            Recipient, RuntimeClock, Session,
                            allocate_column_widths,
                            csv_cell, decode_file, duration_seconds, filter_records, format_duration, inspect_media, load_profile,
-                           load_runtime_offset, media_cover_png, preview_executable,
+                           load_runtime_offset, media_cover_png, preview_executable, cover_dimensions_text,
+                           decode_cover_image, fit_image_size, render_cover_image,
                            merge_records, normalize_profile, parse_age, parse_text, profile_display_text,
                            read_list, recipient_details_text, render_message, save_profile, save_runtime_offset, sort_records,
                            valid_id, wrap_cell_text)
@@ -2643,14 +2851,14 @@ jobs:
                   for width in (360, 400, 440, 504, 640, 800, 1100, 1600):
                       with self.subTest(width=width):
                           columns = allocate_column_widths(width)
-                          self.assertEqual(tuple(columns), tuple(TABLE_COLUMNS))
-                          self.assertEqual(sum(columns.values()), width)
           '@
           [IO.File]::WriteAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded test_app.py (2/3)
+      - name: Write embedded test_app.py (2/4)
         run: |
           $payload = @'
+                          self.assertEqual(tuple(columns), tuple(TABLE_COLUMNS))
+                          self.assertEqual(sum(columns.values()), width)
                           self.assertTrue(all(value > 0 for value in columns.values()))
                           self.assertGreaterEqual(columns["status"], TABLE_COLUMNS["status"][2])
 
@@ -2875,15 +3083,15 @@ jobs:
               def test_each_different_file_has_its_own_deduplication_key(self):
                   with tempfile.TemporaryDirectory() as directory:
                       queue = FollowMediaQueue()
-                      record = Recipient("00123")
-                      for filename in ("one.jpg", "two.jpg"):
-                          path = Path(directory) / filename
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded test_app.py (3/3)
+      - name: Write embedded test_app.py (3/4)
         run: |
           $payload = @'
+                      record = Recipient("00123")
+                      for filename in ("one.jpg", "two.jpg"):
+                          path = Path(directory) / filename
                           path.write_bytes(b"image-file")
                           self.assertEqual(queue.submit([record], inspect_media(path)), (1, 0))
                       self.assertEqual(queue.process_next().asset.name, "one.jpg")
@@ -2901,7 +3109,7 @@ jobs:
                   except ValueError as exc:
                       cls.directory.cleanup()
                       raise unittest.SkipTest(str(exc))
-                  for path, size, color in ((cls.landscape, "160x90", "red"), (cls.portrait, "90x160", "blue")):
+                  for path, size, color in ((cls.landscape, "1920x1080", "red"), (cls.portrait, "1080x1920", "blue")):
                       subprocess.run([executable, "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
                                       f"color=c={color}:s={size}:r=6:d=0.5", "-c:v", "mpeg4", "-q:v", "2",
                                       "-pix_fmt", "yuv420p", "-threads", "1", str(path)], check=True,
@@ -2915,7 +3123,7 @@ jobs:
               def assert_valid_png(self, png):
                   self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
                   width, height = struct.unpack(">II", png[16:24])
-                  self.assertTrue(1 <= width <= 864 and 1 <= height <= 540)
+                  self.assertTrue(1 <= width <= 1920 and 1 <= height <= 1920)
                   return width, height
 
               def wait_result(self, loader):
@@ -2930,12 +3138,14 @@ jobs:
                   png = media_cover_png(inspect_media(self.landscape))
                   width, height = self.assert_valid_png(png)
                   self.assertAlmostEqual(width / height, 16 / 9, delta=0.01)
+                  self.assertEqual((width, height), (1920, 1080))
 
               def test_portrait_keeps_its_aspect_ratio(self):
                   png = media_cover_png(inspect_media(self.portrait))
                   width, height = self.assert_valid_png(png)
                   self.assertLess(width, height)
                   self.assertAlmostEqual(width / height, 9 / 16, delta=0.01)
+                  self.assertEqual((width, height), (1080, 1920))
 
               def test_imported_picture_can_also_be_previewed(self):
                   png = media_cover_png(inspect_media(self.landscape))
@@ -3063,12 +3273,84 @@ jobs:
                   self.assertIsNone(loader.poll())
 
 
+          class CoverQualityTests(unittest.TestCase):
+              def test_fullhd_portrait_fits_a_tall_side_panel(self):
+                  self.assertEqual(fit_image_size(1080, 1920, 296, 420), (236, 420))
+
+              def test_fit_preserves_aspect_ratio_at_various_window_sizes(self):
+                  for width, height in ((1080, 1920), (1920, 1080), (1200, 1200)):
+                      for box_width, box_height in ((240, 360), (300, 480), (500, 840), (1100, 2000)):
+                          fitted_width, fitted_height = fit_image_size(width, height, box_width, box_height)
+                          self.assertLessEqual(fitted_width, min(width, box_width))
+                          self.assertLessEqual(fitted_height, min(height, box_height))
+                          self.assertAlmostEqual(fitted_width / fitted_height, width / height, delta=0.01)
+                  for dimensions in ((0, 1920), (1080, 0), (-1, 100)):
+                      with self.assertRaises(ValueError):
+                          fit_image_size(*dimensions, 300, 400)
+
+              def test_original_mode_keeps_every_fullhd_pixel(self):
+                  from PIL import Image
+                  image = Image.linear_gradient("L").resize((1080, 1920)).convert("RGB")
+                  result = render_cover_image(image, 300, 420, original=True)
+                  self.assertEqual(result.size, (1080, 1920))
+                  self.assertEqual(result.tobytes(), image.tobytes())
+
+              def test_smooth_downsampling_retains_fine_stripe_detail(self):
+                  from PIL import Image, ImageDraw
+                  image = Image.new("RGB", (1080, 1920))
+                  draw = ImageDraw.Draw(image)
+                  for x in range(0, 1080, 8):
+                      draw.rectangle((x, 0, x + 3, 1919), fill="white")
+                  result = render_cover_image(image, 241, 428)
+                  levels = set(result.tobytes()[0::3])
+                  self.assertGreater(len(levels), 2)
+                  self.assertTrue(any(0 < level < 255 for level in levels))
+
+              def test_all_four_corners_remain_visible_after_fitting(self):
+                  from PIL import Image, ImageDraw
+                  image = Image.new("RGB", (1080, 1920))
+                  draw = ImageDraw.Draw(image)
+                  colors = ((255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0))
+                  for box, color in zip(((0, 0, 539, 959), (540, 0, 1079, 959),
+                                         (0, 960, 539, 1919), (540, 960, 1079, 1919)), colors):
+                      draw.rectangle(box, fill=color)
+                  result = render_cover_image(image, 294, 524)
+                  corners = [(0, 0), (result.width - 1, 0), (0, result.height - 1), (result.width - 1, result.height - 1)]
+                  self.assertEqual([result.getpixel(point) for point in corners], list(colors))
+
+              def test_small_pictures_are_not_enlarged(self):
+                  from PIL import Image
+                  image = Image.new("RGB", (64, 112), "red")
+                  self.assertEqual(render_cover_image(image, 300, 480).size, (64, 112))
+
+              def test_decoding_retains_fullhd_dimensions_and_colors(self):
+                  from PIL import Image
+                  image = Image.new("RGB", (1080, 1920), (34, 56, 78))
+                  buffer = BytesIO()
+                  image.save(buffer, format="PNG")
+                  decoded = decode_cover_image(buffer.getvalue())
+                  self.assertEqual(decoded.size, (1080, 1920))
+                  self.assertEqual(decoded.getpixel((1079, 1919)), (34, 56, 78))
+
+              def test_dimensions_identify_portrait_landscape_and_square(self):
+                  self.assertEqual(cover_dimensions_text(1080, 1920), "1080 × 1920 · 9:16 竖屏")
+                  self.assertIn("16:9 横屏", cover_dimensions_text(1920, 1080))
+                  self.assertIn("方形", cover_dimensions_text(1080, 1080))
+                  self.assertNotIn("9:16", cover_dimensions_text(1000, 1400))
+
+
           class MessageLimitTests(unittest.TestCase):
               def test_limit_accepts_boundary_and_rejects_overflow(self):
                   session = Session()
                   session.start([Recipient("00123")], "文" * MAX_MESSAGE)
                   session.stop()
                   with self.assertRaises(ValueError):
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (4/4)
+        run: |
+          $payload = @'
                       session.start([Recipient("00123")], "文" * (MAX_MESSAGE + 1))
 
               def test_personalized_message_also_obeys_limit(self):
@@ -3222,17 +3504,37 @@ jobs:
 
           ## v1.7.0 视频封面与媒体预览
 
-          导入视频后，“关注后媒体”区域会显示该视频的实际画面，并自动滚动到媒体区域。
+          导入视频后，“媒体素材”页签会显示该视频的实际画面，并自动切换到该页签。
           上方显示完整文件名，下方显示文件类型与大小，方便确认当前选中的视频。
-          封面从视频前段画面中提取，横屏与竖屏均保持原有比例；点击封面或“查看大图”可打开放大的预览窗口。
+          封面从视频前段画面中提取，横屏与竖屏均保持原有比例；点击封面或“高清预览”可打开放大的预览窗口。
           导入图片时显示图片预览；音频显示对应文件信息与音频占位提示。
 
           封面读取在后台进行。更换文件时立即清除旧封面并取消旧任务；清除媒体时同步清除预览和预览窗口。
           损坏文件或读取超时会显示提示，可重新导入；程序退出时会停止正在读取封面的任务。
           Windows 编译配置会将视频读取组件打入 EXE，并检查打包后的视频封面读取，无需单独安装播放器或视频工具。
 
-          当前构建包含 61 项逻辑检查；Windows 源码与 EXE 检查还会使用两个真实短视频验证封面的颜色、横竖屏比例、放大、切换、清除、图片预览和异常提示。
+          Windows 源码与 EXE 检查会使用真实短视频验证封面的颜色、横竖屏比例、放大、切换、清除、图片预览和异常提示。
           封面读取使用 imageio-ffmpeg 0.6.0 所附的 FFmpeg；组件来源与许可证信息一并写入构建产物的 `THIRD_PARTY_NOTICES.txt`。
+
+          ## v1.8.0 竖屏高清预览与界面更新
+
+          针对 1080×1920 的 9:16 竖屏视频，封面保留 1080×1920 分辨率。
+          较大的画面等比缩至最长边 1920 像素；较小的画面保持原尺寸。
+          缩略预览从完整封面使用 Lanczos 高质量缩放，替代原来的整数抽样，减少细线和文字的锯齿。
+
+          右侧工作区采用“消息内容 / 媒体素材”两个页签，媒体页单独提供更高的封面展示区。
+          封面区域高度随窗口调整；完整文件名、类型、大小、封面尺寸与横竖屏信息集中显示。
+          发送规则与关注回执置于独立卡片，导入后按钮切换为“更换文件”。
+          整体采用深蓝底色、分层卡片和薄荷绿操作强调色，统一页签、边框、文字与间距。
+
+          点击“高清预览”打开大图：竖屏素材使用更高的预览窗口。
+          “适应窗口”完整显示封面；“100% 原尺寸”逐像素显示，可用滚动条、鼠标滚轮或按住拖动查看细节。
+          预览底部显示当前缩放比例与封面尺寸；Ctrl+0 适应窗口，Ctrl+1 切换原尺寸，Esc 关闭。
+          切换模式与调整窗口时始终从完整封面渲染。
+
+          当前包含 69 项逻辑检查，覆盖真实 1080×1920 / 1920×1080 视频取帧、缩放、细条纹平滑、四角完整性与原尺寸像素保留。
+          Windows 源码及 EXE 检查另行验证页签切换、高清预览、100% 模式和滚动；实际结果由 GitHub Actions 运行后生成。
+          构建会一并打包 Pillow 13.0.0 和 FFmpeg 读取组件。
 
           ## 本地运行与构建
 
@@ -3243,7 +3545,7 @@ jobs:
           python app.py
           python -m unittest -v
           python app.py --smoke-test smoke-source.json
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --collect-all imageio_ffmpeg --copy-metadata imageio-ffmpeg --name DouyinSender app.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --collect-all imageio_ffmpeg --copy-metadata imageio-ffmpeg --copy-metadata Pillow --name DouyinSender app.py
           ```
 
           也可直接运行 `build_windows.bat`，脚本会先安装依赖。输出位于 `dist/DouyinSender.exe`。
@@ -3265,6 +3567,7 @@ jobs:
           - [imageio-ffmpeg 源码与许可证](https://github.com/imageio/imageio-ffmpeg)
           - [FFmpeg 视频滤镜](https://ffmpeg.org/ffmpeg-filters.html)
           - [FFmpeg 源码与许可证](https://ffmpeg.org/download.html)
+          - [Pillow 缩放与 ImageTk](https://pillow.readthedocs.io/en/stable/reference/ImageTk.html)
           '@
           [IO.File]::WriteAllText((Join-Path $PWD 'README.md'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
@@ -3272,6 +3575,7 @@ jobs:
         run: |
           $payload = @'
           imageio-ffmpeg==0.6.0
+          Pillow==13.0.0
           PyInstaller==6.22.3
           '@
           [IO.File]::WriteAllText((Join-Path $PWD 'requirements.txt'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
@@ -3294,7 +3598,7 @@ jobs:
 
       - name: Build standalone Windows EXE
         run: |
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --collect-all imageio_ffmpeg --copy-metadata imageio-ffmpeg --name DouyinSender app.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --collect-all imageio_ffmpeg --copy-metadata imageio-ffmpeg --copy-metadata Pillow --name DouyinSender app.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Check packaged EXE and prepare download
@@ -3320,13 +3624,15 @@ jobs:
           from importlib.metadata import distribution
           import subprocess
           import imageio_ffmpeg
-          package = distribution('imageio-ffmpeg')
           parts = ['imageio-ffmpeg 0.6.0: https://github.com/imageio/imageio-ffmpeg',
+                   'Pillow 13.0.0: https://github.com/python-pillow/Pillow',
                    'FFmpeg sources and license: https://ffmpeg.org/download.html',
                    'FFmpeg binary build sources: https://github.com/imageio/imageio-binaries']
-          for item in package.files or []:
-              if item.name.lower().startswith('license'):
-                  parts.append(package.locate_file(item).read_text(encoding='utf-8', errors='replace'))
+          for name in ('imageio-ffmpeg', 'Pillow'):
+              package = distribution(name)
+              for item in package.files or []:
+                  if item.name.lower().startswith('license'):
+                      parts.append(package.locate_file(item).read_text(encoding='utf-8', errors='replace'))
           result = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-L'], stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, check=True)
           parts.append(result.stdout.decode('utf-8', errors='replace'))
