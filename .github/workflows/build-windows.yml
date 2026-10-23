@@ -1,6 +1,7 @@
 # Upload this single file as .github/workflows/build-windows.yml
 # It embeds all source and uses no real recipient data, Secrets, or account logins.
 name: Build Windows App
+run-name: Windows v1.9.1 · ${{ github.ref_name }}
 
 on:
   push:
@@ -61,7 +62,7 @@ jobs:
 
 
           APP_NAME = "抖音群发工作台"
-          VERSION = "1.8.0"
+          VERSION = "1.9.1"
           MAX_FILE_BYTES = 5 * 1024 * 1024
           MAX_RECIPIENTS = 20000
           MAX_MESSAGE = 200
@@ -944,8 +945,6 @@ jobs:
       - name: Write embedded app.py (4/11)
         run: |
           $payload = @'
-                  self.list_expanded = False
-                  self.log_expanded = False
                   self.account_display_var = tk.StringVar()
                   self.records: list[Recipient] = []
                   self.imported_files: list[Path] = []
@@ -978,10 +977,10 @@ jobs:
                   self.preview_target = tk.StringVar(value="选择名单中的一位用户以预览")
                   root.title(APP_NAME)
                   root.configure(bg=COLORS["bg"])
-                  width = max(1060, min(1540, root.winfo_screenwidth() - 40))
-                  height = max(760, min(1020, root.winfo_screenheight() - 80))
+                  width = max(1060, min(1800, root.winfo_screenwidth() - 40))
+                  height = max(680, min(1020, root.winfo_screenheight() - 80))
                   root.geometry(f"{width}x{height}")
-                  root.minsize(1060, 760)
+                  root.minsize(1060, 680)
                   root.protocol("WM_DELETE_WINDOW", self.close)
                   root.option_add("*Font", ("Microsoft YaHei UI", 10))
                   self.configure_styles()
@@ -1028,11 +1027,6 @@ jobs:
                                   borderwidth=0, arrowcolor=COLORS["muted"])
                   style.configure("Horizontal.TProgressbar", troughcolor=COLORS["input"],
                                   background=COLORS["accent"], borderwidth=0, thickness=7)
-                  style.configure("Composer.TNotebook", background=COLORS["card"], borderwidth=0, tabmargins=(12, 10, 12, 5))
-                  style.configure("Composer.TNotebook.Tab", background=COLORS["input"], foreground=COLORS["muted"],
-                                  padding=(16, 8), font=("Microsoft YaHei UI", 10, "bold"))
-                  style.map("Composer.TNotebook.Tab", background=[("selected", "#254147"), ("active", COLORS["hover"])],
-                            foreground=[("selected", COLORS["accent"]), ("active", COLORS["text"])])
                   self.root.option_add("*TCombobox*Listbox.background", COLORS["input"])
                   self.root.option_add("*TCombobox*Listbox.foreground", COLORS["text"])
 
@@ -1055,129 +1049,99 @@ jobs:
                   return tk.Frame(parent, bg=COLORS["card"], highlightbackground=COLORS["line"], highlightthickness=1)
 
               def build_ui(self) -> None:
-                  side = tk.Frame(self.root, bg=COLORS["side"], width=165)
-                  side.pack(side="left", fill="y")
-                  side.pack_propagate(False)
-                  brand = tk.Frame(side, bg=COLORS["side"])
-                  brand.pack(fill="x", padx=18, pady=(20, 18))
-                  self.label(brand, "S /", 30, "accent", True).pack(anchor="w")
-                  self.label(brand, "SEND STUDIO", 13, bold=True).pack(anchor="w", pady=(3, 0))
-                  self.label(brand, "批量消息管理", 9, "muted").pack(anchor="w", pady=(5, 0))
-                  for text, command in [
-                      ("01    群发任务", self.focus_editor),
-                      ("02    导入名单", self.import_files),
-                      ("03    导出日志", self.export_logs),
-                      ("04    账号设置", self.open_account_settings),
-                      ("05    计时设置", self.open_runtime_settings),
-                  ]:
-                      self.button(side, text, command, anchor="w").pack(fill="x", padx=14, pady=4)
-                  note = tk.Frame(side, bg=COLORS["side"])
-                  note.pack(side="bottom", fill="x", padx=22, pady=26)
-                  self.label(note, "任务工作台", 10, "muted", True).pack(anchor="w")
-                  self.label(note, "名单管理 · 消息预览\n任务进度 · 运行记录", 9, "muted", justify="left").pack(anchor="w", pady=(10, 14))
-                  self.label(note, f"WINDOWS  /  v{VERSION}", 8, "muted").pack(anchor="w")
-
                   main = tk.Frame(self.root, bg=COLORS["bg"])
-                  main.pack(side="left", expand=True, fill="both", padx=18, pady=14)
+                  main.pack(fill="both", expand=True, padx=14, pady=10)
+                  main.columnconfigure(0, weight=1)
+                  # Only the three-column workspace grows or shrinks. Reserve the requested
+                  # height of the header, log, controls and clocks even on a small screen.
+                  main.rowconfigure(2, weight=1)
                   header = tk.Frame(main, bg=COLORS["bg"])
-                  header.pack(fill="x")
-                  self.label(header, "WORKSPACE / MESSAGING", 9, "muted").pack(anchor="w")
-                  title_row = tk.Frame(header, bg=COLORS["bg"])
-                  title_row.pack(fill="x", pady=(4, 2))
-                  self.label(title_row, "抖音群发工作台", 20, bold=True).pack(side="left")
-                  account_box = tk.Frame(title_row, bg=COLORS["bg"])
-                  account_box.pack(side="right", pady=3)
-                  self.button(account_box, "账号设置", self.open_account_settings, padx=10, pady=6).pack(side="right", padx=(12, 0))
-                  self.account_display_label = self.label(account_box, size=9, textvariable=self.account_display_var,
+                  header.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+                  self.label(header, "抖音群发工作台", 17, bold=True).pack(side="left")
+                  self.label(header, f"v{VERSION}", 8, "muted").pack(side="left", padx=10)
+                  self.button(header, "账号设置", self.open_account_settings, padx=10, pady=5).pack(side="right")
+                  self.button(header, "计时设置", self.open_runtime_settings, padx=10, pady=5).pack(side="right", padx=7)
+                  self.button(header, "导出日志", self.export_logs, padx=10, pady=5).pack(side="right")
+                  self.account_display_label = self.label(header, size=8, textvariable=self.account_display_var,
                                                            justify="right", anchor="e")
-                  self.account_display_label.pack(side="right")
-                  self.label(header, "集中管理接收人名单、消息内容与任务进度。", 10, "muted").pack(anchor="w")
+                  self.account_display_label.pack(side="right", padx=12)
 
-                  stats = tk.Frame(main, bg=COLORS["bg"])
-                  self.stats_frame = stats
-                  stats.pack(fill="x", pady=(8, 8))
+                  stats = self.stats_frame = tk.Frame(main, bg=COLORS["bg"])
+                  stats.grid(row=1, column=0, sticky="ew", pady=(0, 7))
                   self.stat_vars = [tk.StringVar(value="0") for _ in range(4)]
                   for i, (caption, color) in enumerate([("名单人数", "text"), ("已合并重复", "blue"),
                                                         ("已处理", "accent"), ("本轮待处理", "amber")]):
                       stats.columnconfigure(i, weight=1, uniform="stat")
                       card = self.card(stats)
-                      card.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 5, 0 if i == 3 else 5))
-                      self.label(card, caption, 9, "muted").pack(side="left", padx=(9, 5), pady=5)
-                      self.label(card, size=12, color=color, bold=True, textvariable=self.stat_vars[i]).pack(side="right", padx=(0, 9), pady=5)
+                      card.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 4, 0 if i == 3 else 4))
+                      self.label(card, caption, 9, "muted").pack(side="left", padx=(9, 5), pady=4)
+                      self.label(card, size=12, color=color, bold=True, textvariable=self.stat_vars[i]).pack(side="right", padx=9, pady=4)
 
-                  body = tk.Frame(main, bg=COLORS["bg"])
-                  self.body = body
-                  body.pack(fill="both", expand=True)
+                  body = self.body = tk.Frame(main, bg=COLORS["bg"])
+                  body.grid(row=2, column=0, sticky="nsew")
                   body.columnconfigure(0, weight=1, minsize=410)
-                  body.columnconfigure(1, weight=0, minsize=355)
+                  body.columnconfigure(1, weight=0, minsize=310)
+                  body.columnconfigure(2, weight=0, minsize=280)
                   body.rowconfigure(0, weight=1)
-                  list_card = self.card(body)
-                  list_card.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+                  list_card = self.list_card = self.card(body)
+                  list_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
                   list_card.columnconfigure(0, weight=1)
                   list_card.rowconfigure(3, weight=1)
                   list_header = tk.Frame(list_card, bg=COLORS["card"])
-                  list_header.grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 8))
+                  list_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(9, 7))
                   list_header.columnconfigure(0, weight=1)
-                  title = tk.Frame(list_header, bg=COLORS["card"])
-                  title.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-                  self.label(title, "接收人名单", 12, bold=True).pack(side="left")
-                  self.expand_list_button = self.button(title, "全宽名单", self.toggle_list_width, padx=8, pady=5)
-                  self.expand_list_button.pack(side="left", padx=10)
-                  import_row = tk.Frame(list_header, bg=COLORS["card"])
-                  import_row.grid(row=1, column=0, sticky="ew")
-                  import_row.columnconfigure(0, weight=1)
-                  self.import_name_label = self.label(import_row, size=9, color="muted", textvariable=self.imported_names_var,
+                  self.label(list_header, "接收人名单", 12, bold=True).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+                  self.import_name_label = self.label(list_header, size=8, color="muted", textvariable=self.imported_names_var,
                                                       anchor="w", justify="left", width=1, wraplength=1)
-                  self.import_name_label.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+                  self.import_name_label.grid(row=1, column=0, sticky="ew", padx=(0, 8))
                   self.import_name_label.bind("<Configure>", lambda event: self.import_name_label.configure(wraplength=max(1, event.width)))
-                  self.import_button = self.button(import_row, "+ 导入名单", self.import_files, primary=True)
-                  self.import_button.grid(row=0, column=1, sticky="ne")
+                  self.import_button = self.button(list_header, "+ 导入名单", self.import_files, primary=True, padx=10, pady=6)
+                  self.import_button.grid(row=1, column=1, sticky="ne")
                   filters = tk.Frame(list_card, bg=COLORS["card"])
-                  filters.grid(row=1, column=0, sticky="ew", padx=14)
+                  filters.grid(row=1, column=0, sticky="ew", padx=10)
                   first_filter = tk.Frame(filters, bg=COLORS["card"])
                   first_filter.pack(fill="x")
                   self.search_entry = tk.Entry(first_filter, textvariable=self.search_var, bg=COLORS["input"],
-                                               fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat", width=15)
-                  self.search_entry.pack(side="left", fill="x", expand=True, ipady=7)
+                                               fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat", width=10)
+                  self.search_entry.pack(side="left", fill="x", expand=True, ipady=5)
                   self.source_combo = ttk.Combobox(first_filter, textvariable=self.source_var,
+                                                   values=["全部来源"], state="readonly", width=9)
+                  self.source_combo.pack(side="left", padx=(7, 0))
+                  second_filter = tk.Frame(filters, bg=COLORS["card"])
+                  second_filter.pack(fill="x", pady=6)
+                  self.gender_combo = ttk.Combobox(second_filter, textvariable=self.gender_var,
+                                                    values=["全部性别", "男", "女", "未填写"], state="readonly", width=7)
+                  self.gender_combo.pack(side="left")
+                  ttk.Combobox(second_filter, textvariable=self.age_mode_var, values=["全部年龄", "已填年龄", "未填年龄"],
+                               state="readonly", width=7).pack(side="left", padx=6)
+                  self.label(second_filter, "年龄", 8, "muted").pack(side="left", padx=(0, 3))
+                  for index, variable in enumerate((self.min_age_var, self.max_age_var)):
+                      if index:
+                          self.label(second_filter, "至", 8, "muted").pack(side="left", padx=3)
+                      tk.Entry(second_filter, textvariable=variable, width=3, bg=COLORS["input"], fg=COLORS["text"],
+                               insertbackground=COLORS["accent"], relief="flat").pack(side="left", ipady=4)
+                  self.label(second_filter, "岁", 8, "muted").pack(side="left", padx=3)
+                  third_filter = tk.Frame(filters, bg=COLORS["card"])
+                  third_filter.pack(fill="x")
+                  ttk.Combobox(third_filter, textvariable=self.region_field_var, values=["任一地区", "资料地区", "IP属地"],
+                               state="readonly", width=7).pack(side="left")
+                  self.region_combo = ttk.Combobox(third_filter, textvariable=self.region_var, values=[], width=7)
+                  self.region_combo.pack(side="left", fill="x", expand=True, padx=6)
+                  self.button(third_filter, "重置", self.reset_filters, padx=8, pady=4).pack(side="right")
+                  self.filter_hint_label = self.label(list_card, size=8, color="muted", textvariable=self.filter_hint_var)
+                  self.filter_hint_label.grid(row=2, column=0, sticky="w", padx=10, pady=(5, 6))
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded app.py (5/11)
         run: |
           $payload = @'
-                                                   values=["全部来源"], state="readonly", width=9)
-                  self.source_combo.pack(side="left", padx=(8, 0))
-                  second_filter = tk.Frame(filters, bg=COLORS["card"])
-                  second_filter.pack(fill="x", pady=7)
-                  self.gender_combo = ttk.Combobox(second_filter, textvariable=self.gender_var,
-                                                    values=["全部性别", "男", "女", "未填写"], state="readonly", width=7)
-                  self.gender_combo.pack(side="left")
-                  ttk.Combobox(second_filter, textvariable=self.age_mode_var, values=["全部年龄", "已填年龄", "未填年龄"],
-                               state="readonly", width=7).pack(side="left", padx=7)
-                  self.label(second_filter, "年龄", 9, "muted").pack(side="left", padx=(2, 4))
-                  for index, variable in enumerate((self.min_age_var, self.max_age_var)):
-                      if index:
-                          self.label(second_filter, "至", 9, "muted").pack(side="left", padx=4)
-                      tk.Entry(second_filter, textvariable=variable, width=3, bg=COLORS["input"], fg=COLORS["text"],
-                               insertbackground=COLORS["accent"], relief="flat").pack(side="left", ipady=5)
-                  self.label(second_filter, "岁", 9, "muted").pack(side="left", padx=4)
-                  third_filter = tk.Frame(filters, bg=COLORS["card"])
-                  third_filter.pack(fill="x")
-                  ttk.Combobox(third_filter, textvariable=self.region_field_var, values=["任一地区", "资料地区", "IP属地"],
-                               state="readonly", width=7).pack(side="left")
-                  self.region_combo = ttk.Combobox(third_filter, textvariable=self.region_var, values=[], width=10)
-                  self.region_combo.pack(side="left", fill="x", expand=True, padx=7)
-                  self.button(third_filter, "重置", self.reset_filters, padx=8, pady=4).pack(side="right")
-                  self.filter_hint_label = self.label(list_card, size=8, color="muted", textvariable=self.filter_hint_var)
-                  self.filter_hint_label.grid(
-                      row=2, column=0, sticky="w", padx=14, pady=(5, 8))
                   table_frame = tk.Frame(list_card, bg=COLORS["input"])
-                  table_frame.grid(row=3, column=0, sticky="nsew", padx=14)
+                  table_frame.grid(row=3, column=0, sticky="nsew", padx=10)
                   table_frame.rowconfigure(0, weight=1)
                   table_frame.columnconfigure(0, weight=1)
                   self.table = ttk.Treeview(table_frame, columns=tuple(TABLE_COLUMNS),
-                                            show="headings", selectmode="extended", height=20)
+                                            show="headings", selectmode="extended", height=12)
                   for column, (caption, width, minimum) in TABLE_COLUMNS.items():
                       self.table.heading(column, text=caption, command=lambda key=column: self.sort_by(key))
                       self.table.column(column, width=width, minwidth=1, stretch=False,
@@ -1195,186 +1159,135 @@ jobs:
                   self.table.bind("<Return>", lambda _event: self.open_recipient_details())
                   self.table.bind("<Control-a>", lambda _event: self.select_visible())
                   bottom = tk.Frame(list_card, bg=COLORS["card"])
-                  bottom.grid(row=4, column=0, sticky="ew", padx=14, pady=10)
+                  bottom.grid(row=4, column=0, sticky="ew", padx=10, pady=7)
                   self.visible_var = tk.StringVar(value="显示 0 / 0 人")
-                  self.label(bottom, size=9, color="muted", textvariable=self.visible_var).pack(side="left")
-                  self.clear_button = self.button(bottom, "清空", self.clear_list, danger=True)
+                  self.label(bottom, size=8, color="muted", textvariable=self.visible_var).pack(side="left")
+                  self.clear_button = self.button(bottom, "清空", self.clear_list, danger=True, padx=9, pady=5)
                   self.clear_button.pack(side="right")
-                  self.button(bottom, "全选结果", self.select_visible, padx=8).pack(side="right", padx=7)
+                  self.button(bottom, "全选结果", self.select_visible, padx=9, pady=5).pack(side="right", padx=6)
 
-                  self.compose_shell = self.card(body)
-                  self.compose_shell.grid(row=0, column=1, sticky="nsew")
-                  fixed_controls = tk.Frame(self.compose_shell, bg=COLORS["card"])
-                  fixed_controls.pack(side="bottom", fill="x")
-                  self.compose_tabs = ttk.Notebook(self.compose_shell, style="Composer.TNotebook")
-                  self.compose_tabs.pack(fill="both", expand=True)
-                  self.message_tab = tk.Frame(self.compose_tabs, bg=COLORS["card"])
-                  self.media_tab = tk.Frame(self.compose_tabs, bg=COLORS["card"])
-                  self.compose_tabs.add(self.message_tab, text="消息内容")
-                  self.compose_tabs.add(self.media_tab, text="媒体素材")
-                  self.compose_canvas = tk.Canvas(self.message_tab, bg=COLORS["card"], highlightthickness=0, width=345)
-                  compose_scroll = ttk.Scrollbar(self.message_tab, command=self.compose_canvas.yview)
-                  compose_scroll.pack(side="right", fill="y")
-                  self.compose_canvas.pack(side="left", fill="both", expand=True)
-                  self.compose_canvas.configure(yscrollcommand=compose_scroll.set)
-                  compose = tk.Frame(self.compose_canvas, bg=COLORS["card"])
-                  compose_window = self.compose_canvas.create_window((0, 0), window=compose, anchor="nw")
-                  compose.bind("<Configure>", lambda _event: self.compose_canvas.configure(scrollregion=self.compose_canvas.bbox("all")))
-                  self.compose_canvas.bind("<Configure>", lambda event: self.compose_canvas.itemconfigure(compose_window, width=event.width))
-                  self.media_settings_canvas = tk.Canvas(self.media_tab, bg=COLORS["card"], highlightthickness=0, width=345)
-                  media_scroll = ttk.Scrollbar(self.media_tab, command=self.media_settings_canvas.yview)
-                  media_scroll.pack(side="right", fill="y")
-                  self.media_settings_canvas.pack(fill="both", expand=True)
-                  self.media_settings_canvas.configure(yscrollcommand=media_scroll.set)
-                  media_content = tk.Frame(self.media_settings_canvas, bg=COLORS["card"])
-                  media_window = self.media_settings_canvas.create_window((0, 0), window=media_content, anchor="nw")
-                  media_content.bind("<Configure>", lambda _event: self.media_settings_canvas.configure(scrollregion=self.media_settings_canvas.bbox("all")))
-
-                  def resize_media_tab(event):
-                      self.media_settings_canvas.itemconfigure(media_window, width=event.width)
-                      if hasattr(self, "media_cover_canvas"):
-                          height = max(240, min(480, event.height - 150))
-                          if int(self.media_cover_canvas.cget("height")) != height:
-                              self.media_cover_canvas.configure(height=height)
-
-                  self.media_settings_canvas.bind("<Configure>", resize_media_tab)
-                  def scroll_compose(event):
-                      if not isinstance(event.widget, tk.Text):
-                          for content, canvas in ((compose, self.compose_canvas), (media_content, self.media_settings_canvas)):
-                              if str(event.widget).startswith(str(content)):
-                                  units = -int(event.delta / 120) or (-1 if event.delta > 0 else 1)
-                                  canvas.yview_scroll(units, "units")
-                                  break
-                  self.root.bind_all("<MouseWheel>", scroll_compose, add="+")
-                  self.label(compose, "群发内容", 12, bold=True).pack(anchor="w", padx=16, pady=(14, 4))
-                  self.label(compose, "支持 {昵称}、{抖音号} 个性化变量", 9, "muted").pack(anchor="w", padx=16, pady=(0, 8))
-                  self.message = tk.Text(compose, height=6, width=1, wrap="word", undo=True, bg=COLORS["input"],
+                  compose = self.message_card = self.card(body)
+                  compose.grid(row=0, column=1, sticky="nsew", padx=(0, 8))
+                  compose.columnconfigure(0, weight=1)
+                  compose.rowconfigure(2, weight=2, minsize=80)
+                  compose.rowconfigure(6, weight=1, minsize=48)
+                  self.label(compose, "群发内容", 12, bold=True).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 4))
+                  self.label(compose, "支持 {昵称}、{抖音号} 个性化变量", 8, "muted").grid(row=1, column=0, sticky="w", padx=12, pady=(0, 6))
+                  self.message = tk.Text(compose, height=1, width=1, wrap="word", undo=True, bg=COLORS["input"],
                                          fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat",
-                                         padx=10, pady=10, font=("Microsoft YaHei UI", 10))
-                  self.message.pack(fill="x", padx=16)
+                                         padx=9, pady=8, font=("Microsoft YaHei UI", 10))
+                  self.message.grid(row=2, column=0, sticky="nsew", padx=12)
                   self.message.insert("1.0", "你好，{昵称}！感谢关注，后续有新消息会在这里与你分享。")
                   self.message.edit_modified(False)
                   self.message.bind("<<Modified>>", self.message_changed)
                   self.counter_label = self.label(compose, size=8, color="muted", textvariable=self.count_var)
-                  self.counter_label.pack(anchor="e", padx=16, pady=(4, 7))
-                  self.label(compose, "消息预览", 10, bold=True).pack(anchor="w", padx=16)
-                  self.label(compose, size=8, color="muted", textvariable=self.preview_target).pack(anchor="w", padx=16, pady=(2, 4))
-                  self.preview = tk.Text(compose, height=3, width=1, wrap="word", bg=COLORS["input"], fg=COLORS["muted"],
-                                         relief="flat", padx=10, pady=8, state="disabled", font=("Microsoft YaHei UI", 9))
-                  self.preview.pack(fill="x", padx=16)
-                  media_frame = tk.Frame(media_content, bg=COLORS["card"])
-                  self.media_section = media_frame
-                  media_frame.pack(fill="x", padx=16, pady=(10, 12))
-                  media_actions = tk.Frame(media_frame, bg=COLORS["card"])
-                  media_actions.pack(fill="x")
-                  self.label(media_actions, "发送素材", 12, bold=True).pack(side="left")
-                  self.media_import_button = self.button(media_actions, "导入媒体", self.choose_media, primary=True, padx=10, pady=6)
-                  self.media_import_button.pack(side="right")
-                  self.media_name_label = self.label(media_frame, size=10, bold=True, textvariable=self.media_name_var,
-                                                     width=1, anchor="w", wraplength=295, justify="left")
-                  self.media_name_label.pack(fill="x", pady=(10, 4))
-                  self.media_name_label.bind("<Configure>", lambda event: self.media_name_label.configure(wraplength=max(1, event.width)))
-                  media_info_row = tk.Frame(media_frame, bg=COLORS["card"])
-                  media_info_row.pack(fill="x", pady=(0, 3))
-                  self.label(media_info_row, size=8, color="muted", textvariable=self.media_info_var).pack(side="left")
-                  self.media_cover_button = self.button(media_info_row, "高清预览 ↗", self.open_media_preview, padx=8, pady=3, state="disabled")
-                  self.media_cover_button.pack(side="right")
-                  self.label(media_frame, size=8, color="blue", textvariable=self.media_dimensions_var).pack(anchor="w", pady=(0, 8))
-                  self.media_cover_canvas = tk.Canvas(media_frame, height=400, width=1, bg="#080F1D",
-                                                      highlightthickness=1, highlightbackground="#34526B")
-                  self.media_cover_canvas.pack(fill="x")
-                  self.media_cover_canvas.bind("<Configure>", self.schedule_media_cover)
-                  self.media_cover_canvas.bind("<Button-1>", lambda _event: self.open_media_preview())
-                  self.media_cover_state_label = self.label(media_frame, size=8, color="muted",
-                                                           textvariable=self.media_cover_state_var, wraplength=295, justify="left")
-                  self.media_cover_state_label.pack(anchor="w", pady=(6, 8))
-                  rules = self.card(media_frame)
-                  rules.pack(fill="x", pady=(2, 0))
-                  self.label(rules, "发送规则", 10, bold=True).pack(anchor="w", padx=10, pady=(9, 3))
-                  tk.Checkbutton(rules, text="对方关注后发送媒体文件", variable=self.follow_media_var,
-                                 command=self.toggle_follow_media, bg=COLORS["card"], fg=COLORS["text"],
-                                 activebackground=COLORS["card"], activeforeground=COLORS["text"],
-                                 selectcolor=COLORS["input"]).pack(anchor="w", padx=7, pady=(0, 5))
-                  rule_actions = tk.Frame(rules, bg=COLORS["card"])
-                  rule_actions.pack(fill="x", padx=10)
-                  self.button(rule_actions, "关注回执", self.import_follow_receipts, padx=10, pady=5).pack(side="left")
-                  self.button(rule_actions, "清除素材", self.clear_media, danger=True, padx=10, pady=5).pack(side="right")
-                  self.label(rules, size=8, color="muted", textvariable=self.media_status_var, wraplength=270, justify="left").pack(anchor="w", padx=10, pady=(7, 10))
+                  self.counter_label.grid(row=3, column=0, sticky="e", padx=12, pady=(3, 7))
+                  self.label(compose, "消息预览", 10, bold=True).grid(row=4, column=0, sticky="w", padx=12)
+                  target = self.label(compose, size=8, color="muted", textvariable=self.preview_target,
+                                       width=1, anchor="w", justify="left", wraplength=1)
+                  target.grid(row=5, column=0, sticky="ew", padx=12, pady=(3, 5))
+                  target.bind("<Configure>", lambda event: target.configure(wraplength=max(1, event.width)))
+                  self.preview = tk.Text(compose, height=1, width=1, wrap="word", bg=COLORS["input"], fg=COLORS["muted"],
+                                         relief="flat", padx=9, pady=8, state="disabled", font=("Microsoft YaHei UI", 9))
+                  self.preview.grid(row=6, column=0, sticky="nsew", padx=12, pady=(0, 9))
                   settings = tk.Frame(compose, bg=COLORS["card"])
-                  settings.pack(fill="x", padx=16, pady=(10, 4))
+                  settings.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
                   self.label(settings, "发送间隔", 9, "muted").pack(side="left")
                   self.interval_spin = tk.Spinbox(settings, from_=0.1, to=10, increment=0.1, width=4,
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (6/11)
-        run: |
-          $payload = @'
                                                   textvariable=self.interval_var, bg=COLORS["input"], fg=COLORS["text"],
                                                   buttonbackground=COLORS["line"], insertbackground=COLORS["text"], relief="flat")
                   self.interval_spin.pack(side="left", padx=(8, 4), ipady=3)
-                  self.label(settings, "秒 / 人", 9, "muted").pack(side="left")
+                  self.label(settings, "秒 / 人", 8, "muted").pack(side="left")
                   scope_row = tk.Frame(compose, bg=COLORS["card"])
-                  scope_row.pack(fill="x", padx=16, pady=(5, 2))
-                  self.label(scope_row, "任务范围", 9, "muted").pack(side="left", padx=(0, 8))
-                  self.scope_combo = ttk.Combobox(scope_row, textvariable=self.scope_var, state="readonly", width=15,
+                  scope_row.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 10))
+                  self.label(scope_row, "任务范围", 9, "muted").pack(side="left", padx=(0, 6))
+                  self.scope_combo = ttk.Combobox(scope_row, textvariable=self.scope_var, state="readonly", width=12,
                                                    values=["当前筛选结果", "全部导入名单", "仅选中的接收人"])
                   self.scope_combo.pack(side="left", fill="x", expand=True)
-                  actions = tk.Frame(fixed_controls, bg=COLORS["card"])
-                  actions.pack(fill="x", padx=16, pady=(8, 8))
-                  self.start_button = self.button(actions, "开始群发", self.start, primary=True)
-                  self.start_button.pack(side="left", fill="x", expand=True)
-                  self.pause_button = self.button(actions, "暂停", self.toggle_pause, state="disabled")
-                  self.pause_button.pack(side="left", padx=7)
-                  self.stop_button = self.button(actions, "停止", self.stop, danger=True, state="disabled")
-                  self.stop_button.pack(side="left")
-                  ttk.Progressbar(fixed_controls, variable=self.progress_var, maximum=100).pack(fill="x", padx=16, pady=(0, 6))
-                  self.label(fixed_controls, size=8, color="muted", textvariable=self.progress_text,
-                             wraplength=310, justify="left").pack(anchor="w", padx=16, pady=(0, 10))
 
-                  log_card = self.card(main)
-                  log_card.pack(fill="x", pady=(8, 0))
-                  log_top = tk.Frame(log_card, bg=COLORS["card"])
-                  log_top.pack(fill="x", padx=14, pady=(8, 4))
-                  self.label(log_top, "运行日志", 10, bold=True).pack(side="left")
-                  self.label(log_top, "ACTIVITY", 8, "muted").pack(side="left", padx=12)
-                  self.button(log_top, "导出 CSV", self.export_logs, pady=3).pack(side="right")
-                  self.log_toggle_button = self.button(log_top, "展开日志", self.toggle_logs, padx=10, pady=3)
-                  self.log_toggle_button.pack(side="right", padx=6)
+                  media_frame = self.media_section = self.card(body)
+                  media_frame.grid(row=0, column=2, sticky="nsew")
+                  media_frame.columnconfigure(0, weight=1)
+                  media_frame.rowconfigure(4, weight=1, minsize=80)
+                  media_actions = tk.Frame(media_frame, bg=COLORS["card"])
+                  media_actions.grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 5))
+                  self.label(media_actions, "媒体素材", 12, bold=True).pack(side="left")
+                  self.media_import_button = self.button(media_actions, "导入媒体", self.choose_media, primary=True, padx=9, pady=5)
+                  self.media_import_button.pack(side="right")
+                  self.media_name_label = self.label(media_frame, size=9, bold=True, textvariable=self.media_name_var,
+                                                     width=1, anchor="w", wraplength=1, justify="left")
+                  self.media_name_label.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 4))
+                  self.media_name_label.bind("<Configure>", lambda event: self.media_name_label.configure(wraplength=max(1, event.width)))
+                  media_info_row = tk.Frame(media_frame, bg=COLORS["card"])
+                  media_info_row.grid(row=2, column=0, sticky="ew", padx=10)
+                  self.label(media_info_row, size=8, color="muted", textvariable=self.media_info_var).pack(side="left")
+                  self.media_cover_button = self.button(media_info_row, "高清预览 ↗", self.open_media_preview, padx=6, pady=3, state="disabled")
+                  self.media_cover_button.pack(side="right")
+                  self.label(media_frame, size=8, color="blue", textvariable=self.media_dimensions_var).grid(row=3, column=0, sticky="w", padx=10, pady=(2, 5))
+                  self.media_cover_canvas = tk.Canvas(media_frame, height=1, width=1, bg="#080F1D",
+                                                      highlightthickness=1, highlightbackground="#34526B")
+                  self.media_cover_canvas.grid(row=4, column=0, sticky="nsew", padx=10)
+                  self.media_cover_canvas.bind("<Configure>", self.schedule_media_cover)
+                  self.media_cover_canvas.bind("<Button-1>", lambda _event: self.open_media_preview())
+                  self.media_cover_state_label = self.label(media_frame, size=8, color="muted", width=1,
+                                                           anchor="w", textvariable=self.media_cover_state_var, wraplength=1, justify="left")
+                  self.media_cover_state_label.grid(row=5, column=0, sticky="ew", padx=10, pady=5)
+                  self.media_cover_state_label.bind("<Configure>", lambda event: self.media_cover_state_label.configure(wraplength=max(1, event.width)))
+                  rules = self.card(media_frame)
+                  rules.grid(row=6, column=0, sticky="ew", padx=10, pady=(0, 8))
+                  self.media_rule_check = tk.Checkbutton(rules, text="对方关注后发送媒体文件", variable=self.follow_media_var,
+                                 command=self.toggle_follow_media, bg=COLORS["card"], fg=COLORS["text"],
+                                 activebackground=COLORS["card"], activeforeground=COLORS["text"],
+                                 font=("Microsoft YaHei UI", 9), selectcolor=COLORS["input"])
+                  self.media_rule_check.pack(anchor="w", padx=5, pady=(4, 2))
+                  rule_actions = tk.Frame(rules, bg=COLORS["card"])
+                  rule_actions.pack(fill="x", padx=7)
+                  self.button(rule_actions, "关注回执", self.import_follow_receipts, padx=8, pady=4).pack(side="left")
+                  self.button(rule_actions, "清除素材", self.clear_media, danger=True, padx=8, pady=4).pack(side="right")
+                  self.media_status_label = self.label(rules, size=8, color="muted", textvariable=self.media_status_var,
+                                                       width=1, anchor="w", wraplength=1, justify="left")
+                  self.media_status_label.pack(fill="x", padx=7, pady=(4, 5))
+                  self.media_status_label.bind("<Configure>", lambda event: self.media_status_label.configure(wraplength=max(1, event.width)))
+
+                  log_card = self.log_card = self.card(main)
+                  log_card.grid(row=3, column=0, sticky="ew", pady=(7, 0))
+                  self.label(log_card, "运行日志", 9, bold=True).pack(side="left", padx=10)
+                  log_scroll = ttk.Scrollbar(log_card)
+                  log_scroll.pack(side="right", fill="y")
                   self.log_text = tk.Text(log_card, height=2, width=1, wrap="word", bg=COLORS["card"], fg=COLORS["muted"],
-                                          relief="flat", state="disabled", font=("Consolas", 9), padx=14, pady=4)
-                  self.label(main, size=9, color="muted", textvariable=self.toast_var, anchor="w").pack(fill="x", pady=(8, 0))
-                  footer = tk.Frame(main, bg=COLORS["bg"])
-                  footer.pack(fill="x", pady=(5, 0))
-                  self.label(footer, size=9, color="muted", textvariable=self.local_time_var).pack(side="right")
-                  self.label(footer, size=9, color="muted", textvariable=self.runtime_var).pack(side="left")
-                  self.button(footer, "计时设置", self.open_runtime_settings, padx=8, pady=2).pack(side="left", padx=10)
+                                          relief="flat", state="disabled", font=("Consolas", 8), padx=5, pady=5,
+                                          yscrollcommand=log_scroll.set)
+                  self.log_text.pack(side="left", fill="both", expand=True)
+                  log_scroll.configure(command=self.log_text.yview)
+                  controls = self.controls_card = self.card(main)
+                  controls.grid(row=4, column=0, sticky="ew", pady=(7, 0))
+                  actions = self.task_actions = tk.Frame(controls, bg=COLORS["card"])
+                  actions.pack(side="left", padx=10, pady=9)
+                  self.start_button = self.button(actions, "开始群发", self.start, primary=True, padx=20, pady=7)
+                  self.start_button.pack(side="left")
+                  self.pause_button = self.button(actions, "暂停", self.toggle_pause, state="disabled", padx=12, pady=7)
+                  self.pause_button.pack(side="left", padx=7)
+                  self.stop_button = self.button(actions, "停止", self.stop, danger=True, state="disabled", padx=12, pady=7)
+                  self.stop_button.pack(side="left")
+                  progress = tk.Frame(controls, bg=COLORS["card"])
+                  progress.pack(side="left", fill="both", expand=True, padx=(0, 12), pady=7)
+                  ttk.Progressbar(progress, variable=self.progress_var, maximum=100).pack(fill="x", pady=(0, 4))
+                  progress_label = self.label(progress, size=8, color="muted", textvariable=self.progress_text,
+                                               width=1, anchor="w", wraplength=1, justify="left")
+                  progress_label.pack(fill="x")
+                  progress_label.bind("<Configure>", lambda event: progress_label.configure(wraplength=max(1, event.width)))
+                  self.label(main, size=8, color="muted", textvariable=self.toast_var, anchor="w").grid(
+                      row=5, column=0, sticky="ew", pady=(5, 0))
+                  footer = self.footer = tk.Frame(main, bg=COLORS["bg"])
+                  footer.grid(row=6, column=0, sticky="ew", pady=(3, 0))
+                  self.local_time_label = self.label(footer, size=8, color="muted", textvariable=self.local_time_var)
+                  self.local_time_label.pack(side="right")
+                  self.runtime_label = self.label(footer, size=8, color="muted", textvariable=self.runtime_var)
+                  self.runtime_label.pack(side="left")
                   self.update_preview()
 
-              def toggle_list_width(self) -> None:
-                  self.list_expanded = not self.list_expanded
-                  if self.list_expanded:
-                      self.compose_shell.grid_remove()
-                      self.body.columnconfigure(1, minsize=0, weight=0)
-                  else:
-                      self.compose_shell.grid()
-                      self.body.columnconfigure(1, minsize=355, weight=0)
-                  self.expand_list_button.configure(text="恢复双栏" if self.list_expanded else "全宽名单")
-
               def focus_editor(self) -> None:
-                  if self.list_expanded:
-                      self.toggle_list_width()
-                  self.compose_tabs.select(self.message_tab)
-                  self.compose_canvas.yview_moveto(0)
                   self.message.focus_set()
-
-              def toggle_logs(self) -> None:
-                  self.log_expanded = not self.log_expanded
-                  if self.log_expanded:
-                      self.log_text.pack(fill="x", pady=(0, 8))
-                  else:
-                      self.log_text.pack_forget()
-                  self.log_toggle_button.configure(text="收起日志" if self.log_expanded else "展开日志")
 
               def refresh_clock_labels(self) -> None:
                   self.local_time_var.set(datetime.now().strftime("本地时间：%Y-%m-%d %H:%M:%S"))
@@ -1383,6 +1296,12 @@ jobs:
               def tick_clock(self) -> None:
                   self.clock_timer = None
                   self.refresh_clock_labels()
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (6/11)
+        run: |
+          $payload = @'
                   self.clock_timer = self.root.after(1000, self.tick_clock)
 
               def apply_runtime_duration(self, seconds: int) -> None:
@@ -1456,11 +1375,8 @@ jobs:
 
               def reveal_media_preview(self) -> None:
                   self.media_reveal_timer = None
-                  if self.list_expanded:
-                      self.toggle_list_width()
-                  self.compose_tabs.select(self.media_tab)
                   self.root.update_idletasks()
-                  self.media_settings_canvas.yview_moveto(0)
+                  self.render_media_cover()
 
               def reset_media_preview(self, placeholder: str = "导入媒体后显示预览") -> None:
                   self.media_preview_loader.cancel()
@@ -1529,12 +1445,6 @@ jobs:
                   photo = ImageTk.PhotoImage(image, master=self.root)
                   x, y = max(12, (width - image.width) / 2), max(12, (height - image.height) / 2)
                   canvas.create_rectangle(x - 1, y - 1, x + image.width + 1, y + image.height + 1,
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (7/11)
-        run: |
-          $payload = @'
                                           outline="#3C5269", width=1)
                   canvas.create_image(x, y, image=photo, anchor="nw", tags=("cover_image",))
                   canvas.preview_scale = image.width / source.width
@@ -1621,6 +1531,12 @@ jobs:
                   dialog = self.media_preview_dialog = tk.Toplevel(self.root)
                   dialog.title("视频封面预览" if self.media_asset.kind == "视频" else "图片预览")
                   dialog.configure(bg=COLORS["card"])
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (7/11)
+        run: |
+          $payload = @'
                   dialog.transient(self.root)
                   portrait = self.media_preview_source.height > self.media_preview_source.width
                   width = min(720 if portrait else 1120, max(480, self.root.winfo_screenwidth() - 80))
@@ -1749,12 +1665,6 @@ jobs:
                   self.media_timer = None
                   task = self.media_queue.process_next()
                   if task is not None:
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (8/11)
-        run: |
-          $payload = @'
                       detail = f"{task.recipient.nickname or task.recipient.douyin_id} ({task.recipient.douyin_id}) · {task.asset.name} · {task.status}"
                       self.log("媒体", detail + (f"：{task.error}" if task.error else ""))
                   self.refresh_media_status()
@@ -1848,6 +1758,12 @@ jobs:
                       except (ValueError, OSError) as exc:
                           messagebox.showerror("保存失败", str(exc), parent=dialog)
                           return
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (8/11)
+        run: |
+          $payload = @'
                       close_dialog()
 
                   def clear_fields():
@@ -1993,12 +1909,6 @@ jobs:
                   self.sort_descending = False
                   self.refresh_table()
 
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (9/11)
-        run: |
-          $payload = @'
               def sort_by(self, column: str) -> None:
                   self.sort_descending = not self.sort_descending if self.sort_column == column else False
                   self.sort_column = column
@@ -2097,6 +2007,12 @@ jobs:
                   if self.session.active:
                       return
                   sample = [Recipient(f"demo_{i:03d}", f"示例用户 {i:02d}", ["示例名单"], "女" if i % 2 else "男", 18 + i * 3,
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (9/11)
+        run: |
+          $payload = @'
                                       "江苏 镇江" if i % 2 else "上海 静安", "江苏" if i % 2 else "上海") for i in range(1, 7)]
                   new, duplicate = merge_records(self.records, sample)
                   self.import_duplicates += duplicate
@@ -2262,12 +2178,6 @@ jobs:
               def export_logs(self) -> None:
                   filename = filedialog.asksaveasfilename(title="导出运行日志", defaultextension=".csv",
                                                          initialfile=f"群发日志_{datetime.now():%Y%m%d_%H%M%S}.csv",
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (10/11)
-        run: |
-          $payload = @'
                                                          filetypes=[("CSV 日志", "*.csv")])
                   if not filename:
                       return
@@ -2328,16 +2238,66 @@ jobs:
                   assert app.local_time_var.get().startswith("本地时间：")
                   parsed_time = datetime.strptime(app.local_time_var.get().split("：", 1)[1], "%Y-%m-%d %H:%M:%S")
                   assert abs((datetime.now() - parsed_time).total_seconds()) < 3
-                  old_width = app.table.winfo_width()
-                  app.toggle_list_width()
-                  root.update_idletasks()
-                  assert app.list_expanded and app.table.winfo_width() >= old_width
+                  layout_snapshots = []
+
+                  def assert_flat_layout():
+                      root.update_idletasks()
+                      essential = {
+                          "recipient_list": app.list_card, "message_panel": app.message_card,
+                          "media_panel": app.media_section, "message_editor": app.message,
+                          "message_preview": app.preview, "recipient_table": app.table,
+                          "video_cover": app.media_cover_canvas, "follow_media_rule": app.media_rule_check,
+                          "media_status": app.media_status_label, "import_media": app.media_import_button,
+                          "task_scope": app.scope_combo, "send_interval": app.interval_spin,
+                          "action_bar": app.controls_card, "start_button": app.start_button,
+                          "pause_button": app.pause_button, "stop_button": app.stop_button,
+                          "logs": app.log_text, "footer": app.footer,
+                          "local_time": app.local_time_label, "runtime": app.runtime_label,
+                      }
+                      snapshot = {"window": root.geometry(), "all_sections_visible": False,
+                                  "video_preview": [app.media_cover_canvas.winfo_width(), app.media_cover_canvas.winfo_height()],
+                                  "sections": {name: {"mapped": bool(widget.winfo_ismapped()),
+                                                      "x": widget.winfo_rootx() - root.winfo_rootx(),
+                                                      "y": widget.winfo_rooty() - root.winfo_rooty(),
+                                                      "width": widget.winfo_width(), "height": widget.winfo_height()}
+                                               for name, widget in essential.items()}}
+                      layout_snapshots.append(snapshot)
+                      try:
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (10/11)
+        run: |
+          $payload = @'
+                          for name, widget in essential.items():
+                              assert widget.winfo_ismapped(), f"Hidden section: {name} ({widget})"
+                              assert widget.winfo_width() > 0 and widget.winfo_height() > 0, f"Empty section: {name}"
+                              child = widget
+                              while child is not root:
+                                  parent = child.master
+                                  x = child.winfo_rootx() - parent.winfo_rootx()
+                                  y = child.winfo_rooty() - parent.winfo_rooty()
+                                  assert x >= -2 and y >= -2, f"Section starts outside parent: {name} ({child})"
+                                  assert x + child.winfo_width() <= parent.winfo_width() + 2, f"Section clipped horizontally: {name} ({child})"
+                                  assert y + child.winfo_height() <= parent.winfo_height() + 2, f"Section clipped vertically: {name} ({child})"
+                                  child = parent
+                          assert app.media_cover_canvas.winfo_height() >= 80, "Video cover is shorter than 80 pixels"
+                      except AssertionError as exc:
+                          report_path.write_text(json.dumps({"ok": False, "version": VERSION, "error": str(exc),
+                                                             "layout_checks": layout_snapshots}, ensure_ascii=False, indent=2),
+                                                 encoding="utf-8")
+                          raise
+                      pending = [root]
+                      while pending:
+                          widget = pending.pop()
+                          assert not isinstance(widget, ttk.Notebook), "Tab navigation returned to the main window"
+                          if isinstance(widget, tk.Button):
+                              assert widget.cget("text") not in {"展开日志", "收起日志", "全宽名单", "恢复双栏"}
+                          pending.extend(widget.winfo_children())
+                      snapshot["all_sections_visible"] = True
+
                   app.focus_editor()
-                  assert not app.list_expanded
-                  assert not app.log_expanded
-                  app.toggle_logs()
-                  assert app.log_expanded
-                  app.toggle_logs()
+                  assert_flat_layout()
                   first_list = Path(profile_directory.name) / "接收人完整文件名称_含资料地区及IP属地_第一批_需要完整显示的名单.txt"
                   second_list = Path(profile_directory.name) / "接收人完整文件名称_第二批_表格资料.csv"
                   missing_list = Path(profile_directory.name) / "不存在的文件.txt"
@@ -2351,11 +2311,12 @@ jobs:
                   assert missing_list.name not in app.imported_names_var.get()
                   assert app.import_paths([first_list]) == [] and len(app.imported_files) == 2
                   app.session.statuses.update({"fixture_001": "已处理", "fixture_002": "等待处理"})
-                  for geometry in ("1060x760", "1280x860", "1540x940"):
+                  for geometry in ("1060x680", "1060x700", "1060x760", "1280x860", "1540x940"):
                       root.geometry(geometry)
                       root.update()
                       app.relayout_table()
                       root.update_idletasks()
+                      assert_flat_layout()
                       viewport = app.table.winfo_width()
                       assert sum(app.table.column(key, "width") for key in TABLE_COLUMNS) <= viewport - 4
                       assert app.table.xview() == (0.0, 1.0)
@@ -2474,7 +2435,7 @@ jobs:
 
                   root.deiconify()
                   app.focus_editor()
-                  assert app.compose_tabs.select() == str(app.message_tab)
+                  assert_flat_layout()
                   app.set_media_file(red_video)
                   assert app.media_preview_source is None
                   assert str(app.media_cover_button.cget("state")) == "disabled"
@@ -2482,14 +2443,14 @@ jobs:
                   assert app.media_preview_source is not None
                   assert app.media_name_var.get() == red_video.name
                   assert str(app.media_cover_button.cget("state")) == "normal"
-                  assert app.compose_tabs.select() == str(app.media_tab)
+                  assert_flat_layout()
                   picture = app.media_preview_source
                   assert picture.size == (1920, 1080)
                   pixel = picture.getpixel((picture.width // 2, picture.height // 2))
                   assert pixel[0] > 180 and pixel[1] < 80 and pixel[2] < 80
                   assert app.media_preview_photo.width() <= app.media_cover_canvas.winfo_width() - 24
                   assert app.media_preview_photo.height() <= app.media_cover_canvas.winfo_height() - 24
-                  assert int(app.media_cover_canvas.cget("height")) >= 240
+                  assert app.media_cover_canvas.winfo_height() >= 80
                   dialog = app.open_media_preview()
                   root.update()
                   assert dialog is app.media_preview_dialog and dialog.title() == "视频封面预览"
@@ -2502,12 +2463,6 @@ jobs:
                   picture = app.media_preview_source
                   assert picture is not None and picture.size == (1080, 1920)
                   assert app.media_dimensions_var.get() == "1080 × 1920 · 9:16 竖屏"
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (11/11)
-        run: |
-          $payload = @'
                   pixel = picture.getpixel((picture.width // 2, picture.height // 2))
                   assert pixel[2] > 180 and pixel[0] < 80 and pixel[1] < 80
                   portrait_dialog = app.open_media_preview()
@@ -2535,6 +2490,12 @@ jobs:
                   app.set_media_file(red_video)
                   app.clear_media()
                   root.update()
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (11/11)
+        run: |
+          $payload = @'
                   assert app.media_preview_source is None and not app.media_preview_loader.pending
                   assert app.media_preview_timer is None
                   audio_path = Path(profile_directory.name) / "关注音频.mp3"
@@ -2566,17 +2527,19 @@ jobs:
                   assert app.media_asset is None and not app.follow_media_var.get()
                   report_path.write_text(json.dumps({"ok": True, "mode": "local_queue", "version": VERSION,
                                                      "tk_version": root.tk.call("info", "patchlevel"),
+                                                     "layout_checks": layout_snapshots,
                                                      "checks": ["widgets", "account_dialog", "account_save", "account_mask", "account_hide",
                                                                 "sample_import", "start", "pause", "resume", "stop", "complete", "filter",
                                                                 "metadata_columns", "combined_filters", "age_sort", "details", "target_scope",
-                                                                "invalid_age_range", "empty_filter_result", "wide_list", "collapsible_logs",
+                                                                "invalid_age_range", "empty_filter_result", "flat_three_column_layout", "always_visible_logs",
+                                                                "always_visible_action_bar", "always_visible_clocks", "minimum_window_layout",
                                                                 "local_clock", "custom_runtime", "media_filename", "follow_receipts",
                                                                 "media_deduplication", "media_cancel", "adaptive_columns", "status_visible",
                                                                 "complete_cell_wrapping", "imported_filenames", "partial_import",
                                                                 "filename_clear", "compact_stats", "region_aliases", "real_video_cover",
                                                                 "portrait_video_cover", "cover_enlargement", "cover_switch",
                                                                 "cover_clear", "audio_placeholder", "corrupt_cover_error", "image_cover",
-                                                                "fullhd_frame", "portrait_media_tab", "original_zoom", "original_scroll",
+                                                                "fullhd_frame", "always_visible_video", "original_zoom", "original_scroll",
                                                                 "smooth_preview", "fit_zoom"]},
                                                     ensure_ascii=False, indent=2), encoding="utf-8")
               finally:
@@ -3381,7 +3344,7 @@ jobs:
 
           1. 打开自己的 GitHub 仓库，在**默认分支**选择 **Add file → Create new file**。
           2. 文件名填写 `.github/workflows/build-windows.yml`。
-          3. 将交付的 `build-windows.yml` 全文粘贴进去，提交保存。文件中已经包含完整程序源码和测试，不需要再上传 Python 源码、名单或安装包。
+          3. 将交付的 `build-windows.yml` 全文粘贴进去，提交保存；更新时编辑并覆盖原文件。不要另外保留 `build-windows (2).yml` 等旧版本副本，否则每个副本都会触发构建。文件中已经包含完整程序源码和测试，不需要再上传 Python 源码、名单或安装包。
           4. 提交此工作流文件后会自动构建。也可打开 **Actions → Build Windows App → Run workflow → Run workflow** 手动运行。
           5. 构建成功后，在该次运行页面底部的 **Artifacts** 下载 `DouyinSender-Windows-x64`。
           6. 解压后双击 `DouyinSender.exe`。目标环境为 Windows 10 / 11 64 位，无需安装 Python。
@@ -3390,7 +3353,8 @@ jobs:
           已移除固定文件名的路径限制，工作流文件可使用其他 `.yml` 或 `.yaml` 文件名，但必须位于仓库的 `.github/workflows/` 目录。
           上传后需点击“Commit changes”完成提交，并在仓库设置中允许 GitHub Actions 运行。
           工作流使用 Windows 环境构建，并依次执行解析/队列测试、源码 GUI 检查、打包后的 EXE GUI 检查。
-          若某项检查失败，该次运行不会发布 EXE 下载产物。`smoke-source.json` 和 `smoke-exe.json` 记录成功检查结果。
+          若某项检查失败，该次运行不会发布 EXE 下载产物。`smoke-source.json` 和 `smoke-exe.json` 记录检查结果。
+          失败时会额外上传 `DouyinSender-diagnostics-…`，其中保存已有的检查报告和错误日志；具体报错也可在红色失败步骤中查看。
 
           ## 导入你的四份名单
 
@@ -3462,9 +3426,8 @@ jobs:
 
           ## v1.5.0 列表、媒体规则和计时
 
-          接收人列表采用更紧凑的行高，右侧设置区可滚动，操作按钮始终保留在下方。
-          点击“全宽名单”可将名单扩展至整个工作区，点击“恢复双栏”或左侧“群发任务”可回到编辑区。
-          日志默认折叠，可点“展开日志”查看；全部记录仍可正常导出。
+          接收人列表采用紧凑行高，名单、消息和媒体按 v1.9.0 的三栏布局同时显示。
+          日志与操作按钮固定在主界面下方，记录支持滚动查看和导出。
 
           在“关注后媒体”中点击“导入媒体”可选择图片、视频或音频，界面显示完整文件名、类型与大小。
           勾选“对方关注后发送媒体文件”后，点击“关注回执”导入回执 TXT / CSV / TSV；回执 ID 与当前任务范围匹配后，自动加入本地媒体任务队列。
@@ -3486,7 +3449,7 @@ jobs:
           ## v1.6.0 完整名单显示与导入修正
 
           名单表格采用 9 号字体，状态列保留“等待处理”等状态所需的宽度，所有列始终放在当前表格宽度内。
-          较长的昵称、抖音号、资料地区和来源自动换行，行高随完整内容调整；窗口缩放或切换“全宽名单”后重新分配列宽。
+          较长的昵称、抖音号、资料地区和来源自动换行，行高随完整内容调整；窗口缩放时重新分配列宽。
           统计卡片改为单行的小字号布局，为下方名单留出空间。
 
           “导入名单”按钮左侧显示成功导入的完整文件名，多文件逐一列出；长文件名自动换行，不使用省略号。
@@ -3504,7 +3467,7 @@ jobs:
 
           ## v1.7.0 视频封面与媒体预览
 
-          导入视频后，“媒体素材”页签会显示该视频的实际画面，并自动切换到该页签。
+          导入视频后，主界面右侧“媒体素材”面板直接显示该视频的实际画面。
           上方显示完整文件名，下方显示文件类型与大小，方便确认当前选中的视频。
           封面从视频前段画面中提取，横屏与竖屏均保持原有比例；点击封面或“高清预览”可打开放大的预览窗口。
           导入图片时显示图片预览；音频显示对应文件信息与音频占位提示。
@@ -3522,10 +3485,10 @@ jobs:
           较大的画面等比缩至最长边 1920 像素；较小的画面保持原尺寸。
           缩略预览从完整封面使用 Lanczos 高质量缩放，替代原来的整数抽样，减少细线和文字的锯齿。
 
-          右侧工作区采用“消息内容 / 媒体素材”两个页签，媒体页单独提供更高的封面展示区。
+          媒体面板提供独立的竖屏封面展示区，与消息内容同时显示。
           封面区域高度随窗口调整；完整文件名、类型、大小、封面尺寸与横竖屏信息集中显示。
           发送规则与关注回执置于独立卡片，导入后按钮切换为“更换文件”。
-          整体采用深蓝底色、分层卡片和薄荷绿操作强调色，统一页签、边框、文字与间距。
+          整体采用深蓝底色、分层卡片和薄荷绿操作强调色，统一边框、文字与间距。
 
           点击“高清预览”打开大图：竖屏素材使用更高的预览窗口。
           “适应窗口”完整显示封面；“100% 原尺寸”逐像素显示，可用滚动条、鼠标滚轮或按住拖动查看细节。
@@ -3533,8 +3496,32 @@ jobs:
           切换模式与调整窗口时始终从完整封面渲染。
 
           当前包含 69 项逻辑检查，覆盖真实 1080×1920 / 1920×1080 视频取帧、缩放、细条纹平滑、四角完整性与原尺寸像素保留。
-          Windows 源码及 EXE 检查另行验证页签切换、高清预览、100% 模式和滚动；实际结果由 GitHub Actions 运行后生成。
+          Windows 源码及 EXE 检查另行验证各区域同屏显示、高清预览、100% 模式和滚动；实际结果由 GitHub Actions 运行后生成。
           构建会一并打包 Pillow 13.0.0 和 FFmpeg 读取组件。
+
+          ## v1.9.0 主界面全部平铺
+
+          主界面采用固定三栏：左侧接收人名单，中间群发内容与消息预览，右侧视频封面与关注后发送规则。
+          视频画面完整等比显示在右侧，可直接确认当前素材；“高清预览”用于额外查看原尺寸细节。
+          所有面板同时可见，主界面不再设置页签、展开 / 收起或隐藏区域的按钮。
+          取消左侧大导航栏，将账号设置、计时设置和导出日志放在顶部，为名单和视频腾出宽度。
+
+          运行日志常驻下方；开始、暂停、停止和进度条放在独立的底部操作栏。
+          名单、日志和文字框可在各自区域滚动，主界面使用固定网格排版。
+          默认窗口宽度可达 1800 像素，三个面板随窗口分配空间，封面随可用空间等比调整。
+          导入视频只更新右侧画面，消息内容和名单保持同屏显示。
+
+          保留 69 项逻辑检查。Windows 源码和 EXE 检查会在四种窗口尺寸下逐一检查主要控件可见且位于父容器内，
+          并确认没有页签或折叠按钮；检查结果写入构建产物的 `smoke-source.json` 与 `smoke-exe.json`。
+
+          ## v1.9.1 小窗口布局修复
+
+          修复 Windows 检查中的 `Hidden section` 错误：主容器改用网格，只有三栏工作区伸缩，
+          底部日志、开始 / 暂停 / 停止、进度条和时间栏各自保留高度，避免被内容区挤出窗口。
+          名单、内容编辑与视频封面仍在同一个界面直接显示。
+
+          Windows 源码和 EXE 检查新增 1060 × 680 最小窗口，保留另外四种窗口尺寸检查，
+          同时验证操作栏、本地时间和运行时间完整显示。失败报告会记录控件名称、位置和尺寸，便于定位。
 
           ## 本地运行与构建
 
@@ -3554,8 +3541,10 @@ jobs:
 
           ## 当前验证范围
 
-          交付前已在当前环境执行名单解析和任务队列逻辑测试，并检查 YML 与内嵌源码一致性。
-          当前环境没有 Windows，Windows GUI 和 EXE 检查会在你手动运行 GitHub Actions 后实际执行。
+          交付前已通过 69 项逻辑测试和 YML 内嵌源码一致性校验。
+          另在 Linux 的 Tk 8.6 中文界面中复现旧版 `Hidden section` 错误，修复版通过完整源码 GUI 检查，
+          覆盖 1280 × 768 小屏、1060 × 680 最小窗口及另外四种窗口尺寸，验证底部操作栏、时间和视频封面可见。
+          当前环境没有 Windows，Windows GUI 和 EXE 检查会在你上传更新、提交工作流后实际执行。
           当前交付物是源码与编译配置；EXE 由该工作流成功运行后生成。
 
           ## 官方参考
@@ -3652,3 +3641,23 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 6
+
+      - name: Collect failure diagnostics
+        if: failure()
+        run: |
+          New-Item -ItemType Directory -Force -Path diagnostics | Out-Null
+          foreach ($report in @('smoke-source.json', 'smoke-exe.json')) {
+            if (Test-Path $report) { Copy-Item $report -Destination diagnostics }
+          }
+          $errorLog = Join-Path $env:TEMP 'douyin-sender-error.log'
+          if (Test-Path $errorLog) { Copy-Item $errorLog -Destination diagnostics }
+          'See the first failed step in the Actions job log for its traceback.' | Set-Content diagnostics/README.txt -Encoding utf8
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: DouyinSender-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
