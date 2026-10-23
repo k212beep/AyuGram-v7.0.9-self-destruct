@@ -1,7 +1,7 @@
 # Upload this single file as .github/workflows/build-windows.yml
 # It embeds all source and uses no real recipient data, Secrets, or account logins.
 name: Build Windows App
-run-name: Windows v1.11.0 · ${{ github.ref_name }}
+run-name: Windows v1.11.1 · ${{ github.ref_name }}
 
 on:
   push:
@@ -32,7 +32,7 @@ jobs:
           architecture: x64
 
 
-      - name: Write embedded app.py (1/14)
+      - name: Write embedded app.py (1/15)
         run: |
           $payload = @'
           """Desktop messaging workbench with a local task queue."""
@@ -62,7 +62,7 @@ jobs:
 
 
           APP_NAME = "抖音群发工作台"
-          VERSION = "1.11.0"
+          VERSION = "1.11.1"
           UI_SCALE = 0.85
           MAX_FILE_BYTES = 5 * 1024 * 1024
           MAX_RECIPIENTS = 20000
@@ -359,7 +359,7 @@ jobs:
           '@
           [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded app.py (2/14)
+      - name: Write embedded app.py (2/15)
         run: |
           $payload = @'
                   process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -686,7 +686,7 @@ jobs:
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded app.py (3/14)
+      - name: Write embedded app.py (3/15)
         run: |
           $payload = @'
               value = re.split(r"[（(]", value, maxsplit=1)[0].strip(" \t\u3000:：=,，;；|")
@@ -933,7 +933,7 @@ jobs:
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded app.py (4/14)
+      - name: Write embedded app.py (4/15)
         run: |
           $payload = @'
                       result = read_list(path)
@@ -1217,7 +1217,7 @@ jobs:
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded app.py (5/14)
+      - name: Write embedded app.py (5/15)
         run: |
           $payload = @'
                   self.region_var = tk.StringVar()
@@ -1413,7 +1413,7 @@ jobs:
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded app.py (6/14)
+      - name: Write embedded app.py (6/15)
         run: |
           $payload = @'
                   self.import_button.grid(row=1, column=1, sticky="ne")
@@ -1573,7 +1573,7 @@ jobs:
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded app.py (7/14)
+      - name: Write embedded app.py (7/15)
         run: |
           $payload = @'
                   self.log_text = tk.Text(log_card, height=2, width=1, wrap="word", bg=COLORS["card"], fg=COLORS["muted"],
@@ -1642,8 +1642,6 @@ jobs:
                   dialog.title("资料采集 · 名单导入")
                   dialog.configure(bg=COLORS["card"])
                   dialog.transient(self.root)
-                  dialog.geometry(f"{ui_pixels(820)}x{ui_pixels(660)}")
-                  dialog.minsize(ui_pixels(760), ui_pixels(620))
                   content = tk.Frame(dialog, bg=COLORS["card"])
                   content.pack(fill="both", expand=True, padx=20, pady=16)
                   content.columnconfigure(0, weight=1)
@@ -1720,6 +1718,13 @@ jobs:
                   self.scale_ui(dialog)
                   self.refresh_collection_files()
                   self.sync_collection_controls()
+                  # Windows font metrics can require more height than the nominal scaled
+                  # size. Measure the complete form after scaling before allowing resize.
+                  dialog.update_idletasks()
+                  minimum_width = max(ui_pixels(760), dialog.winfo_reqwidth())
+                  minimum_height = max(ui_pixels(620), dialog.winfo_reqheight())
+                  dialog.minsize(minimum_width, minimum_height)
+                  dialog.geometry(f"{max(ui_pixels(820), minimum_width)}x{max(ui_pixels(660), minimum_height)}")
                   self.collection_target_entry.focus_set()
 
               def close_collection(self) -> None:
@@ -1748,6 +1753,12 @@ jobs:
                   self.collection_file_text.delete("1.0", "end")
                   self.collection_file_text.insert("1.0", "\n".join(path.name for path in self.collection_paths)
                                                    or "支持 TXT、CSV、TSV；按所选类型归入评论区、粉丝或关注名单。")
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (8/15)
+        run: |
+          $payload = @'
                   self.collection_file_text.configure(state="disabled")
 
               def set_collection_paths(self, paths) -> None:
@@ -1757,12 +1768,6 @@ jobs:
                   self.collection_saved_path = None
                   self.collection_saved_var.set("尚未保存文件")
                   self.collection_status_var.set("待导入")
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (8/14)
-        run: |
-          $payload = @'
                   self.collection_status_color = "muted"
                   self.collection_detail_var.set("已选择名单，点击“导入并保存”开始。")
                   self.refresh_collection_files()
@@ -1986,6 +1991,12 @@ jobs:
                               if inspect_media(result.asset.path) != result.asset:
                                   raise ValueError("媒体文件已变更，请重新导入。")
                               self.media_preview_source = decode_cover_image(result.png)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (9/15)
+        run: |
+          $payload = @'
                           except (tk.TclError, OSError, ValueError):
                               error = "封面无法显示或文件已变更，请重新导入。"
                       if error:
@@ -1994,12 +2005,6 @@ jobs:
                           self.media_dimensions_var.set("画面尺寸暂不可用")
                           self.media_cover_state_var.set(error)
                           self.media_cover_state_label.configure(fg=COLORS["red"])
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (9/14)
-        run: |
-          $payload = @'
                           self.log("媒体", f"{result.asset.name}：{error}")
                       else:
                           caption = "视频封面" if result.asset.kind == "视频" else "图片预览"
@@ -2202,6 +2207,12 @@ jobs:
                   self.media_status_var.set(f"{state}\n待处理 {len(self.media_queue.pending)} · 已处理 {self.media_queue.completed} · 异常 {self.media_queue.failed}")
                   self.stop_button.configure(state="normal" if self.session.active or self.media_queue.pending else "disabled")
 
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (10/15)
+        run: |
+          $payload = @'
               def accept_follow_receipts(self, receipts: list[Recipient]) -> tuple[int, int, int]:
                   if not self.follow_media_var.get():
                       raise ValueError("请先启用“对方关注后发送媒体文件”。")
@@ -2209,12 +2220,6 @@ jobs:
                       raise ValueError("请先导入媒体文件。")
                   targets = {record.douyin_id: record for record in self.target_records()}
                   matched = [targets[receipt.douyin_id] for receipt in receipts if receipt.douyin_id in targets]
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (10/14)
-        run: |
-          $payload = @'
                   skipped = len(receipts) - len(matched)
                   added, duplicate = self.media_queue.submit(matched, self.media_asset)
                   self.log("关注", f"回执匹配后新增媒体任务 {added} 条，合并重复 {duplicate} 条，范围外 {skipped} 条。")
@@ -2450,17 +2455,17 @@ jobs:
                   for recipient in self.visible_records:
                       status = self.session.statuses.get(recipient.douyin_id, "待开始")
                       tag = "done" if status == "已处理" else "stopped" if status == "已停止" else ""
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (11/15)
+        run: |
+          $payload = @'
                       raw_values = (recipient.nickname or "未填写", recipient.douyin_id, recipient.gender or "未填写",
                                     str(recipient.age) if recipient.age is not None else "未填写", recipient.region or "未填写",
                                     recipient.ip_region or "未填写",
                                     str(recipient.comment_count) if recipient.comment_count is not None else "—",
                                     " / ".join(recipient.sources) or "未填写", status)
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (11/14)
-        run: |
-          $payload = @'
                       values = tuple(self.wrapped_table_text(value, max(1, self.table_widths[column] - 2 * ui_pixels(6)))
                                      if column in self.table_widths else value for column, value in zip(TABLE_COLUMNS, raw_values))
                       max_lines = max(max_lines, *(value.count("\n") + 1 for column, value in zip(TABLE_COLUMNS, values)
@@ -2689,6 +2694,12 @@ jobs:
                       interval = float(self.interval_var.get())
                       if not math.isfinite(interval) or not 0.1 <= interval <= 10:
                           raise ValueError("发送间隔请填写 0.1 至 10 秒之间的数字。")
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (12/15)
+        run: |
+          $payload = @'
                       targets = self.target_records()
                       self.session.start(targets, self.message.get("1.0", "end-1c"))
                   except ValueError as exc:
@@ -2698,12 +2709,6 @@ jobs:
                   self.set_busy(True)
                   self.refresh_table()
                   self.log("开始", f"任务已创建，范围：{self.scope_var.get()}，共 {len(targets)} 位接收人，间隔 {interval:g} 秒 / 人。")
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (12/14)
-        run: |
-          $payload = @'
                   self.toast_var.set("任务进行中 · 可随时暂停或停止")
                   self.update_stats()
                   self.schedule_tick()
@@ -2861,6 +2866,7 @@ jobs:
                   parsed_time = datetime.strptime(app.local_time_var.get().split("：", 1)[1], "%Y-%m-%d %H:%M:%S")
                   assert abs((datetime.now() - parsed_time).total_seconds()) < 3
                   layout_snapshots = []
+                  collection_layout_snapshots = []
 
                   def assert_flat_layout():
                       root.update_idletasks()
@@ -2924,6 +2930,12 @@ jobs:
                           assert 0 <= x and x + width <= app.table.winfo_width()
                           center = x + width // 2
                           assert app.table.identify_column(center) == f"#{index}"
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (13/15)
+        run: |
+          $payload = @'
                           assert any(app.table.identify_region(center, heading_y) == "heading" for heading_y in range(y))
                           assert str(app.table.heading(column, "anchor")) == str(app.table.column(column, "anchor")) == TABLE_ANCHORS[column]
                           assert "\n" not in app.table.heading(column, "text"), f"Heading wrapped: {column}"
@@ -2932,12 +2944,6 @@ jobs:
                   assert_flat_layout()
                   first_list = Path(profile_directory.name) / "接收人完整文件名称_含资料地区及IP属地_第一批_需要完整显示的名单.txt"
                   second_list = Path(profile_directory.name) / "接收人完整文件名称_第二批_表格资料.csv"
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (13/14)
-        run: |
-          $payload = @'
                   missing_list = Path(profile_directory.name) / "不存在的文件.txt"
                   first_list.write_text("昵称 完整昵称需要换行显示的联系人  女31岁  抖音号 fixture_001 资料位置：江苏 镇江 IP 属地：上海 评论次数 2 （江苏2次）", encoding="utf-8")
                   second_list.write_text("抖音 ID,昵称,资料 位置,IP归属地,评论次数\nfixture_002,联系人乙,西藏 阿里地区,江苏,10\n", encoding="utf-8-sig")
@@ -2994,22 +3000,47 @@ jobs:
                   def assert_collection_layout():
                       root.update_idletasks()
                       dialog = app.collection_dialog
-                      widgets = (app.collection_source_label, app.collection_target_entry, app.collection_lookup_button,
-                                 app.collection_file_text, app.collection_choose_button, app.collection_import_button,
-                                 app.collection_retry_button, app.collection_open_button, app.collection_status_label,
-                                 app.collection_detail_label, app.collection_saved_entry, app.collection_dialog_totals_label,
-                                 app.collection_back_button, *app.collection_type_buttons)
-                      for widget in widgets:
-                          assert widget.winfo_ismapped(), f"Hidden collection control: {widget}"
-                          child = widget
-                          while child is not dialog:
-                              parent = child.master
-                              x = child.winfo_rootx() - parent.winfo_rootx()
-                              y = child.winfo_rooty() - parent.winfo_rooty()
-                              assert x >= -2 and y >= -2
-                              assert x + child.winfo_width() <= parent.winfo_width() + 2, f"Collection control clipped horizontally: {widget}"
-                              assert y + child.winfo_height() <= parent.winfo_height() + 2, f"Collection control clipped vertically: {widget}"
-                              child = parent
+                      widgets = {
+                          "data_source": app.collection_source_label, "target": app.collection_target_entry,
+                          "lookup": app.collection_lookup_button, "files": app.collection_file_text,
+                          "choose_files": app.collection_choose_button, "import": app.collection_import_button,
+                          "retry": app.collection_retry_button, "open_folder": app.collection_open_button,
+                          "status": app.collection_status_label, "details": app.collection_detail_label,
+                          "saved_file": app.collection_saved_entry, "totals": app.collection_dialog_totals_label,
+                          "back": app.collection_back_button,
+                          **{kind: button for kind, button in zip(COLLECTION_TYPES, app.collection_type_buttons)},
+                      }
+                      snapshot = {"window": dialog.geometry(), "minimum": list(dialog.minsize()),
+                                  "requested": [dialog.winfo_reqwidth(), dialog.winfo_reqheight()],
+                                  "tk_scaling": float(root.tk.call("tk", "scaling")), "all_controls_visible": False,
+                                  "button_line_height": tkfont.Font(root=root, font=app.collection_back_button.cget("font")).metrics("linespace"),
+                                  "controls": {name: {"mapped": bool(widget.winfo_ismapped()),
+                                                       "x": widget.winfo_rootx() - dialog.winfo_rootx(),
+                                                       "y": widget.winfo_rooty() - dialog.winfo_rooty(),
+                                                       "width": widget.winfo_width(), "height": widget.winfo_height()}
+                                               for name, widget in widgets.items()}}
+                      collection_layout_snapshots.append(snapshot)
+                      try:
+                          for name, widget in widgets.items():
+                              assert widget.winfo_ismapped(), f"Hidden collection control: {name} ({widget})"
+                              child = widget
+                              while child is not dialog:
+                                  parent = child.master
+                                  x = child.winfo_rootx() - parent.winfo_rootx()
+                                  y = child.winfo_rooty() - parent.winfo_rooty()
+                                  assert x >= -2 and y >= -2, f"Collection control starts outside parent: {name}"
+                                  assert x + child.winfo_width() <= parent.winfo_width() + 2, f"Collection control clipped horizontally: {name}"
+                                  assert y + child.winfo_height() <= parent.winfo_height() + 2, f"Collection control clipped vertically: {name}"
+                                  child = parent
+                          assert dialog.minsize()[0] >= dialog.winfo_reqwidth(), "Collection minimum width is smaller than its form"
+                          assert dialog.minsize()[1] >= dialog.winfo_reqheight(), "Collection minimum height is smaller than its form"
+                          snapshot["all_controls_visible"] = True
+                      except AssertionError as exc:
+                          report_path.write_text(json.dumps({"ok": False, "version": VERSION, "error": str(exc),
+                                                             "layout_checks": layout_snapshots,
+                                                             "collection_layout_checks": collection_layout_snapshots},
+                                                            ensure_ascii=False, indent=2), encoding="utf-8")
+                          raise
                       assert app.collection_source_label.cget("text") == "数据来源：手动导入"
 
                   def wait_for_collection():
@@ -3070,11 +3101,44 @@ jobs:
                   assert "评论区 2 人" in app.collection_totals_var.get()
                   app.close_collection()
                   assert app.collection_dialog is None
+                  original_scale_ui = app.scale_ui
+                  normal_line_height = collection_layout_snapshots[-1]["button_line_height"]
+
+                  def scale_larger_collection_fonts(parent):
+                      original_scale_ui(parent)
+                      pending = [parent]
+                      while pending:
+                          widget = pending.pop()
+                          pending.extend(widget.winfo_children())
+                          if "font" in widget.configure():
+                              actual = tkfont.Font(root=root, font=widget.cget("font")).actual()
+                              size = round(actual["size"] * 1.25)
+                              widget.configure(font=(actual["family"], size, actual["weight"], actual["slant"]))
+
+                  try:
+                      # Exercise larger font metrics as well as the builder's native DPI.
+                      app.scale_ui = scale_larger_collection_fonts
+                      app.open_collection()
+                      root.update()
+                      assert_collection_layout()
+                      assert collection_layout_snapshots[-1]["button_line_height"] > normal_line_height
+                      app.collection_dialog.geometry(f"{ui_pixels(760)}x{ui_pixels(620)}")
+                      root.update()
+                      assert_collection_layout()
+                  finally:
+                      app.close_collection()
+                      app.scale_ui = original_scale_ui
                   assert_flat_layout()
                   original_confirm = messagebox.askyesno
                   try:
                       messagebox.askyesno = lambda *_args, **_kwargs: True
                       app.clear_list()
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (14/15)
+        run: |
+          $payload = @'
                   finally:
                       messagebox.askyesno = original_confirm
                   assert not app.records and not app.imported_files
@@ -3159,12 +3223,6 @@ jobs:
                   for path, size, color in ((red_video, "1920x1080", "red"), (blue_video, "1080x1920", "blue")):
                       subprocess.run([decoder, "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
                                       f"color=c={color}:s={size}:r=6:d=0.5", "-c:v", "mpeg4", "-q:v", "2",
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (14/14)
-        run: |
-          $payload = @'
                                       "-pix_fmt", "yuv420p", "-threads", "1", str(path)], check=True,
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15,
                                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -3268,6 +3326,7 @@ jobs:
                                                      "ui_scale": UI_SCALE,
                                                      "tk_version": root.tk.call("info", "patchlevel"),
                                                      "layout_checks": layout_snapshots,
+                                                     "collection_layout_checks": collection_layout_snapshots,
                                                      "checks": ["widgets", "account_dialog", "account_save", "account_mask", "account_hide",
                                                                 "sample_import", "start", "pause", "resume", "stop", "complete", "filter",
                                                                 "metadata_columns", "combined_filters", "age_sort", "details", "target_scope",
@@ -3275,7 +3334,8 @@ jobs:
                                                                 "always_visible_action_bar", "always_visible_clocks", "minimum_window_layout",
                                                                 "aligned_table_headings", "comment_count_import", "comment_count_numeric_sort",
                                                                 "comment_column_hide_show", "comment_column_settings", "proportional_ui_scale",
-                                                                "collection_dialog_layout", "local_account_lookup", "manual_data_source",
+                                                                "collection_dialog_layout", "collection_measured_minimum", "collection_larger_fonts",
+                                                                "local_account_lookup", "manual_data_source",
                                                                 "collection_failure_retry", "collection_csv_saved", "collection_three_categories",
                                                                 "collection_background_completion", "collection_category_counts",
                                                                 "local_clock", "custom_runtime", "media_filename", "follow_receipts",
@@ -3286,6 +3346,12 @@ jobs:
                                                                 "cover_clear", "audio_placeholder", "corrupt_cover_error", "image_cover",
                                                                 "fullhd_frame", "always_visible_video", "original_zoom", "original_scroll",
                                                                 "smooth_preview", "fit_zoom"]},
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (15/15)
+        run: |
+          $payload = @'
                                                     ensure_ascii=False, indent=2), encoding="utf-8")
               finally:
                   if "app" in locals():
@@ -4566,6 +4632,13 @@ jobs:
           同一人可以属于多个类别；统计数由导入资料产生，不代表平台账号的实际粉丝或关注总量。
           清空工作台后人数归零，已保存的 CSV 仍保留；重启后可重新导入这些文件恢复名单。
 
+          ## v1.11.1 采集窗口尺寸修复
+
+          v1.11.0 在 Windows 源码 GUI 检查中发现：采集窗口缩到固定最小高度后，“返回工作台”按钮超出容器下边界。
+          现在根据实际字体、缩放和全部控件的布局需求计算最小尺寸，默认尺寸也随之调整；主工作台的尺寸与三栏布局保留。
+          GUI 检查覆盖正常字体和放大 25% 后的采集窗口、缩到最小尺寸后的所有控件边界，仍保留完整可见性检查。
+          若检查失败，诊断报告会附带窗口尺寸、实际布局需求及各控件位置，便于核对。
+
           ## 本地运行与构建
 
           安装包含 Tkinter 的 Python 3.12 后：
@@ -4588,7 +4661,7 @@ jobs:
           另在 Linux 的 Tk 8.6 中文界面中通过完整源码 GUI 检查，覆盖 1280 × 768 小屏、901 × 578 最小窗口和多种窗口尺寸，
           验证表头和资料列对应、评论列隐藏 / 恢复、数字排序、缩放、底部操作栏、时间和视频封面可见。
           资料采集窗口另外检查本地抖音号查询、失败后真实重试、三种分类保存、保存文件可重新导入、
-          最小窗口控件完整显示，以及关闭采集窗口后后台任务正常完成。
+          最小窗口和放大字体下控件完整显示，以及关闭采集窗口后后台任务正常完成。
           已使用原有四份附件复核：282 条记录合并为 225 个 ID、57 条重复，评论区 14 人的评论次数全部读出。
           当前环境没有 Windows，Windows GUI 和 EXE 检查会在你上传更新、提交工作流后实际执行。
           当前交付物是源码与编译配置；EXE 由该工作流成功运行后生成。
