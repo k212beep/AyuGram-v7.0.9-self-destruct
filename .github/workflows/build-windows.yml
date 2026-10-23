@@ -31,7 +31,7 @@ jobs:
           architecture: x64
 
 
-      - name: Write embedded app.py (1/8)
+      - name: Write embedded app.py (1/9)
         run: |
           $payload = @'
           """Desktop messaging workbench with a local task queue."""
@@ -50,11 +50,12 @@ jobs:
           from collections import deque
           from dataclasses import dataclass, field
           from datetime import datetime
+          from functools import lru_cache
           from pathlib import Path
 
 
           APP_NAME = "抖音群发工作台"
-          VERSION = "1.5.0"
+          VERSION = "1.6.0"
           MAX_FILE_BYTES = 5 * 1024 * 1024
           MAX_RECIPIENTS = 20000
           MAX_MESSAGE = 200
@@ -65,18 +66,24 @@ jobs:
           }
           ID_RE = re.compile(r"(?=[A-Za-z0-9_.-]*[A-Za-z0-9])[A-Za-z0-9_.-]{1,64}\Z")
           LABELED_ID = re.compile(r"(?:抖音号|抖音ID|douyin[_ ]?id)\s*[:：=]?\s*([^\s,，;；]+)", re.I)
-          ID_HEADERS = {"抖音号", "抖音id", "douyin_id", "douyinid", "id", "账号"}
+          ID_HEADERS = {"抖音号", "抖音id", "douyinid", "id", "账号"}
           NAME_HEADERS = {"昵称", "nickname", "name", "姓名"}
           SOURCE_HEADERS = {"来源", "source", "分组"}
           GENDER_HEADERS = {"性别", "gender", "sex"}
           AGE_HEADERS = {"年龄", "age", "岁数"}
-          REGION_HEADERS = {"资料位置", "资料地区", "地区", "所在地", "region", "location"}
-          IP_REGION_HEADERS = {"ip属地", "ip地区", "ip_region", "ip_location"}
+          REGION_HEADERS = {"资料位置", "资料地区", "资料所在地", "资料所在地区", "个人资料位置", "个人资料地区",
+                            "个人地区", "地区", "所在地", "region", "location", "profileregion", "profilelocation"}
+          IP_REGION_HEADERS = {"ip属地", "ip归属地", "ip所在地", "ip地区", "ip位置", "ipregion", "iplocation"}
+          LOCATION_LABELS = re.compile(
+              r"(?P<ip>i\s*p\s*(?:归\s*属\s*地|属\s*地|所\s*在\s*地|地\s*区|位\s*置))|"
+              r"(?P<region>(?:个\s*人\s*)?资\s*料\s*(?:所\s*在\s*地(?:\s*区)?|位\s*置|地\s*区)|"
+              r"(?:所\s*在\s*地|地\s*区)(?=\s*[:：=]))|"
+              r"(?P<other>评\s*论\s*次\s*数|抖音号|抖音\s*ID|douyin[_ ]?id|昵\s*称|性\s*别|年\s*龄|来\s*源)", re.I)
           TABLE_COLUMNS = {
-              "name": ("昵称", 145, 100), "id": ("抖音号", 165, 120),
-              "gender": ("性别", 75, 65), "age": ("年龄", 75, 65),
-              "region": ("资料地区", 185, 125), "ip_region": ("IP属地", 130, 95),
-              "source": ("来源", 145, 95), "status": ("状态", 100, 85),
+              "name": ("昵称", 135, 60), "id": ("抖音号", 148, 76),
+              "gender": ("性别", 52, 44), "age": ("年龄", 52, 44),
+              "region": ("资料地区", 150, 74), "ip_region": ("IP属地", 110, 66),
+              "source": ("来源", 120, 64), "status": ("状态", 82, 76),
           }
           COLORS = {
               "bg": "#0B1019", "side": "#101722", "card": "#151E2C",
@@ -362,6 +369,76 @@ jobs:
               return "" if value.casefold() in {"", "空", "无", "未知", "不详", "未填写", "未填", "none", "null", "n/a", "-", "—"} else value
 
 
+          def normalize_header(value: str) -> str:
+              return re.sub(r"[\s_\-:：=]+", "", value.lstrip("\ufeff")).casefold()
+
+
+          def extract_locations(line: str) -> tuple[str, str]:
+              """End a location at the next field label, regardless of spacing/order."""
+              labels = list(LOCATION_LABELS.finditer(line))
+              values = {"region": "", "ip": ""}
+              for index, match in enumerate(labels):
+                  kind = match.lastgroup
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (2/9)
+        run: |
+          $payload = @'
+                  if kind not in values:
+                      continue
+                  end = labels[index + 1].start() if index + 1 < len(labels) else len(line)
+                  value = line[match.end():end].strip(" \t\u3000:：=,，;；|")
+                  value = optional_text(re.sub(r"[\s\u3000]+", " ", value))
+                  if value and not values[kind]:
+                      values[kind] = value
+              return values["region"], values["ip"]
+
+
+          def allocate_column_widths(available: int, minimums: dict[str, int] | None = None) -> dict[str, int]:
+              """Keep every column inside the viewport, reserving status width first."""
+              available = max(len(TABLE_COLUMNS), int(available))
+              minimums = {key: max(1, (minimums or {}).get(key, value[2])) for key, value in TABLE_COLUMNS.items()}
+              keys = list(TABLE_COLUMNS)
+              if available < sum(minimums.values()):
+                  status = min(minimums["status"], available - len(keys) + 1)
+                  keys.remove("status")
+                  budget = available - status - len(keys)
+                  weights = {key: minimums[key] for key in keys}
+                  widths = {"status": status, **{key: 1 for key in keys}}
+              else:
+                  widths = dict(minimums)
+                  budget = available - sum(widths.values())
+                  weights = {key: max(1, TABLE_COLUMNS[key][1] - minimums[key]) for key in keys}
+              total = sum(weights.values())
+              shares = {key: budget * weights[key] / total for key in keys}
+              for key in keys:
+                  widths[key] += int(shares[key])
+              remainder = available - sum(widths.values())
+              for key in sorted(keys, key=lambda key: shares[key] % 1, reverse=True)[:remainder]:
+                  widths[key] += 1
+              return {key: widths[key] for key in TABLE_COLUMNS}
+
+
+          def wrap_cell_text(value: str, max_width: int, measure) -> str:
+              """Wrap without deleting characters or shortening the displayed value."""
+              output = []
+              for paragraph in str(value).split("\n"):
+                  remaining = paragraph
+                  while remaining and measure(remaining) > max_width:
+                      low, high = 1, len(remaining)
+                      while low < high:
+                          middle = (low + high + 1) // 2
+                          if measure(remaining[:middle]) <= max_width:
+                              low = middle
+                          else:
+                              high = middle - 1
+                      output.append(remaining[:low])
+                      remaining = remaining[low:]
+                  output.append(remaining)
+              return "\n".join(output)
+
+
           def parse_age(value: str) -> int | None:
               match = re.fullmatch(r"(\d{1,3})\s*岁?", optional_text(value))
               if match and 0 <= int(match.group(1)) <= 150:
@@ -383,12 +460,6 @@ jobs:
                       setattr(current, name, getattr(incoming, name))
               if current.age is None and incoming.age is not None:
                   current.age = incoming.age
-          '@
-          [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (2/8)
-        run: |
-          $payload = @'
               for name in ("sources", "raw_details"):
                   target = getattr(current, name)
                   target.extend(value for value in getattr(incoming, name) if value not in target)
@@ -460,7 +531,7 @@ jobs:
               first = lines[0]
               delimiter = "\t" if "\t" in first else ("," if "," in first else "，")
               first_cells = next(csv.reader([first], delimiter=delimiter))
-              headers = [cell.strip().lower() for cell in first_cells]
+              headers = [normalize_header(cell) for cell in first_cells]
               headed = any(header in ID_HEADERS for header in headers)
               id_column = next((i for i, h in enumerate(headers) if h in ID_HEADERS), None)
               name_column = next((i for i, h in enumerate(headers) if h in NAME_HEADERS), None)
@@ -524,10 +595,8 @@ jobs:
                               gender = value[0] if value[0] in "男女" else ""
                               age_match = re.search(r"\d{1,3}\s*岁", value)
                               age = age_match.group(0) if age_match else ""
-                      region_match = re.search(r"(?:资料位置|资料地区)\s*[:：]?\s*(.*?)(?=\s{2,}(?:IP属地|评论次数)|$)", line)
-                      ip_match = re.search(r"IP属地\s*[:：]?\s*(.*?)(?=\s{2,}(?:资料位置|评论次数)|$)", line, re.I)
-                      add(match.group(1), nickname, source, gender, age,
-                          region_match.group(1) if region_match else "", ip_match.group(1) if ip_match else "", line)
+                      region, ip_region = extract_locations(line)
+                      add(match.group(1), nickname, source, gender, age, region, ip_region, line)
                   elif "昵称" in line or "资料位置" in line:
                       result.skipped += 1
                   else:
@@ -558,6 +627,12 @@ jobs:
                   else:
                       clone = Recipient(record.douyin_id, record.nickname, list(record.sources), record.gender, record.age,
                                         record.region, record.ip_region, list(record.raw_details))
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (3/9)
+        run: |
+          $payload = @'
                       existing.append(clone)
                       by_id[clone.douyin_id] = clone
                       added += 1
@@ -644,12 +719,6 @@ jobs:
               def stop(self) -> None:
                   if self.active:
                       self._freeze_clock()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (3/8)
-        run: |
-          $payload = @'
                       for recipient in self.queue[self.cursor:]:
                           self.statuses[recipient.douyin_id] = "已停止"
                       self.state = "stopped"
@@ -689,6 +758,10 @@ jobs:
                   self.log_expanded = False
                   self.account_display_var = tk.StringVar()
                   self.records: list[Recipient] = []
+                  self.imported_files: list[Path] = []
+                  self.imported_names_var = tk.StringVar(value="尚未导入文件")
+                  self.table_layout_timer = None
+                  self.table_widths: dict[str, int] = {}
                   self.session = Session()
                   self.logs: list[tuple[str, str, str]] = []
                   self.import_duplicates = 0
@@ -737,7 +810,14 @@ jobs:
                   self.tick_clock()
 
               def configure_styles(self) -> None:
+                  from tkinter import font as tkfont
+
                   style = ttk.Style(self.root)
+                  self.table_font = tkfont.Font(root=self.root, family="Microsoft YaHei UI", size=9)
+                  self.table_heading_font = tkfont.Font(root=self.root, family="Microsoft YaHei UI", size=8)
+                  self.measure_table_text = lru_cache(maxsize=100000)(self.table_font.measure)
+                  self.wrapped_table_text = lru_cache(maxsize=100000)(
+                      lambda value, width: wrap_cell_text(value, width, self.measure_table_text))
                   style.theme_use("clam")
                   style.configure("TFrame", background=COLORS["card"])
                   style.configure("TCombobox", fieldbackground=COLORS["input"], background=COLORS["line"],
@@ -747,9 +827,9 @@ jobs:
                             selectforeground=[("readonly", COLORS["text"])])
                   style.configure("Treeview", background=COLORS["input"], fieldbackground=COLORS["input"],
                                   foreground=COLORS["text"], rowheight=26, borderwidth=0,
-                                  font=("Microsoft YaHei UI", 10))
+                                  font=self.table_font)
                   style.configure("Treeview.Heading", background=COLORS["card"], foreground=COLORS["muted"],
-                                  relief="flat", padding=(8, 9), font=("Microsoft YaHei UI", 9))
+                                  relief="flat", padding=(3, 5), font=self.table_heading_font)
                   style.map("Treeview", background=[("selected", "#214D53")], foreground=[("selected", "#FFFFFF")])
                   style.map("Treeview.Heading", background=[("active", COLORS["hover"])])
                   style.configure("Vertical.TScrollbar", background=COLORS["line"], troughcolor=COLORS["input"],
@@ -803,6 +883,12 @@ jobs:
                   self.label(note, f"WINDOWS  /  v{VERSION}", 8, "muted").pack(anchor="w")
 
                   main = tk.Frame(self.root, bg=COLORS["bg"])
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (4/9)
+        run: |
+          $payload = @'
                   main.pack(side="left", expand=True, fill="both", padx=18, pady=14)
                   header = tk.Frame(main, bg=COLORS["bg"])
                   header.pack(fill="x")
@@ -819,15 +905,16 @@ jobs:
                   self.label(header, "集中管理接收人名单、消息内容与任务进度。", 10, "muted").pack(anchor="w")
 
                   stats = tk.Frame(main, bg=COLORS["bg"])
-                  stats.pack(fill="x", pady=(10, 10))
+                  self.stats_frame = stats
+                  stats.pack(fill="x", pady=(8, 8))
                   self.stat_vars = [tk.StringVar(value="0") for _ in range(4)]
                   for i, (caption, color) in enumerate([("名单人数", "text"), ("已合并重复", "blue"),
                                                         ("已处理", "accent"), ("本轮待处理", "amber")]):
                       stats.columnconfigure(i, weight=1, uniform="stat")
                       card = self.card(stats)
                       card.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 5, 0 if i == 3 else 5))
-                      self.label(card, caption, 9, "muted").pack(anchor="w", padx=12, pady=(6, 0))
-                      self.label(card, size=18, color=color, bold=True, textvariable=self.stat_vars[i]).pack(anchor="w", padx=12, pady=(0, 5))
+                      self.label(card, caption, 9, "muted").pack(side="left", padx=(9, 5), pady=5)
+                      self.label(card, size=12, color=color, bold=True, textvariable=self.stat_vars[i]).pack(side="right", padx=(0, 9), pady=5)
 
                   body = tk.Frame(main, bg=COLORS["bg"])
                   self.body = body
@@ -840,12 +927,22 @@ jobs:
                   list_card.columnconfigure(0, weight=1)
                   list_card.rowconfigure(3, weight=1)
                   list_header = tk.Frame(list_card, bg=COLORS["card"])
-                  list_header.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 10))
-                  self.label(list_header, "接收人名单", 12, bold=True).pack(side="left")
-                  self.expand_list_button = self.button(list_header, "全宽名单", self.toggle_list_width, padx=8, pady=5)
+                  list_header.grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 8))
+                  list_header.columnconfigure(0, weight=1)
+                  title = tk.Frame(list_header, bg=COLORS["card"])
+                  title.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+                  self.label(title, "接收人名单", 12, bold=True).pack(side="left")
+                  self.expand_list_button = self.button(title, "全宽名单", self.toggle_list_width, padx=8, pady=5)
                   self.expand_list_button.pack(side="left", padx=10)
-                  self.import_button = self.button(list_header, "+ 导入名单", self.import_files, primary=True)
-                  self.import_button.pack(side="right")
+                  import_row = tk.Frame(list_header, bg=COLORS["card"])
+                  import_row.grid(row=1, column=0, sticky="ew")
+                  import_row.columnconfigure(0, weight=1)
+                  self.import_name_label = self.label(import_row, size=9, color="muted", textvariable=self.imported_names_var,
+                                                      anchor="w", justify="left", width=1, wraplength=1)
+                  self.import_name_label.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+                  self.import_name_label.bind("<Configure>", lambda event: self.import_name_label.configure(wraplength=max(1, event.width)))
+                  self.import_button = self.button(import_row, "+ 导入名单", self.import_files, primary=True)
+                  self.import_button.grid(row=0, column=1, sticky="ne")
                   filters = tk.Frame(list_card, bg=COLORS["card"])
                   filters.grid(row=1, column=0, sticky="ew", padx=14)
                   first_filter = tk.Frame(filters, bg=COLORS["card"])
@@ -859,12 +956,6 @@ jobs:
                   second_filter = tk.Frame(filters, bg=COLORS["card"])
                   second_filter.pack(fill="x", pady=7)
                   self.gender_combo = ttk.Combobox(second_filter, textvariable=self.gender_var,
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (4/8)
-        run: |
-          $payload = @'
                                                     values=["全部性别", "男", "女", "未填写"], state="readonly", width=7)
                   self.gender_combo.pack(side="left")
                   ttk.Combobox(second_filter, textvariable=self.age_mode_var, values=["全部年龄", "已填年龄", "未填年龄"],
@@ -894,14 +985,14 @@ jobs:
                                             show="headings", selectmode="extended", height=20)
                   for column, (caption, width, minimum) in TABLE_COLUMNS.items():
                       self.table.heading(column, text=caption, command=lambda key=column: self.sort_by(key))
-                      self.table.column(column, width=width, minwidth=minimum, stretch=False,
+                      self.table.column(column, width=width, minwidth=1, stretch=False,
                                         anchor="center" if column in {"gender", "age"} else "w")
                   yscroll = ttk.Scrollbar(table_frame, command=self.table.yview)
-                  self.xscroll = ttk.Scrollbar(table_frame, orient="horizontal", command=self.table.xview)
-                  self.table.configure(yscrollcommand=yscroll.set, xscrollcommand=self.xscroll.set)
+                  self.table.configure(yscrollcommand=yscroll.set)
                   yscroll.grid(row=0, column=1, sticky="ns")
-                  self.xscroll.grid(row=1, column=0, sticky="ew")
                   self.table.grid(row=0, column=0, sticky="nsew")
+                  self.table.bind("<Configure>", self.schedule_table_layout)
+                  self.table.bind("<Button-1>", self.block_column_resize, add="+")
                   self.table.tag_configure("done", foreground=COLORS["accent"])
                   self.table.tag_configure("stopped", foreground=COLORS["muted"])
                   self.table.bind("<<TreeviewSelect>>", lambda _event: self.update_preview())
@@ -963,6 +1054,12 @@ jobs:
                   self.button(media_actions, "关注回执", self.import_follow_receipts, padx=10, pady=5).pack(side="right")
                   self.label(media_frame, size=9, textvariable=self.media_name_var, wraplength=295, justify="left").pack(anchor="w", pady=(8, 3))
                   self.label(media_frame, size=8, color="muted", textvariable=self.media_info_var).pack(anchor="w")
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (5/9)
+        run: |
+          $payload = @'
                   self.label(media_frame, size=8, color="muted", textvariable=self.media_status_var, wraplength=295, justify="left").pack(anchor="w", pady=(5, 0))
                   settings = tk.Frame(compose, bg=COLORS["card"])
                   settings.pack(fill="x", padx=16, pady=(10, 4))
@@ -1033,12 +1130,6 @@ jobs:
                       self.log_text.pack_forget()
                   self.log_toggle_button.configure(text="收起日志" if self.log_expanded else "展开日志")
 
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (5/8)
-        run: |
-          $payload = @'
               def refresh_clock_labels(self) -> None:
                   self.local_time_var.set(datetime.now().strftime("本地时间：%Y-%m-%d %H:%M:%S"))
                   self.runtime_var.set(f"本次运行 {format_duration(self.runtime_clock.actual)}  ·  已运行 {format_duration(self.runtime_clock.displayed)}")
@@ -1189,6 +1280,12 @@ jobs:
                   if self.media_timer is not None:
                       self.root.after_cancel(self.media_timer)
                       self.media_timer = None
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (6/9)
+        run: |
+          $payload = @'
                   count = self.media_queue.cancel_pending()
                   if count:
                       self.log("媒体", f"已取消尚未处理的媒体任务 {count} 条。")
@@ -1282,12 +1379,6 @@ jobs:
                       variables["mask_account"].set(False)
 
                   actions = tk.Frame(content, bg=COLORS["card"])
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (6/8)
-        run: |
-          $payload = @'
                   actions.pack(side="bottom", fill="x", pady=(4, 0))
                   self.button(actions, "清空信息", clear_fields, danger=True, padx=10).pack(side="left")
                   self.account_save_button = self.button(actions, "保存设置", save, primary=True)
@@ -1307,6 +1398,38 @@ jobs:
                       self.root.after_cancel(self.search_timer)
                   self.search_timer = self.root.after(180, self.refresh_table)
 
+              def block_column_resize(self, event):
+                  if self.table.identify_region(event.x, event.y) == "separator":
+                      return "break"
+
+              def schedule_table_layout(self, event) -> None:
+                  if max(8, event.width - 4) == sum(self.table_widths.values()):
+                      return
+                  if self.table_layout_timer is not None:
+                      self.root.after_cancel(self.table_layout_timer)
+                  self.table_layout_timer = self.root.after(100, self.relayout_table)
+
+              def relayout_table(self) -> None:
+                  if self.table_layout_timer is not None:
+                      self.root.after_cancel(self.table_layout_timer)
+                      self.table_layout_timer = None
+                  self.render_visible_table()
+
+              def fit_table_columns(self) -> None:
+                  available = max(8, self.table.winfo_width() - 4)
+                  if self.table.winfo_width() <= 8:
+                      available = sum(value[1] for value in TABLE_COLUMNS.values())
+                  minimums = {key: value[2] for key, value in TABLE_COLUMNS.items()}
+                  minimums["status"] = max(minimums["status"], self.measure_table_text("等待处理") + 14)
+                  self.table_widths = allocate_column_widths(available, minimums)
+                  for column, (caption, _width, _minimum) in TABLE_COLUMNS.items():
+                      width = self.table_widths[column]
+                      self.table.column(column, width=width)
+                      arrow = (" ▼" if self.sort_descending else " ▲") if column == self.sort_column else ""
+                      heading = wrap_cell_text(caption + arrow, max(1, width - 10), self.table_heading_font.measure)
+                      self.table.heading(column, text=heading)
+                  self.table.xview_moveto(0)
+
               def refresh_table(self) -> None:
                   if self.search_timer is not None:
                       self.root.after_cancel(self.search_timer)
@@ -1320,26 +1443,35 @@ jobs:
                   self.filter_hint_var.set("搜索昵称 / 抖音号 · 表头排序 · 双击查看完整资料")
                   self.filter_hint_label.configure(fg=COLORS["muted"])
                   self.visible_records = visible_records
+                  self.render_visible_table()
+
+              def render_visible_table(self) -> None:
+                  self.fit_table_columns()
                   selected = set(self.table.selection())
+                  scroll_position = self.table.yview()[0]
                   children = self.table.get_children()
                   if children:
                       self.table.delete(*children)
                   visible = []
-                  for recipient in visible_records:
+                  max_lines = 1
+                  for recipient in self.visible_records:
                       status = self.session.statuses.get(recipient.douyin_id, "待开始")
                       tag = "done" if status == "已处理" else "stopped" if status == "已停止" else ""
+                      raw_values = (recipient.nickname or "未填写", recipient.douyin_id, recipient.gender or "未填写",
+                                    str(recipient.age) if recipient.age is not None else "未填写", recipient.region or "未填写",
+                                    recipient.ip_region or "未填写", " / ".join(recipient.sources) or "未填写", status)
+                      values = tuple(self.wrapped_table_text(value, max(1, self.table_widths[column] - 12))
+                                     for column, value in zip(TABLE_COLUMNS, raw_values))
+                      max_lines = max(max_lines, *(value.count("\n") + 1 for value in values))
                       self.table.insert("", "end", iid=recipient.douyin_id,
-                                        values=(recipient.nickname or "未填写", recipient.douyin_id, recipient.gender or "未填写",
-                                                recipient.age if recipient.age is not None else "未填写", recipient.region or "未填写",
-                                                recipient.ip_region or "未填写", " / ".join(recipient.sources), status), tags=(tag,))
+                                        values=values, tags=(tag,))
                       visible.append(recipient.douyin_id)
+                  ttk.Style(self.root).configure("Treeview", rowheight=max(26, max_lines * self.table_font.metrics("linespace") + 8))
                   remaining_selection = selected.intersection(visible)
                   if remaining_selection:
                       self.table.selection_set(*remaining_selection)
+                  self.table.yview_moveto(scroll_position)
                   self.visible_var.set(f"显示 {len(visible):,} / {len(self.records):,} 人")
-                  for column, (caption, _width, _minimum) in TABLE_COLUMNS.items():
-                      arrow = (" ▼" if self.sort_descending else " ▲") if column == self.sort_column else ""
-                      self.table.heading(column, text=caption + arrow)
                   self.update_preview()
 
               def filtered_records(self) -> list[Recipient]:
@@ -1396,6 +1528,12 @@ jobs:
               def show_clicked_recipient(self, event) -> None:
                   row = self.table.identify_row(event.y)
                   if row and self.table.identify_region(event.x, event.y) in {"cell", "tree"}:
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (7/9)
+        run: |
+          $payload = @'
                       self.open_recipient_details(row)
 
               def open_recipient_details(self, identifier: str | None = None):
@@ -1442,6 +1580,13 @@ jobs:
                       ("名单文件", "*.txt *.csv *.tsv"), ("文本文件", "*.txt"), ("所有文件", "*.*")])
                   if not paths:
                       return
+                  errors = self.import_paths(paths)
+                  if errors:
+                      messagebox.showwarning("部分文件未导入", "\n".join(errors), parent=self.root)
+
+              def import_paths(self, paths) -> list[str]:
+                  if self.session.active:
+                      return ["当前任务尚未结束，请停止后再导入名单。"]
                   added = repeated = skipped = 0
                   errors = []
                   for filename in paths:
@@ -1452,17 +1597,22 @@ jobs:
                           added += new
                           repeated += duplicate + result.duplicates
                           skipped += result.skipped
+                          if not result.records:
+                              errors.append(f"{path.name}：没有可导入的抖音号。")
+                          elif path.resolve() not in self.imported_files:
+                              self.imported_files.append(path.resolve())
                       except (OSError, ValueError, UnicodeError) as exc:
                           errors.append(f"{path.name}：{exc}")
                   self.import_duplicates += repeated
+                  self.imported_names_var.set("已导入：" + "\n".join(path.name for path in self.imported_files)
+                                             if self.imported_files else "尚未导入文件")
                   self.sync_filter_choices()
                   self.reset_filters()
                   self.update_stats()
                   summary = f"导入完成：新增 {added} 人，合并重复 {repeated} 条，跳过无效项 {skipped} 条。"
                   self.toast_var.set(summary)
                   self.log("导入", summary)
-                  if errors:
-                      messagebox.showwarning("部分文件未导入", "\n".join(errors), parent=self.root)
+                  return errors
 
               def load_sample(self) -> None:
                   if self.session.active:
@@ -1486,6 +1636,8 @@ jobs:
                   self.media_queue = FollowMediaQueue()
                   self.refresh_media_status()
                   self.records.clear()
+                  self.imported_files.clear()
+                  self.imported_names_var.set("尚未导入文件")
                   self.session = Session()
                   self.import_duplicates = 0
                   self.sync_filter_choices()
@@ -1531,12 +1683,6 @@ jobs:
                       if not math.isfinite(interval) or not 0.1 <= interval <= 10:
                           raise ValueError("发送间隔请填写 0.1 至 10 秒之间的数字。")
                       targets = self.target_records()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (7/8)
-        run: |
-          $payload = @'
                       self.session.start(targets, self.message.get("1.0", "end-1c"))
                   except ValueError as exc:
                       messagebox.showinfo("请检查任务设置", str(exc), parent=self.root)
@@ -1649,10 +1795,16 @@ jobs:
                   except OSError as exc:
                       messagebox.showerror("导出失败", str(exc), parent=self.root)
                       return
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (8/9)
+        run: |
+          $payload = @'
                   self.toast_var.set(f"运行日志已导出：{Path(filename).name}")
 
               def shutdown_timers(self) -> None:
-                  for name in ("timer", "search_timer", "clock_timer", "media_timer"):
+                  for name in ("timer", "search_timer", "clock_timer", "media_timer", "table_layout_timer"):
                       identifier = getattr(self, name, None)
                       if identifier is not None:
                           self.root.after_cancel(identifier)
@@ -1705,6 +1857,48 @@ jobs:
                   app.toggle_logs()
                   assert app.log_expanded
                   app.toggle_logs()
+                  first_list = Path(profile_directory.name) / "接收人完整文件名称_含资料地区及IP属地_第一批_需要完整显示的名单.txt"
+                  second_list = Path(profile_directory.name) / "接收人完整文件名称_第二批_表格资料.csv"
+                  missing_list = Path(profile_directory.name) / "不存在的文件.txt"
+                  first_list.write_text("昵称 完整昵称需要换行显示的联系人  女31岁  抖音号 fixture_001 资料位置：江苏 镇江 IP 属地：上海", encoding="utf-8")
+                  second_list.write_text("抖音 ID,昵称,资料 位置,IP归属地\nfixture_002,联系人乙,西藏 阿里地区,江苏\n", encoding="utf-8-sig")
+                  errors = app.import_paths([first_list, second_list, missing_list])
+                  assert len(errors) == 1 and missing_list.name in errors[0]
+                  assert len(app.records) == 2
+                  assert app.imported_files == [first_list.resolve(), second_list.resolve()]
+                  assert first_list.name in app.imported_names_var.get() and second_list.name in app.imported_names_var.get()
+                  assert missing_list.name not in app.imported_names_var.get()
+                  assert app.import_paths([first_list]) == [] and len(app.imported_files) == 2
+                  app.session.statuses.update({"fixture_001": "已处理", "fixture_002": "等待处理"})
+                  for geometry in ("1060x760", "1280x860", "1540x940"):
+                      root.geometry(geometry)
+                      root.update()
+                      app.relayout_table()
+                      root.update_idletasks()
+                      viewport = app.table.winfo_width()
+                      assert sum(app.table.column(key, "width") for key in TABLE_COLUMNS) <= viewport - 4
+                      assert app.table.xview() == (0.0, 1.0)
+                      x, _y, width, _height = app.table.bbox("fixture_001", "status")
+                      assert x >= 0 and x + width <= viewport
+                      assert app.table.set("fixture_001", "status") == "已处理"
+                      assert app.table.set("fixture_002", "status") == "等待处理"
+                      assert app.table.set("fixture_001", "name").replace("\n", "") == "完整昵称需要换行显示的联系人"
+                      assert app.table.set("fixture_001", "region").replace("\n", "") == "江苏 镇江"
+                      assert app.table.set("fixture_001", "ip_region").replace("\n", "") == "上海"
+                      for iid in app.table.get_children():
+                          for key in TABLE_COLUMNS:
+                              assert all(app.measure_table_text(line) <= app.table.column(key, "width") - 12
+                                         for line in app.table.set(iid, key).split("\n"))
+                      assert int(app.import_name_label.cget("wraplength")) == app.import_name_label.winfo_width()
+                  assert app.stats_frame.winfo_height() <= 2 * app.table_font.metrics("linespace") + 16
+                  original_confirm = messagebox.askyesno
+                  try:
+                      messagebox.askyesno = lambda *_args, **_kwargs: True
+                      app.clear_list()
+                  finally:
+                      messagebox.askyesno = original_confirm
+                  assert not app.records and not app.imported_files
+                  assert app.imported_names_var.get() == "尚未导入文件"
                   root.withdraw()
                   assert load_profile(profile_path).account == "0000012345"
                   assert app.account_display_var.get() == "工作账号\n账号：000****345"
@@ -1739,8 +1933,8 @@ jobs:
                   app.reset_filters()
                   assert app.table.set("demo_001", "gender") == "女"
                   assert app.table.set("demo_001", "age") == "21"
-                  assert app.table.set("demo_001", "region") == "江苏 镇江"
-                  assert app.table.set("demo_001", "ip_region") == "江苏"
+                  assert app.table.set("demo_001", "region").replace("\n", "") == "江苏 镇江"
+                  assert app.table.set("demo_001", "ip_region").replace("\n", "") == "江苏"
                   app.gender_var.set("女")
                   app.min_age_var.set("20")
                   app.max_age_var.set("30")
@@ -1798,15 +1992,11 @@ jobs:
                                                      "checks": ["widgets", "account_dialog", "account_save", "account_mask", "account_hide",
                                                                 "sample_import", "start", "pause", "resume", "stop", "complete", "filter",
                                                                 "metadata_columns", "combined_filters", "age_sort", "details", "target_scope",
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (8/8)
-        run: |
-          $payload = @'
                                                                 "invalid_age_range", "empty_filter_result", "wide_list", "collapsible_logs",
                                                                 "local_clock", "custom_runtime", "media_filename", "follow_receipts",
-                                                                "media_deduplication", "media_cancel"]},
+                                                                "media_deduplication", "media_cancel", "adaptive_columns", "status_visible",
+                                                                "complete_cell_wrapping", "imported_filenames", "partial_import",
+                                                                "filename_clear", "compact_stats", "region_aliases"]},
                                                     ensure_ascii=False, indent=2), encoding="utf-8")
               finally:
                   if "app" in locals():
@@ -1854,13 +2044,19 @@ jobs:
                   if "--smoke-test" not in sys.argv:
                       try:
                           messagebox.showerror("程序启动失败", f"请将以下错误反馈给维护者：\n\n{detail[-1500:]}\n\n错误日志：{log_path}")
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (9/9)
+        run: |
+          $payload = @'
                       except Exception:
                           pass
                   raise SystemExit(1)
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded test_app.py (1/2)
+      - name: Write embedded test_app.py (1/3)
         run: |
           $payload = @'
           import tempfile
@@ -1868,11 +2064,13 @@ jobs:
           from unittest import mock
           from pathlib import Path
 
-          from app import (MAX_MESSAGE, AccountProfile, FollowMediaQueue, Recipient, RuntimeClock, Session,
+          from app import (MAX_MESSAGE, TABLE_COLUMNS, AccountProfile, FollowMediaQueue, Recipient, RuntimeClock, Session,
+                           allocate_column_widths,
                            csv_cell, decode_file, duration_seconds, filter_records, format_duration, inspect_media, load_profile,
                            load_runtime_offset,
                            merge_records, normalize_profile, parse_age, parse_text, profile_display_text,
-                           read_list, recipient_details_text, render_message, save_profile, save_runtime_offset, sort_records, valid_id)
+                           read_list, recipient_details_text, render_message, save_profile, save_runtime_offset, sort_records,
+                           valid_id, wrap_cell_text)
 
 
           class AccountProfileTests(unittest.TestCase):
@@ -1960,6 +2158,35 @@ jobs:
                   legacy = parse_text('抖音号,昵称,来源\n00002,用户乙,关注')
                   self.assertEqual((legacy.records[0].gender, legacy.records[0].age, legacy.records[0].region), ("", None, ""))
 
+              def test_location_fields_do_not_depend_on_double_spaces(self):
+                  for separator in (" ", "\t", "  ", "，", " ; ", " | ", "\u3000"):
+                      with self.subTest(separator=separator):
+                          line = "昵称 用户甲  女31岁  抖音号 user001" + separator + "资料位置：江苏 镇江" + separator + "IP属地：上海"
+                          record = parse_text(line).records[0]
+                          self.assertEqual((record.region, record.ip_region), ("江苏 镇江", "上海"))
+
+              def test_location_labels_case_aliases_and_reversed_order(self):
+                  for profile_label in ("资料地区", "资料位置", "个人资料地区", "资料所在地", "地区", "所在地"):
+                      for ip_label in ("IP属地", "IP 属地", "ip归属地", "Ip 地区", "IP所在地", "IP位置"):
+                          with self.subTest(profile=profile_label, ip=ip_label):
+                              record = parse_text(f"昵称 用户甲  男  抖音号 user001 {ip_label}=上海 {profile_label}：江苏 镇江 评论次数 3 （山东3次）").records[0]
+                              self.assertEqual((record.region, record.ip_region), ("江苏 镇江", "上海"))
+
+              def test_location_unknowns_and_real_district_name(self):
+                  record = parse_text("昵称 用户甲  抖音号 user001 资料位置：西藏 阿里地区 IP归属地：未知").records[0]
+                  self.assertEqual((record.region, record.ip_region), ("西藏 阿里地区", ""))
+                  record = parse_text("昵称 用户乙  抖音号 user002 资料地区：空 IP 属地：江苏 评论次数 1 （上海1次）").records[0]
+                  self.assertEqual((record.region, record.ip_region), ("", "江苏"))
+
+              def test_location_csv_header_aliases_with_spacing(self):
+                  for ip_header in ("IP 属地", "IP归属地", "ip_location", "IP Region", "IP 所在地"):
+                      for delimiter in (",", "\t", "，"):
+                          with self.subTest(ip_header=ip_header, delimiter=delimiter):
+                              header = delimiter.join(("抖音 ID", "昵称", "资料 位置", ip_header))
+                              row = delimiter.join(("00001", "用户甲", "江苏 镇江", "上海"))
+                              record = parse_text(header + "\n" + row).records[0]
+                              self.assertEqual((record.douyin_id, record.region, record.ip_region), ("00001", "江苏 镇江", "上海"))
+
               def test_merge_enriches_metadata_without_overwriting_known_values(self):
                   records = [Recipient("00001", "甲", ["评论区"], "女")]
                   incoming = Recipient("00001", "另一个昵称", ["粉丝"], "男", 29, "江苏 镇江", "江苏", ["完整原文"])
@@ -2037,6 +2264,44 @@ jobs:
                       self.assertTrue(valid_id(value))
 
 
+          class TableLayoutTests(unittest.TestCase):
+              def test_every_column_fits_narrow_and_wide_viewports(self):
+                  for width in (360, 400, 440, 504, 640, 800, 1100, 1600):
+                      with self.subTest(width=width):
+                          columns = allocate_column_widths(width)
+                          self.assertEqual(tuple(columns), tuple(TABLE_COLUMNS))
+                          self.assertEqual(sum(columns.values()), width)
+                          self.assertTrue(all(value > 0 for value in columns.values()))
+                          self.assertGreaterEqual(columns["status"], TABLE_COLUMNS["status"][2])
+
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (2/3)
+        run: |
+          $payload = @'
+              def test_status_width_respects_scaled_windows_font(self):
+                  for width in (440, 800, 1200):
+                      columns = allocate_column_widths(width, {"status": 116})
+                      self.assertEqual(sum(columns.values()), width)
+                      self.assertGreaterEqual(columns["status"], 116)
+
+              def test_wrap_preserves_complete_metadata(self):
+                  def measure(value):
+                      return sum(12 if ord(char) > 127 else 6 for char in value)
+                  for value in ("已处理", "等待处理", "江苏 镇江", "西藏 阿里地区", "用户很长的完整昵称 ABC",
+                                "000001234567890123456789", "共同好友 / 评论区 / 关注 / 粉丝"):
+                      for width in (36, 60, 110):
+                          with self.subTest(value=value, width=width):
+                              result = wrap_cell_text(value, width, measure)
+                              self.assertEqual(result.replace("\n", ""), value)
+                              self.assertTrue(all(measure(line) <= width for line in result.split("\n")))
+
+              def test_wrap_retains_existing_newlines_and_empty_values(self):
+                  self.assertEqual(wrap_cell_text("第一行\n第二行", 60, lambda value: len(value) * 12), "第一行\n第二行")
+                  self.assertEqual(wrap_cell_text("", 60, len), "")
+
+
           class SimulationTests(unittest.TestCase):
               def setUp(self):
                   self.records = [Recipient("demo_001", "张三"), Recipient("demo_002", "李四")]
@@ -2093,12 +2358,6 @@ jobs:
                                   Recipient("00004", "联系人丁", ["评论区"])]
 
               def test_combined_filters_are_intersection_with_inclusive_age_bounds(self):
-          '@
-          [IO.File]::WriteAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded test_app.py (2/2)
-        run: |
-          $payload = @'
                   result = filter_records(self.records, query="联系人", source="关注", gender="女", min_age=19,
                                           max_age=31, region_query="江苏", region_field="资料地区")
                   self.assertEqual([r.douyin_id for r in result], ["00001", "00003"])
@@ -2247,6 +2506,12 @@ jobs:
                           path = Path(directory) / filename
                           path.write_bytes(b"image-file")
                           self.assertEqual(queue.submit([record], inspect_media(path)), (1, 0))
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (3/3)
+        run: |
+          $payload = @'
                       self.assertEqual(queue.process_next().asset.name, "one.jpg")
                       self.assertEqual(queue.process_next().asset.name, "two.jpg")
 
@@ -2331,7 +2596,7 @@ jobs:
           ## 界面细节
 
           - 昵称 / 抖音号搜索、来源、性别、年龄区间、年龄是否填写、地区组合筛选、批量选中。
-          - 表格包含昵称、抖音号、性别、年龄、资料地区、IP 属地、来源和状态；可拖动列宽或使用底部横向滚动条。
+          - 表格包含昵称、抖音号、性别、年龄、资料地区、IP 属地、来源和状态；列宽随窗口自动分配，长内容完整换行，无需水平滚动。
           - 点击任意表头切换升降序；年龄按数值排序，缺失值始终排在最后。双击接收人或选中后按 Enter 查看完整字段与导入原文。
           - 消息支持 `{昵称}`、`{抖音号}`，右侧预览会替换为对应接收人的信息。
           - 消息上限 200 字，发送间隔可填 0.1–10 秒 / 人。变量替换后的每条消息也必须在 200 字以内。
@@ -2388,6 +2653,25 @@ jobs:
           字数包含模板字符与替换后的个性化内容，超过上限会提示修改。
 
           当前版本保留任意 push 自动构建；上传工作流后，重新下载本次构建的 EXE 即可看到调整。
+
+          ## v1.6.0 完整名单显示与导入修正
+
+          名单表格采用 9 号字体，状态列保留“等待处理”等状态所需的宽度，所有列始终放在当前表格宽度内。
+          较长的昵称、抖音号、资料地区和来源自动换行，行高随完整内容调整；窗口缩放或切换“全宽名单”后重新分配列宽。
+          统计卡片改为单行的小字号布局，为下方名单留出空间。
+
+          “导入名单”按钮左侧显示成功导入的完整文件名，多文件逐一列出；长文件名自动换行，不使用省略号。
+          追加导入会保留之前的文件名，重复导入同一路径不会重复列出；失败或无有效 ID 的文件不会显示为已导入。
+          清空名单时同时清空已导入文件名。
+
+          地区提取改为按字段标签确定边界，兼容单空格、双空格、制表符、全角空格以及逗号、分号、竖线分隔。
+          资料地区与 IP 属地可互换字段顺序；支持“资料位置 / 资料地区 / 资料所在地”和“IP 属地 / IP归属地 / IP地区”等写法。
+          CSV / TSV 的表头也兼容空格、大小写与常见别名。评论次数中的地区分布不会作为资料地区或 IP 属地。
+
+          已逐条核对本次原始附件的 282 行，并校验去重 CSV 的字段一致性：225 人中，86 人有资料地区，156 人有 IP 属地。
+          原始文件写“空”或没有提供的字段继续显示“未填写”。请在新版 EXE 中重新导入原始 TXT 或完整资料 CSV，旧三列表格没有保存地区信息。
+
+          构建包含 49 项逻辑测试，并在 Windows 源码与 EXE 检查中验证三个窗口宽度下的列宽、状态可见性、完整换行、文件名显示和清空操作。
 
           ## 本地运行与构建
 
