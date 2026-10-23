@@ -1,7 +1,7 @@
 # Upload this single file as .github/workflows/build-windows.yml
 # It embeds all source and uses no real recipient data, Secrets, or account logins.
 name: Build Windows App
-run-name: Windows v1.9.1 · ${{ github.ref_name }}
+run-name: Windows v1.10.0 · ${{ github.ref_name }}
 
 on:
   push:
@@ -32,7 +32,7 @@ jobs:
           architecture: x64
 
 
-      - name: Write embedded app.py (1/11)
+      - name: Write embedded app.py (1/12)
         run: |
           $payload = @'
           """Desktop messaging workbench with a local task queue."""
@@ -62,7 +62,8 @@ jobs:
 
 
           APP_NAME = "抖音群发工作台"
-          VERSION = "1.9.1"
+          VERSION = "1.10.0"
+          UI_SCALE = 0.85
           MAX_FILE_BYTES = 5 * 1024 * 1024
           MAX_RECIPIENTS = 20000
           MAX_MESSAGE = 200
@@ -82,17 +83,23 @@ jobs:
           REGION_HEADERS = {"资料位置", "资料地区", "资料所在地", "资料所在地区", "个人资料位置", "个人资料地区",
                             "个人地区", "地区", "所在地", "region", "location", "profileregion", "profilelocation"}
           IP_REGION_HEADERS = {"ip属地", "ip归属地", "ip所在地", "ip地区", "ip位置", "ipregion", "iplocation"}
+          COMMENT_COUNT_HEADERS = {"评论次数", "评论数", "评论数量", "commentcount", "commenttimes", "comments"}
+          COMMENT_COUNT_LABEL = re.compile(
+              r"(?:评\s*论\s*(?:次\s*数|数\s*量|数)|comment[_ ]?(?:count|times))\s*[:：=]?\s*", re.I)
           LOCATION_LABELS = re.compile(
               r"(?P<ip>i\s*p\s*(?:归\s*属\s*地|属\s*地|所\s*在\s*地|地\s*区|位\s*置))|"
               r"(?P<region>(?:个\s*人\s*)?资\s*料\s*(?:所\s*在\s*地(?:\s*区)?|位\s*置|地\s*区)|"
               r"(?:所\s*在\s*地|地\s*区)(?=\s*[:：=]))|"
-              r"(?P<other>评\s*论\s*次\s*数|抖音号|抖音\s*ID|douyin[_ ]?id|昵\s*称|性\s*别|年\s*龄|来\s*源)", re.I)
+              r"(?P<other>评\s*论\s*(?:次\s*数|数\s*量|数)|抖音号|抖音\s*ID|douyin[_ ]?id|昵\s*称|性\s*别|年\s*龄|来\s*源)", re.I)
           TABLE_COLUMNS = {
               "name": ("昵称", 135, 60), "id": ("抖音号", 148, 76),
               "gender": ("性别", 52, 44), "age": ("年龄", 52, 44),
               "region": ("资料地区", 150, 74), "ip_region": ("IP属地", 110, 66),
+              "comment_count": ("评论次数", 82, 64),
               "source": ("来源", 120, 64), "status": ("状态", 82, 76),
           }
+          TABLE_ANCHORS = {column: "center" if column in {"gender", "age", "comment_count"} else "w"
+                           for column in TABLE_COLUMNS}
           COLORS = {
               "bg": "#0B1020", "side": "#10182A", "card": "#151F33",
               "input": "#0C1425", "line": "#293952", "text": "#F0F5FF",
@@ -111,6 +118,15 @@ jobs:
               region: str = ""
               ip_region: str = ""
               raw_details: list[str] = field(default_factory=list)
+              comment_count: int | None = None
+
+
+          def ui_pixels(value: int | float) -> int:
+              return max(1, math.floor(value * UI_SCALE + 0.5)) if value > 0 else 0
+
+
+          def ui_font_size(value: int) -> int:
+              return max(7, ui_pixels(value))
 
 
           @dataclass
@@ -244,6 +260,23 @@ jobs:
               write_json_atomic(path, {"schema_version": 1, "initial_seconds": seconds})
 
 
+          def load_comment_column(path: Path) -> bool:
+              if not path.exists():
+                  return True
+              if path.stat().st_size > 4096:
+                  raise ValueError("列表显示设置文件过大。")
+              data = json.loads(path.read_text(encoding="utf-8"))
+              if not isinstance(data, dict) or data.get("schema_version") != 1 or type(data.get("show_comment_count")) is not bool:
+                  raise ValueError("列表显示设置格式不正确。")
+              return data["show_comment_count"]
+
+
+          def save_comment_column(path: Path, visible: bool) -> None:
+              if type(visible) is not bool:
+                  raise ValueError("评论次数列显示设置必须为开或关。")
+              write_json_atomic(path, {"schema_version": 1, "show_comment_count": visible})
+
+
           class RuntimeClock:
               def __init__(self, initial_seconds: int = 0) -> None:
                   self.started = time.monotonic()
@@ -322,6 +355,12 @@ jobs:
                   if cancel is not None and cancel.is_set():
                       raise PreviewCancelled()
                   process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (2/12)
+        run: |
+          $payload = @'
                                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                   deadline = time.monotonic() + timeout
                   while True:
@@ -351,12 +390,6 @@ jobs:
                   if process is not None:
                       if process.poll() is None:
                           process.kill()
-          '@
-          [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (2/11)
-        run: |
-          $payload = @'
                       process.communicate()
 
 
@@ -569,29 +602,34 @@ jobs:
               return values["region"], values["ip"]
 
 
-          def allocate_column_widths(available: int, minimums: dict[str, int] | None = None) -> dict[str, int]:
+          def allocate_column_widths(available: int, minimums: dict[str, int] | None = None,
+                                     columns: tuple[str, ...] | None = None) -> dict[str, int]:
               """Keep every column inside the viewport, reserving status width first."""
-              available = max(len(TABLE_COLUMNS), int(available))
-              minimums = {key: max(1, (minimums or {}).get(key, value[2])) for key, value in TABLE_COLUMNS.items()}
-              keys = list(TABLE_COLUMNS)
+              columns = tuple(TABLE_COLUMNS) if columns is None else columns
+              if not columns:
+                  return {}
+              available = max(len(columns), int(available))
+              minimums = {key: max(1, (minimums or {}).get(key, TABLE_COLUMNS[key][2])) for key in columns}
+              keys = list(columns)
               if available < sum(minimums.values()):
-                  status = min(minimums["status"], available - len(keys) + 1)
-                  keys.remove("status")
+                  reserved = "status" if "status" in keys else keys[-1]
+                  status = min(minimums[reserved], available - len(keys) + 1)
+                  keys.remove(reserved)
                   budget = available - status - len(keys)
                   weights = {key: minimums[key] for key in keys}
-                  widths = {"status": status, **{key: 1 for key in keys}}
+                  widths = {reserved: status, **{key: 1 for key in keys}}
               else:
                   widths = dict(minimums)
                   budget = available - sum(widths.values())
                   weights = {key: max(1, TABLE_COLUMNS[key][1] - minimums[key]) for key in keys}
-              total = sum(weights.values())
+              total = sum(weights.values()) or 1
               shares = {key: budget * weights[key] / total for key in keys}
               for key in keys:
                   widths[key] += int(shares[key])
               remainder = available - sum(widths.values())
               for key in sorted(keys, key=lambda key: shares[key] % 1, reverse=True)[:remainder]:
                   widths[key] += 1
-              return {key: widths[key] for key in TABLE_COLUMNS}
+              return {key: widths[key] for key in columns}
 
 
           def wrap_cell_text(value: str, max_width: int, measure) -> str:
@@ -628,12 +666,39 @@ jobs:
               return mapping.get(value.casefold(), value)
 
 
+          def parse_comment_count(value: str) -> int | None:
+              value = re.sub(r"\s*[次条]$", "", optional_text(value)).strip().replace("，", ",")
+              if "," in value:
+                  if not re.fullmatch(r"\d{1,3}(?:,\d{3})+", value):
+                      return None
+                  value = value.replace(",", "")
+              return int(value) if re.fullmatch(r"\d{1,15}", value) else None
+
+
+          def extract_comment_count(line: str) -> int | None:
+              match = COMMENT_COUNT_LABEL.search(line)
+              if match is None:
+                  return None
+              following = LOCATION_LABELS.search(line, match.end())
+              value = line[match.end():following.start() if following else len(line)]
+              value = re.split(r"[（(]", value, maxsplit=1)[0].strip(" \t\u3000:：=,，;；|")
+              return parse_comment_count(value)
+
+
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (3/12)
+        run: |
+          $payload = @'
           def merge_recipient_details(current: Recipient, incoming: Recipient) -> None:
               for name in ("nickname", "gender", "region", "ip_region"):
                   if not getattr(current, name) and getattr(incoming, name):
                       setattr(current, name, getattr(incoming, name))
               if current.age is None and incoming.age is not None:
                   current.age = incoming.age
+              if incoming.comment_count is not None:
+                  current.comment_count = max(current.comment_count or 0, incoming.comment_count)
               for name in ("sources", "raw_details"):
                   target = getattr(current, name)
                   target.extend(value for value in getattr(incoming, name) if value not in target)
@@ -669,12 +734,6 @@ jobs:
               return matches
 
 
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (3/11)
-        run: |
-          $payload = @'
           def sort_records(records: list[Recipient], column: str = "", descending: bool = False,
                            statuses: dict[str, str] | None = None) -> list[Recipient]:
               if not column:
@@ -682,6 +741,7 @@ jobs:
               def key(record):
                   values = {"name": record.nickname, "id": record.douyin_id, "gender": record.gender,
                             "age": record.age, "region": record.region, "ip_region": record.ip_region,
+                            "comment_count": record.comment_count,
                             "source": " / ".join(record.sources), "status": (statuses or {}).get(record.douyin_id, "待开始")}
                   value = values.get(column, "")
                   return value.casefold() if isinstance(value, str) else value
@@ -694,6 +754,7 @@ jobs:
               fields = [("昵称", record.nickname), ("抖音号", record.douyin_id), ("性别", record.gender),
                         ("年龄", f"{record.age} 岁" if record.age is not None else ""),
                         ("资料地区", record.region), ("IP属地", record.ip_region),
+                        ("评论次数", str(record.comment_count) if record.comment_count is not None else ""),
                         ("来源", " / ".join(record.sources)), ("状态", status)]
               text = "\n\n".join(f"{label}：{value or '未填写'}" for label, value in fields)
               if record.raw_details:
@@ -720,10 +781,11 @@ jobs:
               age_column = next((i for i, h in enumerate(headers) if h in AGE_HEADERS), None)
               region_column = next((i for i, h in enumerate(headers) if h in REGION_HEADERS), None)
               ip_column = next((i for i, h in enumerate(headers) if h in IP_REGION_HEADERS), None)
+              comment_column = next((i for i, h in enumerate(headers) if h in COMMENT_COUNT_HEADERS), None)
               seen: dict[str, Recipient] = {}
 
               def add(value: str, nickname: str = "", label: str = source, gender: str = "", age: str = "",
-                      region: str = "", ip_region: str = "", raw: str = "") -> None:
+                      region: str = "", ip_region: str = "", raw: str = "", comment_count: int | None = None) -> None:
                   value = value.strip().lstrip("\ufeff").removeprefix("@").strip()
                   if not valid_id(value):
                       result.skipped += 1
@@ -732,7 +794,7 @@ jobs:
                   labels = [part.strip() for part in label.split(" / ") if part.strip()] or [source]
                   record = Recipient(value, nickname.strip(), list(dict.fromkeys(labels)), parse_gender(gender),
                                      parse_age(age), optional_text(region), optional_text(ip_region),
-                                     [f"{source}：{raw}"] if raw else [])
+                                     [f"{source}：{raw}"] if raw else [], comment_count=comment_count)
                   if value in seen:
                       result.duplicates += 1
                       merge_recipient_details(seen[value], record)
@@ -755,7 +817,8 @@ jobs:
                           if not age and (match := re.fullmatch(r"[男女]\s*(\d{1,3}\s*岁)", gender.strip())):
                               age = match.group(1)
                           raw = " | ".join(f"{headers[i]}：{value}" for i, value in enumerate(row) if i < len(headers))
-                          add(row[id_column], nickname, label, gender, age, cell(region_column), cell(ip_column), raw)
+                          add(row[id_column], nickname, label, gender, age, cell(region_column), cell(ip_column), raw,
+                              comment_count=parse_comment_count(cell(comment_column)))
                   except csv.Error as exc:
                       raise ValueError(f"CSV 格式有误：{exc}") from exc
                   return result
@@ -776,7 +839,8 @@ jobs:
                               age_match = re.search(r"\d{1,3}\s*岁", value)
                               age = age_match.group(0) if age_match else ""
                       region, ip_region = extract_locations(line)
-                      add(match.group(1), nickname, source, gender, age, region, ip_region, line)
+                      add(match.group(1), nickname, source, gender, age, region, ip_region, line,
+                          comment_count=extract_comment_count(line[match.end():]))
                   elif "昵称" in line or "资料位置" in line:
                       result.skipped += 1
                   else:
@@ -806,7 +870,7 @@ jobs:
                       merge_recipient_details(current, record)
                   else:
                       clone = Recipient(record.douyin_id, record.nickname, list(record.sources), record.gender, record.age,
-                                        record.region, record.ip_region, list(record.raw_details))
+                                        record.region, record.ip_region, list(record.raw_details), comment_count=record.comment_count)
                       existing.append(clone)
                       by_id[clone.douyin_id] = clone
                       added += 1
@@ -868,6 +932,12 @@ jobs:
               def tick(self) -> Recipient | None:
                   if self.state != "running" or self.cursor >= len(self.queue):
                       return None
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (4/12)
+        run: |
+          $payload = @'
                   recipient = self.queue[self.cursor]
                   self.statuses[recipient.douyin_id] = "已处理"
                   self.cursor += 1
@@ -903,6 +973,14 @@ jobs:
                   self.root = root
                   self.profile_path = profile_path if profile_path is not None else default_profile_path()
                   self.profile_load_error = False
+                  self.view_path = self.profile_path.with_name("view-settings.json")
+                  self.view_load_error = False
+                  try:
+                      show_comment_count = load_comment_column(self.view_path)
+                  except (OSError, ValueError):
+                      show_comment_count = True
+                      self.view_load_error = True
+                  self.show_comment_count_var = tk.BooleanVar(value=show_comment_count)
                   try:
                       self.account_profile = load_profile(self.profile_path)
                   except (OSError, ValueError):
@@ -939,12 +1017,6 @@ jobs:
                   self.media_cover_state_var = tk.StringVar(value="支持视频封面与图片预览")
                   self.local_time_var = tk.StringVar()
                   self.runtime_var = tk.StringVar()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (4/11)
-        run: |
-          $payload = @'
                   self.account_display_var = tk.StringVar()
                   self.records: list[Recipient] = []
                   self.imported_files: list[Path] = []
@@ -977,10 +1049,10 @@ jobs:
                   self.preview_target = tk.StringVar(value="选择名单中的一位用户以预览")
                   root.title(APP_NAME)
                   root.configure(bg=COLORS["bg"])
-                  width = max(1060, min(1800, root.winfo_screenwidth() - 40))
-                  height = max(680, min(1020, root.winfo_screenheight() - 80))
+                  width = max(ui_pixels(1060), min(ui_pixels(1800), ui_pixels(root.winfo_screenwidth() - 40)))
+                  height = max(ui_pixels(680), min(ui_pixels(1020), ui_pixels(root.winfo_screenheight() - 80)))
                   root.geometry(f"{width}x{height}")
-                  root.minsize(1060, 680)
+                  root.minsize(ui_pixels(1060), ui_pixels(680))
                   root.protocol("WM_DELETE_WINDOW", self.close)
                   root.option_add("*Font", ("Microsoft YaHei UI", 10))
                   self.configure_styles()
@@ -995,6 +1067,8 @@ jobs:
                       self.log("设置", "账号设置未能读取，已恢复默认显示，可在“账号设置”中重新保存。")
                   if self.runtime_load_error:
                       self.log("设置", "计时设置未能读取，已从零开始计时。")
+                  if self.view_load_error:
+                      self.log("设置", "列表显示设置未能读取，已恢复显示评论次数。")
                   self.update_stats()
                   self.tick_clock()
 
@@ -1002,23 +1076,23 @@ jobs:
                   from tkinter import font as tkfont
 
                   style = ttk.Style(self.root)
-                  self.table_font = tkfont.Font(root=self.root, family="Microsoft YaHei UI", size=9)
-                  self.table_heading_font = tkfont.Font(root=self.root, family="Microsoft YaHei UI", size=8)
+                  self.table_font = tkfont.Font(root=self.root, family="Microsoft YaHei UI", size=ui_font_size(9))
+                  self.table_heading_font = tkfont.Font(root=self.root, family="Microsoft YaHei UI", size=ui_font_size(8))
                   self.measure_table_text = lru_cache(maxsize=100000)(self.table_font.measure)
                   self.wrapped_table_text = lru_cache(maxsize=100000)(
                       lambda value, width: wrap_cell_text(value, width, self.measure_table_text))
                   style.theme_use("clam")
                   style.configure("TFrame", background=COLORS["card"])
                   style.configure("TCombobox", fieldbackground=COLORS["input"], background=COLORS["line"],
-                                  foreground=COLORS["text"], arrowcolor=COLORS["muted"], padding=5)
+                                  foreground=COLORS["text"], arrowcolor=COLORS["muted"], padding=ui_pixels(5))
                   style.map("TCombobox", fieldbackground=[("readonly", COLORS["input"])],
                             selectbackground=[("readonly", COLORS["input"])],
                             selectforeground=[("readonly", COLORS["text"])])
                   style.configure("Treeview", background=COLORS["input"], fieldbackground=COLORS["input"],
-                                  foreground=COLORS["text"], rowheight=26, borderwidth=0,
+                                  foreground=COLORS["text"], rowheight=ui_pixels(26), borderwidth=0,
                                   font=self.table_font)
                   style.configure("Treeview.Heading", background=COLORS["card"], foreground=COLORS["muted"],
-                                  relief="flat", padding=(3, 5), font=self.table_heading_font)
+                                  relief="flat", padding=(ui_pixels(2), ui_pixels(5)), font=self.table_heading_font)
                   style.map("Treeview", background=[("selected", "#214D53")], foreground=[("selected", "#FFFFFF")])
                   style.map("Treeview.Heading", background=[("active", COLORS["hover"])])
                   style.configure("Vertical.TScrollbar", background=COLORS["line"], troughcolor=COLORS["input"],
@@ -1026,7 +1100,7 @@ jobs:
                   style.configure("Horizontal.TScrollbar", background=COLORS["line"], troughcolor=COLORS["input"],
                                   borderwidth=0, arrowcolor=COLORS["muted"])
                   style.configure("Horizontal.TProgressbar", troughcolor=COLORS["input"],
-                                  background=COLORS["accent"], borderwidth=0, thickness=7)
+                                  background=COLORS["accent"], borderwidth=0, thickness=ui_pixels(7))
                   self.root.option_add("*TCombobox*Listbox.background", COLORS["input"])
                   self.root.option_add("*TCombobox*Listbox.foreground", COLORS["text"])
 
@@ -1047,6 +1121,59 @@ jobs:
 
               def card(self, parent):
                   return tk.Frame(parent, bg=COLORS["card"], highlightbackground=COLORS["line"], highlightthickness=1)
+
+              def scale_ui(self, parent) -> None:
+                  """Scale each widget's fonts and pixel spacing once; retain text-unit widths."""
+                  from tkinter import font as tkfont
+
+                  pending = [parent]
+                  while pending:
+                      widget = pending.pop()
+                      pending.extend(widget.winfo_children())
+                      if getattr(widget, "_ui_scaled", False):
+                          continue
+                      widget._ui_scaled = True
+                      options = widget.configure()
+                      if "font" in options:
+                          actual = tkfont.Font(root=self.root, font=widget.cget("font")).actual()
+                          size = actual["size"]
+                          size = ui_font_size(size) if size > 0 else -max(9, ui_pixels(-size))
+                          font = (actual["family"], size, actual["weight"], actual["slant"])
+                          if actual["underline"]:
+                              font += ("underline",)
+                          if actual["overstrike"]:
+                              font += ("overstrike",)
+                          widget.configure(font=font)
+                      for option in ("padx", "pady", "highlightthickness", "borderwidth"):
+                          if option in options:
+                              widget.configure(**{option: ui_pixels(widget.winfo_pixels(widget.cget(option)))})
+                      if isinstance(widget, tk.Canvas):
+                          widget.configure(width=ui_pixels(widget.winfo_pixels(widget.cget("width"))),
+                                           height=ui_pixels(widget.winfo_pixels(widget.cget("height"))))
+                      manager = widget.winfo_manager()
+                      if manager in {"pack", "grid"}:
+                          info = widget.pack_info() if manager == "pack" else widget.grid_info()
+                          changes = {}
+                          for key in ("padx", "pady", "ipadx", "ipady"):
+                              if key in info:
+                                  value = info[key]
+                                  values = value if isinstance(value, (tuple, list)) else widget.tk.splitlist(str(value))
+                                  changes[key] = tuple(ui_pixels(widget.winfo_pixels(part)) for part in values)
+                          if manager == "pack":
+                              widget.pack_configure(**changes)
+                          else:
+                              widget.grid_configure(**changes)
+                      columns, rows = widget.grid_size()
+                      for index in range(columns):
+                          widget.columnconfigure(index, minsize=ui_pixels(int(widget.columnconfigure(index)["minsize"])))
+                      for index in range(rows):
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (5/12)
+        run: |
+          $payload = @'
+                          widget.rowconfigure(index, minsize=ui_pixels(int(widget.rowconfigure(index)["minsize"])))
 
               def build_ui(self) -> None:
                   main = tk.Frame(self.root, bg=COLORS["bg"])
@@ -1090,7 +1217,12 @@ jobs:
                   list_header = tk.Frame(list_card, bg=COLORS["card"])
                   list_header.grid(row=0, column=0, sticky="ew", padx=10, pady=(9, 7))
                   list_header.columnconfigure(0, weight=1)
-                  self.label(list_header, "接收人名单", 12, bold=True).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+                  self.label(list_header, "接收人名单", 12, bold=True).grid(row=0, column=0, sticky="w", pady=(0, 6))
+                  self.comment_column_check = tk.Checkbutton(
+                      list_header, text="评论次数", variable=self.show_comment_count_var, command=self.toggle_comment_column,
+                      bg=COLORS["card"], fg=COLORS["muted"], activebackground=COLORS["card"],
+                      activeforeground=COLORS["text"], selectcolor=COLORS["input"], font=("Microsoft YaHei UI", 8))
+                  self.comment_column_check.grid(row=0, column=1, sticky="e", pady=(0, 6))
                   self.import_name_label = self.label(list_header, size=8, color="muted", textvariable=self.imported_names_var,
                                                       anchor="w", justify="left", width=1, wraplength=1)
                   self.import_name_label.grid(row=1, column=0, sticky="ew", padx=(0, 8))
@@ -1130,12 +1262,6 @@ jobs:
                   self.button(third_filter, "重置", self.reset_filters, padx=8, pady=4).pack(side="right")
                   self.filter_hint_label = self.label(list_card, size=8, color="muted", textvariable=self.filter_hint_var)
                   self.filter_hint_label.grid(row=2, column=0, sticky="w", padx=10, pady=(5, 6))
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (5/11)
-        run: |
-          $payload = @'
                   table_frame = tk.Frame(list_card, bg=COLORS["input"])
                   table_frame.grid(row=3, column=0, sticky="nsew", padx=10)
                   table_frame.rowconfigure(0, weight=1)
@@ -1143,9 +1269,11 @@ jobs:
                   self.table = ttk.Treeview(table_frame, columns=tuple(TABLE_COLUMNS),
                                             show="headings", selectmode="extended", height=12)
                   for column, (caption, width, minimum) in TABLE_COLUMNS.items():
-                      self.table.heading(column, text=caption, command=lambda key=column: self.sort_by(key))
-                      self.table.column(column, width=width, minwidth=1, stretch=False,
-                                        anchor="center" if column in {"gender", "age"} else "w")
+                      self.table.heading(column, text=caption, anchor=TABLE_ANCHORS[column],
+                                         command=lambda key=column: self.sort_by(key))
+                      self.table.column(column, width=ui_pixels(width), minwidth=1, stretch=False,
+                                        anchor=TABLE_ANCHORS[column])
+                  self.table.configure(displaycolumns=self.displayed_columns())
                   yscroll = ttk.Scrollbar(table_frame, command=self.table.yview)
                   self.table.configure(yscrollcommand=yscroll.set)
                   yscroll.grid(row=0, column=1, sticky="ns")
@@ -1209,6 +1337,12 @@ jobs:
                   media_frame.grid(row=0, column=2, sticky="nsew")
                   media_frame.columnconfigure(0, weight=1)
                   media_frame.rowconfigure(4, weight=1, minsize=80)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (6/12)
+        run: |
+          $payload = @'
                   media_actions = tk.Frame(media_frame, bg=COLORS["card"])
                   media_actions.grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 5))
                   self.label(media_actions, "媒体素材", 12, bold=True).pack(side="left")
@@ -1284,6 +1418,7 @@ jobs:
                   self.local_time_label.pack(side="right")
                   self.runtime_label = self.label(footer, size=8, color="muted", textvariable=self.runtime_var)
                   self.runtime_label.pack(side="left")
+                  self.scale_ui(main)
                   self.update_preview()
 
               def focus_editor(self) -> None:
@@ -1296,12 +1431,6 @@ jobs:
               def tick_clock(self) -> None:
                   self.clock_timer = None
                   self.refresh_clock_labels()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (6/11)
-        run: |
-          $payload = @'
                   self.clock_timer = self.root.after(1000, self.tick_clock)
 
               def apply_runtime_duration(self, seconds: int) -> None:
@@ -1353,6 +1482,7 @@ jobs:
                   self.button(actions, "取消", close_dialog, padx=10).pack(side="right", padx=8)
                   dialog.protocol("WM_DELETE_WINDOW", close_dialog)
                   dialog.bind("<Escape>", lambda _event: close_dialog())
+                  self.scale_ui(dialog)
                   dialog.update_idletasks()
                   dialog.grab_set()
 
@@ -1407,6 +1537,12 @@ jobs:
                   self.media_preview_timer = self.root.after(60, self.poll_media_preview)
 
               def poll_media_preview(self) -> None:
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (7/12)
+        run: |
+          $payload = @'
                   self.media_preview_timer = None
                   result = self.media_preview_loader.poll()
                   if result is not None and result.asset == self.media_asset:
@@ -1440,15 +1576,16 @@ jobs:
 
                   old_scroll = (canvas.xview()[0], canvas.yview()[0])
                   canvas.delete("all")
-                  width, height = max(24, canvas.winfo_width()), max(24, canvas.winfo_height())
-                  image = render_cover_image(source, width - 24, height - 24, original=original)
+                  padding = ui_pixels(12)
+                  width, height = max(2 * padding, canvas.winfo_width()), max(2 * padding, canvas.winfo_height())
+                  image = render_cover_image(source, width - 2 * padding, height - 2 * padding, original=original)
                   photo = ImageTk.PhotoImage(image, master=self.root)
-                  x, y = max(12, (width - image.width) / 2), max(12, (height - image.height) / 2)
+                  x, y = max(padding, (width - image.width) / 2), max(padding, (height - image.height) / 2)
                   canvas.create_rectangle(x - 1, y - 1, x + image.width + 1, y + image.height + 1,
                                           outline="#3C5269", width=1)
                   canvas.create_image(x, y, image=photo, anchor="nw", tags=("cover_image",))
                   canvas.preview_scale = image.width / source.width
-                  canvas.configure(scrollregion=(0, 0, max(width, image.width + 24), max(height, image.height + 24)))
+                  canvas.configure(scrollregion=(0, 0, max(width, image.width + 2 * padding), max(height, image.height + 2 * padding)))
                   if original:
                       canvas.xview_moveto(old_scroll[0])
                       canvas.yview_moveto(old_scroll[1])
@@ -1473,7 +1610,7 @@ jobs:
                       canvas.delete("all")
                       canvas.create_text(max(24, canvas.winfo_width()) / 2, max(24, canvas.winfo_height()) / 2,
                                          text=self.media_preview_placeholder, width=max(16, canvas.winfo_width() - 24),
-                                         fill=COLORS["muted"], font=("Microsoft YaHei UI", 10), justify="center")
+                                         fill=COLORS["muted"], font=("Microsoft YaHei UI", ui_font_size(10)), justify="center")
 
               def close_media_preview(self) -> None:
                   if self.media_dialog_draw_timer is not None:
@@ -1531,20 +1668,14 @@ jobs:
                   dialog = self.media_preview_dialog = tk.Toplevel(self.root)
                   dialog.title("视频封面预览" if self.media_asset.kind == "视频" else "图片预览")
                   dialog.configure(bg=COLORS["card"])
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (7/11)
-        run: |
-          $payload = @'
                   dialog.transient(self.root)
                   portrait = self.media_preview_source.height > self.media_preview_source.width
-                  width = min(720 if portrait else 1120, max(480, self.root.winfo_screenwidth() - 80))
-                  height = min(1040 if portrait else 820, max(360, self.root.winfo_screenheight() - 100))
+                  width = ui_pixels(min(720 if portrait else 1120, max(480, self.root.winfo_screenwidth() - 80)))
+                  height = ui_pixels(min(1040 if portrait else 820, max(360, self.root.winfo_screenheight() - 100)))
                   x = max(0, (self.root.winfo_screenwidth() - width) // 2)
                   y = max(0, (self.root.winfo_screenheight() - height) // 2)
                   dialog.geometry(f"{width}x{height}+{x}+{y}")
-                  dialog.minsize(420, 320)
+                  dialog.minsize(ui_pixels(420), ui_pixels(320))
                   title = self.label(dialog, self.media_asset.name, 11, bold=True, anchor="w", justify="left", wraplength=width - 40)
                   title.pack(fill="x", padx=20, pady=(16, 8))
                   title.bind("<Configure>", lambda event: title.configure(wraplength=max(1, event.width)))
@@ -1586,6 +1717,7 @@ jobs:
                   dialog.bind("<Escape>", lambda _event: self.close_media_preview())
                   dialog.bind("<Control-0>", lambda _event: self.set_media_zoom(False))
                   dialog.bind("<Control-1>", lambda _event: self.set_media_zoom(True))
+                  self.scale_ui(dialog)
                   dialog.update_idletasks()
                   self.redraw_media_dialog()
                   return dialog
@@ -1623,6 +1755,12 @@ jobs:
               def refresh_media_status(self) -> None:
                   if not self.follow_media_var.get():
                       state = "关注后媒体规则未启用"
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (8/12)
+        run: |
+          $payload = @'
                   elif self.media_asset is None:
                       state = "请选择媒体文件"
                   else:
@@ -1703,7 +1841,7 @@ jobs:
                   dialog.configure(bg=COLORS["card"])
                   dialog.resizable(False, False)
                   dialog.transient(self.root)
-                  dialog.geometry("470x470")
+                  dialog.geometry(f"{ui_pixels(470)}x{ui_pixels(470)}")
                   profile = self.account_profile
                   variables = {
                       "account": tk.StringVar(value=profile.account),
@@ -1758,12 +1896,6 @@ jobs:
                       except (ValueError, OSError) as exc:
                           messagebox.showerror("保存失败", str(exc), parent=dialog)
                           return
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (8/11)
-        run: |
-          $payload = @'
                       close_dialog()
 
                   def clear_fields():
@@ -1784,6 +1916,7 @@ jobs:
                   for variable in variables.values():
                       variable.trace_add("write", update_preview)
                   update_preview()
+                  self.scale_ui(dialog)
                   dialog.update_idletasks()
                   dialog.grab_set()
                   entries[0].focus_set()
@@ -1804,6 +1937,22 @@ jobs:
                       self.root.after_cancel(self.table_layout_timer)
                   self.table_layout_timer = self.root.after(100, self.relayout_table)
 
+              def displayed_columns(self) -> tuple[str, ...]:
+                  return tuple(column for column in TABLE_COLUMNS
+                               if column != "comment_count" or self.show_comment_count_var.get())
+
+              def toggle_comment_column(self) -> None:
+                  visible = self.show_comment_count_var.get()
+                  try:
+                      save_comment_column(self.view_path, visible)
+                  except (OSError, ValueError) as exc:
+                      self.show_comment_count_var.set("comment_count" in self.table["displaycolumns"])
+                      messagebox.showwarning("显示设置未保存", str(exc), parent=self.root)
+                      return
+                  self.table.configure(displaycolumns=self.displayed_columns())
+                  self.relayout_table()
+                  self.toast_var.set("评论次数列已显示。" if visible else "评论次数列已隐藏，评论数据已保留。")
+
               def relayout_table(self) -> None:
                   if self.table_layout_timer is not None:
                       self.root.after_cancel(self.table_layout_timer)
@@ -1811,18 +1960,27 @@ jobs:
                   self.render_visible_table()
 
               def fit_table_columns(self) -> None:
+                  columns = self.displayed_columns()
                   available = max(8, self.table.winfo_width() - 4)
                   if self.table.winfo_width() <= 8:
-                      available = sum(value[1] for value in TABLE_COLUMNS.values())
-                  minimums = {key: value[2] for key, value in TABLE_COLUMNS.items()}
-                  minimums["status"] = max(minimums["status"], self.measure_table_text("等待处理") + 14)
-                  self.table_widths = allocate_column_widths(available, minimums)
+                      available = sum(ui_pixels(TABLE_COLUMNS[key][1]) for key in columns)
+                  minimums = {key: ui_pixels(value[2]) for key, value in TABLE_COLUMNS.items()}
+                  minimums["status"] = max(minimums["status"], self.measure_table_text("等待处理") + ui_pixels(14))
+                  captions = {key: TABLE_COLUMNS[key][0] + ((" ▼" if self.sort_descending else " ▲")
+                              if key == self.sort_column else "") for key in columns}
+                  heading_minimums = {key: self.table_heading_font.measure(captions[key]) + 2 * ui_pixels(2) + 2
+                                     for key in columns}
+                  heading_minimums["status"] = max(heading_minimums["status"], minimums["status"])
+                  if sum(minimums[key] for key in columns) > available >= sum(heading_minimums.values()):
+                      minimums = heading_minimums
+                  self.table_widths = allocate_column_widths(available, minimums, columns=columns)
                   for column, (caption, _width, _minimum) in TABLE_COLUMNS.items():
+                      if column not in self.table_widths:
+                          continue
                       width = self.table_widths[column]
                       self.table.column(column, width=width)
-                      arrow = (" ▼" if self.sort_descending else " ▲") if column == self.sort_column else ""
-                      heading = wrap_cell_text(caption + arrow, max(1, width - 10), self.table_heading_font.measure)
-                      self.table.heading(column, text=heading)
+                      heading = wrap_cell_text(captions[column], max(1, width - 2 * ui_pixels(2) - 2), self.table_heading_font.measure)
+                      self.table.heading(column, text=heading, anchor=TABLE_ANCHORS[column])
                   self.table.xview_moveto(0)
 
               def refresh_table(self) -> None:
@@ -1844,6 +2002,12 @@ jobs:
                   self.fit_table_columns()
                   selected = set(self.table.selection())
                   scroll_position = self.table.yview()[0]
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (9/12)
+        run: |
+          $payload = @'
                   children = self.table.get_children()
                   if children:
                       self.table.delete(*children)
@@ -1854,14 +2018,17 @@ jobs:
                       tag = "done" if status == "已处理" else "stopped" if status == "已停止" else ""
                       raw_values = (recipient.nickname or "未填写", recipient.douyin_id, recipient.gender or "未填写",
                                     str(recipient.age) if recipient.age is not None else "未填写", recipient.region or "未填写",
-                                    recipient.ip_region or "未填写", " / ".join(recipient.sources) or "未填写", status)
-                      values = tuple(self.wrapped_table_text(value, max(1, self.table_widths[column] - 12))
-                                     for column, value in zip(TABLE_COLUMNS, raw_values))
-                      max_lines = max(max_lines, *(value.count("\n") + 1 for value in values))
+                                    recipient.ip_region or "未填写",
+                                    str(recipient.comment_count) if recipient.comment_count is not None else "—",
+                                    " / ".join(recipient.sources) or "未填写", status)
+                      values = tuple(self.wrapped_table_text(value, max(1, self.table_widths[column] - 2 * ui_pixels(6)))
+                                     if column in self.table_widths else value for column, value in zip(TABLE_COLUMNS, raw_values))
+                      max_lines = max(max_lines, *(value.count("\n") + 1 for column, value in zip(TABLE_COLUMNS, values)
+                                                  if column in self.table_widths))
                       self.table.insert("", "end", iid=recipient.douyin_id,
                                         values=values, tags=(tag,))
                       visible.append(recipient.douyin_id)
-                  ttk.Style(self.root).configure("Treeview", rowheight=max(26, max_lines * self.table_font.metrics("linespace") + 8))
+                  ttk.Style(self.root).configure("Treeview", rowheight=max(ui_pixels(26), max_lines * self.table_font.metrics("linespace") + ui_pixels(8)))
                   remaining_selection = selected.intersection(visible)
                   if remaining_selection:
                       self.table.selection_set(*remaining_selection)
@@ -1935,8 +2102,8 @@ jobs:
                   dialog = tk.Toplevel(self.root)
                   dialog.title("接收人资料")
                   dialog.configure(bg=COLORS["card"])
-                  dialog.geometry("680x620")
-                  dialog.minsize(460, 420)
+                  dialog.geometry(f"{ui_pixels(680)}x{ui_pixels(620)}")
+                  dialog.minsize(ui_pixels(460), ui_pixels(420))
                   dialog.transient(self.root)
                   self.label(dialog, "接收人资料", 16, bold=True).pack(anchor="w", padx=20, pady=(18, 8))
                   self.label(dialog, "完整字段与导入原文，可选中复制。", 9, "muted").pack(anchor="w", padx=20, pady=(0, 10))
@@ -1960,6 +2127,7 @@ jobs:
                   self.button(actions, "复制资料", copy_details).pack(side="left")
                   self.button(actions, "关闭", dialog.destroy, primary=True).pack(side="right")
                   dialog.bind("<Escape>", lambda _event: dialog.destroy())
+                  self.scale_ui(dialog)
                   return dialog
 
               def import_files(self) -> None:
@@ -2007,12 +2175,6 @@ jobs:
                   if self.session.active:
                       return
                   sample = [Recipient(f"demo_{i:03d}", f"示例用户 {i:02d}", ["示例名单"], "女" if i % 2 else "男", 18 + i * 3,
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (9/11)
-        run: |
-          $payload = @'
                                       "江苏 镇江" if i % 2 else "上海 静安", "江苏" if i % 2 else "上海") for i in range(1, 7)]
                   new, duplicate = merge_records(self.records, sample)
                   self.import_duplicates += duplicate
@@ -2083,6 +2245,12 @@ jobs:
                       messagebox.showinfo("请检查任务设置", str(exc), parent=self.root)
                       return
                   self.interval_ms = round(interval * 1000)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (10/12)
+        run: |
+          $payload = @'
                   self.set_busy(True)
                   self.refresh_table()
                   self.log("开始", f"任务已创建，范围：{self.scope_var.get()}，共 {len(targets)} 位接收人，间隔 {interval:g} 秒 / 人。")
@@ -2218,6 +2386,9 @@ jobs:
                   app = MessengerApp(root, profile_path=profile_path)
                   root.deiconify()
                   root.update()
+                  from tkinter import font as tkfont
+                  assert root.minsize() == (ui_pixels(1060), ui_pixels(680))
+                  assert tkfont.Font(root=root, font=app.message.cget("font")).actual("size") == ui_font_size(10)
                   app.open_account_settings()
                   app.account_form["account"].set("0000012345")
                   app.account_form["nickname"].set("工作账号")
@@ -2253,6 +2424,7 @@ jobs:
                           "pause_button": app.pause_button, "stop_button": app.stop_button,
                           "logs": app.log_text, "footer": app.footer,
                           "local_time": app.local_time_label, "runtime": app.runtime_label,
+                          "comment_column_toggle": app.comment_column_check,
                       }
                       snapshot = {"window": root.geometry(), "all_sections_visible": False,
                                   "video_preview": [app.media_cover_canvas.winfo_width(), app.media_cover_canvas.winfo_height()],
@@ -2263,12 +2435,6 @@ jobs:
                                                for name, widget in essential.items()}}
                       layout_snapshots.append(snapshot)
                       try:
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (10/11)
-        run: |
-          $payload = @'
                           for name, widget in essential.items():
                               assert widget.winfo_ismapped(), f"Hidden section: {name} ({widget})"
                               assert widget.winfo_width() > 0 and widget.winfo_height() > 0, f"Empty section: {name}"
@@ -2281,7 +2447,7 @@ jobs:
                                   assert x + child.winfo_width() <= parent.winfo_width() + 2, f"Section clipped horizontally: {name} ({child})"
                                   assert y + child.winfo_height() <= parent.winfo_height() + 2, f"Section clipped vertically: {name} ({child})"
                                   child = parent
-                          assert app.media_cover_canvas.winfo_height() >= 80, "Video cover is shorter than 80 pixels"
+                          assert app.media_cover_canvas.winfo_height() >= ui_pixels(80), "Video cover is too short"
                       except AssertionError as exc:
                           report_path.write_text(json.dumps({"ok": False, "version": VERSION, "error": str(exc),
                                                              "layout_checks": layout_snapshots}, ensure_ascii=False, indent=2),
@@ -2296,13 +2462,33 @@ jobs:
                           pending.extend(widget.winfo_children())
                       snapshot["all_sections_visible"] = True
 
+                  def assert_table_alignment():
+                      columns = app.displayed_columns()
+                      assert tuple(app.table["displaycolumns"]) == columns
+                      assert sum(app.table.column(key, "width") for key in columns) <= app.table.winfo_width() - 4
+                      assert app.table.xview() == (0.0, 1.0)
+                      for index, column in enumerate(columns, 1):
+                          x, y, width, _height = app.table.bbox("fixture_001", column)
+                          assert 0 <= x and x + width <= app.table.winfo_width()
+                          center = x + width // 2
+                          assert app.table.identify_column(center) == f"#{index}"
+                          assert any(app.table.identify_region(center, heading_y) == "heading" for heading_y in range(y))
+                          assert str(app.table.heading(column, "anchor")) == str(app.table.column(column, "anchor")) == TABLE_ANCHORS[column]
+                          assert "\n" not in app.table.heading(column, "text"), f"Heading wrapped: {column}"
+
                   app.focus_editor()
                   assert_flat_layout()
                   first_list = Path(profile_directory.name) / "接收人完整文件名称_含资料地区及IP属地_第一批_需要完整显示的名单.txt"
                   second_list = Path(profile_directory.name) / "接收人完整文件名称_第二批_表格资料.csv"
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (11/12)
+        run: |
+          $payload = @'
                   missing_list = Path(profile_directory.name) / "不存在的文件.txt"
-                  first_list.write_text("昵称 完整昵称需要换行显示的联系人  女31岁  抖音号 fixture_001 资料位置：江苏 镇江 IP 属地：上海", encoding="utf-8")
-                  second_list.write_text("抖音 ID,昵称,资料 位置,IP归属地\nfixture_002,联系人乙,西藏 阿里地区,江苏\n", encoding="utf-8-sig")
+                  first_list.write_text("昵称 完整昵称需要换行显示的联系人  女31岁  抖音号 fixture_001 资料位置：江苏 镇江 IP 属地：上海 评论次数 2 （江苏2次）", encoding="utf-8")
+                  second_list.write_text("抖音 ID,昵称,资料 位置,IP归属地,评论次数\nfixture_002,联系人乙,西藏 阿里地区,江苏,10\n", encoding="utf-8-sig")
                   errors = app.import_paths([first_list, second_list, missing_list])
                   assert len(errors) == 1 and missing_list.name in errors[0]
                   assert len(app.records) == 2
@@ -2311,14 +2497,17 @@ jobs:
                   assert missing_list.name not in app.imported_names_var.get()
                   assert app.import_paths([first_list]) == [] and len(app.imported_files) == 2
                   app.session.statuses.update({"fixture_001": "已处理", "fixture_002": "等待处理"})
-                  for geometry in ("1060x680", "1060x700", "1060x760", "1280x860", "1540x940"):
+                  geometries = [f"{ui_pixels(width)}x{ui_pixels(height)}" for width, height in
+                                ((1060, 680), (1060, 700), (1060, 760), (1280, 860), (1540, 940))]
+                  for geometry in (*geometries, "1280x860", "1540x940"):
                       root.geometry(geometry)
                       root.update()
                       app.relayout_table()
                       root.update_idletasks()
                       assert_flat_layout()
                       viewport = app.table.winfo_width()
-                      assert sum(app.table.column(key, "width") for key in TABLE_COLUMNS) <= viewport - 4
+                      assert_table_alignment()
+                      assert sum(app.table.column(key, "width") for key in app.displayed_columns()) <= viewport - 4
                       assert app.table.xview() == (0.0, 1.0)
                       x, _y, width, _height = app.table.bbox("fixture_001", "status")
                       assert x >= 0 and x + width <= viewport
@@ -2328,10 +2517,26 @@ jobs:
                       assert app.table.set("fixture_001", "region").replace("\n", "") == "江苏 镇江"
                       assert app.table.set("fixture_001", "ip_region").replace("\n", "") == "上海"
                       for iid in app.table.get_children():
-                          for key in TABLE_COLUMNS:
-                              assert all(app.measure_table_text(line) <= app.table.column(key, "width") - 12
+                          for key in app.displayed_columns():
+                              assert all(app.measure_table_text(line) <= app.table.column(key, "width") - 2 * ui_pixels(6)
                                          for line in app.table.set(iid, key).split("\n"))
                       assert int(app.import_name_label.cget("wraplength")) == app.import_name_label.winfo_width()
+                      app.comment_column_check.invoke()
+                      root.update_idletasks()
+                      assert "comment_count" not in app.displayed_columns()
+                      assert load_comment_column(app.view_path) is False
+                      assert app.table.set("fixture_001", "comment_count") == "2"
+                      assert_table_alignment()
+                      assert_flat_layout()
+                      app.comment_column_check.invoke()
+                      root.update_idletasks()
+                      assert load_comment_column(app.view_path) is True
+                      assert app.table.set("fixture_002", "comment_count") == "10"
+                      assert_table_alignment()
+                  app.sort_by("comment_count")
+                  assert app.table.get_children() == ("fixture_001", "fixture_002")
+                  app.sort_by("comment_count")
+                  assert app.table.get_children() == ("fixture_002", "fixture_001")
                   assert app.stats_frame.winfo_height() <= 2 * app.table_font.metrics("linespace") + 16
                   original_confirm = messagebox.askyesno
                   try:
@@ -2448,9 +2653,9 @@ jobs:
                   assert picture.size == (1920, 1080)
                   pixel = picture.getpixel((picture.width // 2, picture.height // 2))
                   assert pixel[0] > 180 and pixel[1] < 80 and pixel[2] < 80
-                  assert app.media_preview_photo.width() <= app.media_cover_canvas.winfo_width() - 24
-                  assert app.media_preview_photo.height() <= app.media_cover_canvas.winfo_height() - 24
-                  assert app.media_cover_canvas.winfo_height() >= 80
+                  assert app.media_preview_photo.width() <= app.media_cover_canvas.winfo_width() - 2 * ui_pixels(12)
+                  assert app.media_preview_photo.height() <= app.media_cover_canvas.winfo_height() - 2 * ui_pixels(12)
+                  assert app.media_cover_canvas.winfo_height() >= ui_pixels(80)
                   dialog = app.open_media_preview()
                   root.update()
                   assert dialog is app.media_preview_dialog and dialog.title() == "视频封面预览"
@@ -2477,8 +2682,8 @@ jobs:
                   app.set_media_zoom(False)
                   root.update_idletasks()
                   app.redraw_media_dialog()
-                  assert portrait_dialog.preview_photo.width() <= app.media_dialog_canvas.winfo_width() - 24
-                  assert portrait_dialog.preview_photo.height() <= app.media_dialog_canvas.winfo_height() - 24
+                  assert portrait_dialog.preview_photo.width() <= app.media_dialog_canvas.winfo_width() - 2 * ui_pixels(12)
+                  assert portrait_dialog.preview_photo.height() <= app.media_dialog_canvas.winfo_height() - 2 * ui_pixels(12)
                   assert app.media_dialog_canvas.preview_scale < 1
                   app.close_media_preview()
                   app.set_media_file(red_video)
@@ -2490,12 +2695,6 @@ jobs:
                   app.set_media_file(red_video)
                   app.clear_media()
                   root.update()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (11/11)
-        run: |
-          $payload = @'
                   assert app.media_preview_source is None and not app.media_preview_loader.pending
                   assert app.media_preview_timer is None
                   audio_path = Path(profile_directory.name) / "关注音频.mp3"
@@ -2513,6 +2712,12 @@ jobs:
                   assert app.media_preview_source is not None and "图片预览" in app.media_cover_state_var.get()
                   app.follow_media_var.set(True)
                   app.toggle_follow_media()
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (12/12)
+        run: |
+          $payload = @'
                   assert app.media_name_var.get() == media_path.name
                   assert app.accept_follow_receipts([Recipient("demo_001"), Recipient("outside_001")]) == (1, 0, 1)
                   app.root.after_cancel(app.media_timer)
@@ -2526,6 +2731,7 @@ jobs:
                   app.clear_media()
                   assert app.media_asset is None and not app.follow_media_var.get()
                   report_path.write_text(json.dumps({"ok": True, "mode": "local_queue", "version": VERSION,
+                                                     "ui_scale": UI_SCALE,
                                                      "tk_version": root.tk.call("info", "patchlevel"),
                                                      "layout_checks": layout_snapshots,
                                                      "checks": ["widgets", "account_dialog", "account_save", "account_mask", "account_hide",
@@ -2533,6 +2739,8 @@ jobs:
                                                                 "metadata_columns", "combined_filters", "age_sort", "details", "target_scope",
                                                                 "invalid_age_range", "empty_filter_result", "flat_three_column_layout", "always_visible_logs",
                                                                 "always_visible_action_bar", "always_visible_clocks", "minimum_window_layout",
+                                                                "aligned_table_headings", "comment_count_import", "comment_count_numeric_sort",
+                                                                "comment_column_hide_show", "comment_column_settings", "proportional_ui_scale",
                                                                 "local_clock", "custom_runtime", "media_filename", "follow_receipts",
                                                                 "media_deduplication", "media_cancel", "adaptive_columns", "status_visible",
                                                                 "complete_cell_wrapping", "imported_filenames", "partial_import",
@@ -2613,7 +2821,8 @@ jobs:
                            csv_cell, decode_file, duration_seconds, filter_records, format_duration, inspect_media, load_profile,
                            load_runtime_offset, media_cover_png, preview_executable, cover_dimensions_text,
                            decode_cover_image, fit_image_size, render_cover_image,
-                           merge_records, normalize_profile, parse_age, parse_text, profile_display_text,
+                           merge_records, normalize_profile, parse_age, parse_comment_count, parse_text, profile_display_text,
+                           load_comment_column, save_comment_column,
                            read_list, recipient_details_text, render_message, save_profile, save_runtime_offset, sort_records,
                            valid_id, wrap_cell_text)
 
@@ -2810,16 +3019,25 @@ jobs:
 
 
           class TableLayoutTests(unittest.TestCase):
-              def test_every_column_fits_narrow_and_wide_viewports(self):
-                  for width in (360, 400, 440, 504, 640, 800, 1100, 1600):
-                      with self.subTest(width=width):
-                          columns = allocate_column_widths(width)
+              def test_hidden_comment_column_releases_width_without_losing_status(self):
+                  visible = tuple(key for key in TABLE_COLUMNS if key != "comment_count")
+                  for width in (300, 360, 640, 1200):
           '@
           [IO.File]::WriteAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded test_app.py (2/4)
         run: |
           $payload = @'
+                      columns = allocate_column_widths(width, columns=visible)
+                      self.assertEqual(tuple(columns), visible)
+                      self.assertEqual(sum(columns.values()), width)
+                      self.assertNotIn("comment_count", columns)
+                      self.assertGreaterEqual(columns["status"], TABLE_COLUMNS["status"][2])
+
+              def test_every_column_fits_narrow_and_wide_viewports(self):
+                  for width in (360, 400, 440, 504, 640, 800, 1100, 1600):
+                      with self.subTest(width=width):
+                          columns = allocate_column_widths(width)
                           self.assertEqual(tuple(columns), tuple(TABLE_COLUMNS))
                           self.assertEqual(sum(columns.values()), width)
                           self.assertTrue(all(value > 0 for value in columns.values()))
@@ -2845,6 +3063,93 @@ jobs:
               def test_wrap_retains_existing_newlines_and_empty_values(self):
                   self.assertEqual(wrap_cell_text("第一行\n第二行", 60, lambda value: len(value) * 12), "第一行\n第二行")
                   self.assertEqual(wrap_cell_text("", 60, len), "")
+
+
+          class CommentCountTests(unittest.TestCase):
+              def test_labeled_txt_counts_and_unknowns_keep_location_fields_separate(self):
+                  text = ("昵称 甲  男36岁  抖音号 c001 评论次数 5 （江苏3次 山东2次）\n"
+                          "昵称 乙  抖音号 c002 资料地区 上海 IP属地 江苏 评论次数：0\n"
+                          "昵称 丙  抖音号 c003 评论数 12 次 资料位置 浙江 IP属地 上海\n"
+                          "昵称 丁  抖音号 c004 资料地区 四川 IP属地 湖南\n"
+                          "昵称 戊  抖音号 c005 评论次数 未知 （江苏5次）\n")
+                  records = parse_text(text, "评论区").records
+                  self.assertEqual([r.comment_count for r in records], [5, 0, 12, None, None])
+                  self.assertEqual((records[0].region, records[0].ip_region), ("", ""))
+                  self.assertEqual((records[1].region, records[1].ip_region), ("上海", "江苏"))
+                  self.assertEqual((records[2].region, records[2].ip_region), ("浙江", "上海"))
+
+              def test_csv_tsv_header_aliases_preserve_zero_and_missing(self):
+                  for header in ("评论次数", "评论数", "评论数量", "comment_count", "Comment Times", "comments"):
+                      for delimiter in (",", "\t"):
+                          with self.subTest(header=header, delimiter=delimiter):
+                              text = delimiter.join(("抖音号", "昵称", header)) + "\n"
+                              text += delimiter.join(("00001", "甲", "10")) + "\n"
+                              text += delimiter.join(("00002", "乙", "0")) + "\n"
+                              text += delimiter.join(("00003", "丙", ""))
+                              self.assertEqual([r.comment_count for r in parse_text(text).records], [10, 0, None])
+                  quoted = parse_text('抖音号,评论次数\n00001,"1,234"').records[0]
+                  self.assertEqual(quoted.comment_count, 1234)
+
+              def test_count_format_does_not_invent_or_truncate_numbers(self):
+                  for value, expected in (("0", 0), (" 12 次 ", 12), ("0012", 12), ("1,234", 1234),
+                                          ("1，234条", 1234), ("", None), ("未知", None), ("-2", None),
+                                          ("1.5", None), ("1,23", None), ("5abc", None), ("9" * 30, None)):
+                      with self.subTest(value=value):
+                          self.assertEqual(parse_comment_count(value), expected)
+                  for value in ("-2", "1.5", "5abc"):
+                      self.assertIsNone(parse_text(f"昵称 甲 抖音号 c001 评论次数 {value}").records[0].comment_count)
+
+              def test_count_label_in_nickname_is_not_treated_as_a_data_field(self):
+                  row = parse_text("昵称 评论次数 5  空  抖音号 c001 评论次数 12").records[0]
+                  self.assertEqual(row.nickname, "评论次数 5")
+                  self.assertEqual(row.comment_count, 12)
+
+              def test_duplicate_count_is_not_added_twice_and_larger_value_updates(self):
+                  result = parse_text("抖音号,评论次数\nc001,5\nc001,8\nc001,5\nc002,0")
+                  self.assertEqual(result.duplicates, 2)
+                  self.assertEqual([r.comment_count for r in result.records], [8, 0])
+                  existing = []
+                  self.assertEqual(merge_records(existing, result.records), (2, 0))
+                  self.assertEqual(merge_records(existing, result.records), (0, 2))
+                  self.assertEqual([r.comment_count for r in existing], [8, 0])
+                  result.records[0].comment_count = 11
+                  self.assertEqual(existing[0].comment_count, 8)
+                  merge_records(existing, result.records)
+                  self.assertEqual(existing[0].comment_count, 11)
+
+              def test_count_sort_is_numeric_in_both_directions_with_unknown_last(self):
+                  records = [Recipient("a", comment_count=10), Recipient("b", comment_count=2),
+                             Recipient("c"), Recipient("d", comment_count=0)]
+                  self.assertEqual([r.comment_count for r in sort_records(records, "comment_count")], [0, 2, 10, None])
+                  self.assertEqual([r.comment_count for r in sort_records(records, "comment_count", True)], [10, 2, 0, None])
+                  self.assertIn("评论次数：0", recipient_details_text(records[3]))
+                  self.assertIn("评论次数：未填写", recipient_details_text(records[2]))
+
+              def test_column_visibility_is_restored_from_settings(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "view.json"
+                      self.assertTrue(load_comment_column(path))
+                      save_comment_column(path, False)
+                      self.assertFalse(load_comment_column(path))
+                      save_comment_column(path, True)
+                      self.assertTrue(load_comment_column(path))
+
+              def test_invalid_visibility_and_failed_write_keep_previous_choice(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "view.json"
+                      save_comment_column(path, False)
+                      with mock.patch("app.os.replace", side_effect=PermissionError("占用")):
+                          with self.assertRaises(PermissionError):
+                              save_comment_column(path, True)
+                      self.assertFalse(load_comment_column(path))
+                      for value in ("false", 1, None):
+                          with self.assertRaises(ValueError):
+                              save_comment_column(path, value)
+                      for value in ('[]', '{"schema_version":2,"show_comment_count":true}',
+                                    '{"schema_version":1,"show_comment_count":"false"}'):
+                          path.write_text(value)
+                          with self.assertRaises(ValueError):
+                              load_comment_column(path)
 
 
           class SimulationTests(unittest.TestCase):
@@ -2934,6 +3239,12 @@ jobs:
                   self.assertEqual([r.douyin_id for r in sort_records(self.records, "id", True)], ["00004", "00003", "00002", "00001"])
                   result = sort_records(self.records, "status", statuses={"00002": "已处理"})
                   self.assertEqual({r.douyin_id for r in result}, {r.douyin_id for r in self.records})
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (3/4)
+        run: |
+          $payload = @'
                   self.records[0].raw_details = ["保留完整导入行，不截断原文"]
                   details = recipient_details_text(self.records[0])
                   for value in ("性别：女", "年龄：31 岁", "资料地区：江苏 镇江", "IP属地：上海", "保留完整导入行"):
@@ -3046,12 +3357,6 @@ jobs:
               def test_each_different_file_has_its_own_deduplication_key(self):
                   with tempfile.TemporaryDirectory() as directory:
                       queue = FollowMediaQueue()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded test_app.py (3/4)
-        run: |
-          $payload = @'
                       record = Recipient("00123")
                       for filename in ("one.jpg", "two.jpg"):
                           path = Path(directory) / filename
@@ -3184,6 +3489,12 @@ jobs:
                       loader.request(new)
                       result = self.wait_result(loader)
                   self.assertEqual((result.asset, result.png), (new, new.name.encode("utf-8")))
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (4/4)
+        run: |
+          $payload = @'
                   self.assertFalse(loader.pending)
 
               def test_clearing_a_pending_preview_never_returns_the_old_cover(self):
@@ -3308,12 +3619,6 @@ jobs:
                   session.start([Recipient("00123")], "文" * MAX_MESSAGE)
                   session.stop()
                   with self.assertRaises(ValueError):
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded test_app.py (4/4)
-        run: |
-          $payload = @'
                       session.start([Recipient("00123")], "文" * (MAX_MESSAGE + 1))
 
               def test_personalized_message_also_obeys_limit(self):
@@ -3426,7 +3731,7 @@ jobs:
 
           ## v1.5.0 列表、媒体规则和计时
 
-          接收人列表采用紧凑行高，名单、消息和媒体按 v1.9.0 的三栏布局同时显示。
+          接收人列表采用紧凑行高，名单、消息和媒体保持三栏同时显示；v1.10.0 将整套界面缩小至约 85%。
           日志与操作按钮固定在主界面下方，记录支持滚动查看和导出。
 
           在“关注后媒体”中点击“导入媒体”可选择图片、视频或音频，界面显示完整文件名、类型与大小。
@@ -3523,6 +3828,24 @@ jobs:
           Windows 源码和 EXE 检查新增 1060 × 680 最小窗口，保留另外四种窗口尺寸检查，
           同时验证操作栏、本地时间和运行时间完整显示。失败报告会记录控件名称、位置和尺寸，便于定位。
 
+          ## v1.10.0 对齐、评论次数与紧凑界面
+
+          昵称、抖音号、资料地区、IP 属地等文字列的表头和资料统一靠左，并校正标题与单元格边距。
+          性别、年龄和评论次数统一居中。窄窗口优先保证表头完整，资料按列宽换行，不需要左右拖动查找状态。
+
+          新增“评论次数”列，支持评论区 TXT 中的 `评论次数 5`、`评论数 12 次`，
+          以及 CSV / TSV 中的“评论次数”“评论数”“评论数量”或 `comment_count` 等列名。
+          0 显示为 0，缺失或无效数值显示为 —；不会将评论地区分布当成 IP 属地或凭空推算次数。
+          同一 ID 重复导入时保留较大的已知次数，不重复相加。
+
+          点击“评论次数”表头可按数字升序 / 降序排序，未知值排在最后。
+          名单标题右侧的“评论次数”勾选框控制该列的显示和隐藏，并在下次启动时恢复选择。
+          隐藏后数据仍保留，完整资料中也可查看；其余列会自动使用腾出的宽度。
+
+          窗口、字体、控件内外边距与栏宽按约 85% 统一缩小，保留现有配色、三栏和常驻视频预览。
+          默认最大窗口约为 1530 × 867，最小为 901 × 578，实际初始尺寸会适应屏幕。
+          视频保持等比适配；高清预览的 100% 模式仍按原始画面像素显示。
+
           ## 本地运行与构建
 
           安装包含 Tkinter 的 Python 3.12 后：
@@ -3541,9 +3864,10 @@ jobs:
 
           ## 当前验证范围
 
-          交付前已通过 69 项逻辑测试和 YML 内嵌源码一致性校验。
-          另在 Linux 的 Tk 8.6 中文界面中复现旧版 `Hidden section` 错误，修复版通过完整源码 GUI 检查，
-          覆盖 1280 × 768 小屏、1060 × 680 最小窗口及另外四种窗口尺寸，验证底部操作栏、时间和视频封面可见。
+          交付前已通过 78 项逻辑测试和 YML 内嵌源码一致性校验。
+          另在 Linux 的 Tk 8.6 中文界面中通过完整源码 GUI 检查，覆盖 1280 × 768 小屏、901 × 578 最小窗口和多种窗口尺寸，
+          验证表头和资料列对应、评论列隐藏 / 恢复、数字排序、缩放、底部操作栏、时间和视频封面可见。
+          已使用原有四份附件复核：282 条记录合并为 225 个 ID、57 条重复，评论区 14 人的评论次数全部读出。
           当前环境没有 Windows，Windows GUI 和 EXE 检查会在你上传更新、提交工作流后实际执行。
           当前交付物是源码与编译配置；EXE 由该工作流成功运行后生成。
 
