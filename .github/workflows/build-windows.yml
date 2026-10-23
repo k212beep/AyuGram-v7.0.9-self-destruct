@@ -1,7 +1,7 @@
 # Upload this single file as .github/workflows/build-windows.yml
 # It embeds all source and uses no real recipient data, Secrets, or account logins.
 name: Build Windows App
-run-name: Windows v1.12.0 · ${{ github.ref_name }}
+run-name: Windows v1.12.1 · ${{ github.ref_name }}
 
 on:
   push:
@@ -62,7 +62,7 @@ jobs:
 
 
           APP_NAME = "抖音群发工作台"
-          VERSION = "1.12.0"
+          VERSION = "1.12.1"
           UI_SCALE = 0.85
           MAX_FILE_BYTES = 5 * 1024 * 1024
           MAX_RECIPIENTS = 20000
@@ -2864,6 +2864,20 @@ jobs:
                   self.root.destroy()
 
 
+          def wait_for_window_mapping(window, timeout_seconds: float = 5.0) -> None:
+              """Pump native window events before testing visibility, with a bounded wait."""
+              deadline = time.monotonic() + timeout_seconds
+              while True:
+                  # update_idletasks alone does not process Windows show/map messages.
+                  window.update()
+                  if window.winfo_viewable():
+                      window.update_idletasks()
+                      return
+                  if time.monotonic() >= deadline:
+                      raise RuntimeError(f"GUI window did not become visible within {timeout_seconds:g}s; state={window.state()}")
+                  time.sleep(.01)
+
+
           def smoke_test(report_path: Path) -> None:
               """Run on the Windows builder, from both source and the packaged EXE."""
               root = tk.Tk()
@@ -2873,7 +2887,7 @@ jobs:
                   profile_path = Path(profile_directory.name) / "settings.json"
                   app = MessengerApp(root, profile_path=profile_path)
                   root.deiconify()
-                  root.update()
+                  wait_for_window_mapping(root)
                   from tkinter import font as tkfont
                   assert root.minsize() == (ui_pixels(1060), ui_pixels(680))
                   assert tkfont.Font(root=root, font=app.message.cget("font")).actual("size") == ui_font_size(10)
@@ -2901,6 +2915,14 @@ jobs:
                   collection_layout_snapshots = []
 
                   def assert_flat_layout():
+                      try:
+                          wait_for_window_mapping(root)
+                      except RuntimeError as exc:
+                          report_path.write_text(json.dumps({"ok": False, "version": VERSION, "error": str(exc),
+                                                             "root_state": root.state(), "root_mapped": bool(root.winfo_ismapped()),
+                                                             "root_viewable": bool(root.winfo_viewable()),
+                                                             "layout_checks": layout_snapshots}, ensure_ascii=False, indent=2), encoding="utf-8")
+                          raise
                       root.update_idletasks()
                       essential = {
                           "recipient_list": app.list_card, "message_panel": app.message_card,
@@ -2919,6 +2941,14 @@ jobs:
                           **{f"collection_{kind}": button for kind, button in app.collection_buttons.items()},
                       }
                       snapshot = {"window": root.geometry(), "all_sections_visible": False,
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (13/15)
+        run: |
+          $payload = @'
+                                  "root_state": root.state(), "root_mapped": bool(root.winfo_ismapped()),
+                                  "root_viewable": bool(root.winfo_viewable()),
                                   "video_preview": [app.media_cover_canvas.winfo_width(), app.media_cover_canvas.winfo_height()],
                                   "sections": {name: {"mapped": bool(widget.winfo_ismapped()),
                                                       "x": widget.winfo_rootx() - root.winfo_rootx(),
@@ -2935,12 +2965,6 @@ jobs:
                                   parent = child.master
                                   x = child.winfo_rootx() - parent.winfo_rootx()
                                   y = child.winfo_rooty() - parent.winfo_rooty()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (13/15)
-        run: |
-          $payload = @'
                                   assert x >= -2 and y >= -2, f"Section starts outside parent: {name} ({child})"
                                   assert x + child.winfo_width() <= parent.winfo_width() + 2, f"Section clipped horizontally: {name} ({child})"
                                   assert y + child.winfo_height() <= parent.winfo_height() + 2, f"Section clipped vertically: {name} ({child})"
@@ -3088,6 +3112,12 @@ jobs:
                   def wait_for_collection():
                       deadline = time.monotonic() + 15
                       while app.collection_importer.pending or app.collection_timer is not None:
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (14/15)
+        run: |
+          $payload = @'
                           assert time.monotonic() < deadline, "Collection import did not finish"
                           root.update()
                           time.sleep(.005)
@@ -3116,12 +3146,6 @@ jobs:
                   assert str(app.start_button.cget("state")) == "disabled"
                   assert str(app.import_button.cget("state")) == "disabled"
                   app.collection_buttons["粉丝"].invoke()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (14/15)
-        run: |
-          $payload = @'
                   assert app.collection_kind_var.get() == "评论区", "Navigation changed the category of an active import"
                   wait_for_collection()
                   assert app.collection_status_var.get() == "导入失败"
@@ -3299,6 +3323,26 @@ jobs:
                   root.deiconify()
                   app.focus_editor()
                   assert_flat_layout()
+                  # Reproduce the builder's restore race: idletasks sees an unmapped
+                  # window, while the full event loop must wait for the delayed show.
+                  for delay_ms in (25, 75):
+                      root.withdraw()
+                      root.update()
+                      root.after(delay_ms, root.deiconify)
+                      root.update_idletasks()
+                      assert not root.winfo_viewable() and not app.list_card.winfo_ismapped()
+                      assert_flat_layout()
+                  # A window that never maps must still fail rather than pass invisibly.
+                  root.withdraw()
+                  root.update()
+                  try:
+                      wait_for_window_mapping(root, timeout_seconds=.03)
+                  except RuntimeError as exc:
+                      assert "state=withdrawn" in str(exc)
+                  else:
+                      raise AssertionError("A permanently hidden GUI window passed the mapping check")
+                  root.deiconify()
+                  assert_flat_layout()
                   app.set_media_file(red_video)
                   assert app.media_preview_source is None
                   assert str(app.media_cover_button.cget("state")) == "disabled"
@@ -3319,6 +3363,12 @@ jobs:
                   assert dialog is app.media_preview_dialog and dialog.title() == "视频封面预览"
                   assert hasattr(dialog, "preview_photo")
                   media_path = Path(profile_directory.name) / "关注后发送的媒体.PNG"
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (15/15)
+        run: |
+          $payload = @'
                   picture.save(media_path, format="PNG")
                   app.set_media_file(blue_video)
                   assert app.media_preview_dialog is None and app.media_preview_source is None
@@ -3361,12 +3411,6 @@ jobs:
                   assert app.media_preview_source is None and "音频" in app.media_preview_placeholder
                   assert not app.media_preview_loader.pending
                   broken_video = Path(profile_directory.name) / "无法读取的封面.mp4"
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (15/15)
-        run: |
-          $payload = @'
                   broken_video.write_bytes(b"not-a-video")
                   app.set_media_file(broken_video)
                   wait_for_cover()
@@ -3402,6 +3446,7 @@ jobs:
                                                                 "comment_column_hide_show", "comment_column_settings", "proportional_ui_scale",
                                                                 "left_collection_navigation", "right_task_controls", "right_compact_logs",
                                                                 "full_height_roster", "interval_0_8_to_120_seconds",
+                                                                "native_window_restore", "delayed_window_mapping", "hidden_window_timeout",
                                                                 "collection_dialog_layout", "collection_measured_minimum", "collection_larger_fonts",
                                                                 "local_account_lookup", "manual_data_source",
                                                                 "collection_failure_retry", "collection_csv_saved", "collection_three_categories",
@@ -4727,6 +4772,16 @@ jobs:
           发送间隔改为 0.8–120 秒 / 人，默认 0.8 秒；输入、任务校验和实际计时采用相同范围。
           120 秒仍可即时暂停或停止，无需等待间隔结束。无效数值、超范围和无穷值会提示检查设置。
 
+          ## v1.12.1 Windows 界面自检恢复时序修复
+
+          v1.12.0 的 Windows 构建已通过 92 项逻辑测试和前 16 次布局检查，随后在隐藏并恢复主窗口时报告整套控件未显示。
+          Windows 的窗口显示消息需要完整事件循环处理；原检查只处理空闲布局任务，在显示完成前提前判断了控件可见性。
+          现在先处理窗口事件并等待实际可见，再检查每个控件是否显示、是否超出父容器。等待上限为 5 秒，始终不显示的窗口仍会失败。
+          报告额外记录主窗口状态、是否映射与是否可见。
+
+          新增真实 GUI 回归：主窗口隐藏后分别延迟 25 / 75 毫秒恢复，验证检查能等待显示；另验证一直隐藏的窗口会超时失败。
+          采集窗口尺寸、左侧分类入口、右侧紧凑操作区、视频常驻预览和 0.8–120 秒发送间隔一并保留验证。
+
           ## 本地运行与构建
 
           安装包含 Tkinter 的 Python 3.12 后：
@@ -4750,6 +4805,7 @@ jobs:
           验证表头和资料列对应、评论列隐藏 / 恢复、数字排序、缩放、右侧紧凑操作区与日志、左侧分类按钮、时间和视频封面可见。
           资料采集窗口另外检查本地抖音号查询、失败后真实重试、三种分类保存、保存文件可重新导入、
           最小窗口和放大字体下控件完整显示，以及关闭采集窗口后后台任务正常完成。
+          窗口自检另覆盖隐藏后恢复、延迟显示以及永久隐藏超时，避免将尚未处理的 Windows 显示消息当成布局失败。
           已使用原有四份附件复核：282 条记录合并为 225 个 ID、57 条重复，评论区 14 人的评论次数全部读出。
           当前环境没有 Windows，Windows GUI 和 EXE 检查会在你上传更新、提交工作流后实际执行。
           当前交付物是源码与编译配置；EXE 由该工作流成功运行后生成。
