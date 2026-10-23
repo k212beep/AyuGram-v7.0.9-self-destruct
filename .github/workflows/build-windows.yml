@@ -31,20 +31,25 @@ jobs:
           architecture: x64
 
 
-      - name: Write embedded app.py (1/9)
+      - name: Write embedded app.py (1/10)
         run: |
           $payload = @'
           """Desktop messaging workbench with a local task queue."""
           from __future__ import annotations
 
           import argparse
+          import base64
           import csv
           import json
           import math
           import os
           import re
+          import shutil
+          import struct
+          import subprocess
           import sys
           import tempfile
+          import threading
           import time
           import traceback
           from collections import deque
@@ -52,10 +57,11 @@ jobs:
           from datetime import datetime
           from functools import lru_cache
           from pathlib import Path
+          from queue import Empty, SimpleQueue
 
 
           APP_NAME = "抖音群发工作台"
-          VERSION = "1.6.0"
+          VERSION = "1.7.0"
           MAX_FILE_BYTES = 5 * 1024 * 1024
           MAX_RECIPIENTS = 20000
           MAX_MESSAGE = 200
@@ -279,6 +285,144 @@ jobs:
               return MediaAsset(path, path.name, kind, stat.st_size, stat.st_mtime_ns)
 
 
+          class PreviewCancelled(Exception):
+              pass
+
+
+          def preview_executable() -> str:
+              """Use the bundled decoder in the release; allow system ffmpeg for source runs."""
+              try:
+                  import imageio_ffmpeg
+                  return imageio_ffmpeg.get_ffmpeg_exe()
+              except (ImportError, RuntimeError, OSError):
+                  if not getattr(sys, "frozen", False) and (executable := shutil.which("ffmpeg")):
+                      return executable
+                  raise ValueError("媒体预览组件不可用，请重新下载完整程序。") from None
+
+
+          def media_cover_png(asset: MediaAsset, cancel: threading.Event | None = None, timeout: float = 15) -> bytes:
+              """Extract a bounded, correctly proportioned frame without modifying the media."""
+              if cancel is not None and cancel.is_set():
+                  raise PreviewCancelled()
+              if asset.kind == "音频":
+                  raise ValueError("音频文件没有视频封面。")
+              if inspect_media(asset.path) != asset:
+                  raise ValueError("媒体文件已变更，请重新导入。")
+              scale = ("scale=w='max(2,trunc(min(864,540*dar)/2)*2)':"
+                       "h='max(2,trunc(min(540,864/dar)/2)*2)':flags=lanczos,setsar=1")
+              filters = scale + (",thumbnail=45" if asset.kind == "视频" else "")
+              command = [preview_executable(), "-nostdin", "-hide_banner", "-loglevel", "error", "-threads", "1",
+                         "-filter_threads", "1", "-protocol_whitelist", "file,pipe", "-i", str(asset.path),
+                         "-map", "0:v:0", "-an", "-sn", "-dn", "-vf", filters, "-frames:v", "1",
+                         "-threads", "1", "-c:v", "png", "-pix_fmt", "rgb24", "-f", "image2pipe", "pipe:1"]
+              process = None
+              try:
+                  if cancel is not None and cancel.is_set():
+                      raise PreviewCancelled()
+                  process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                  deadline = time.monotonic() + timeout
+                  while True:
+                      if cancel is not None and cancel.is_set():
+                          raise PreviewCancelled()
+                      remaining = deadline - time.monotonic()
+                      if remaining <= 0:
+                          raise ValueError("封面读取超时，请重新导入或更换文件。")
+                      try:
+                          png, _errors = process.communicate(timeout=min(0.1, remaining))
+                          break
+                      except subprocess.TimeoutExpired:
+                          continue
+                  if cancel is not None and cancel.is_set():
+                      raise PreviewCancelled()
+                  if process.returncode or not png.startswith(b"\x89PNG\r\n\x1a\n") or len(png) < 24:
+                      raise ValueError("无法读取封面，请确认媒体文件可以正常打开。")
+                  width, height = struct.unpack(">II", png[16:24])
+                  if not 1 <= width <= 864 or not 1 <= height <= 540:
+                      raise ValueError("封面尺寸不正确，请重新导入文件。")
+                  if inspect_media(asset.path) != asset:
+                      raise ValueError("媒体文件已变更，请重新导入。")
+                  return png
+              except OSError as exc:
+                  raise ValueError("无法读取媒体封面，请重新导入或更换文件。") from exc
+              finally:
+                  if process is not None:
+                      if process.poll() is None:
+                          process.kill()
+                      process.communicate()
+
+
+          @dataclass(frozen=True)
+          class MediaPreviewResult:
+              asset: MediaAsset
+              png: bytes = b""
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (2/10)
+        run: |
+          $payload = @'
+              error: str = ""
+
+
+          class MediaPreviewLoader:
+              """Workers only decode bytes; the Tk thread polls current-generation results."""
+              def __init__(self) -> None:
+                  self.generation = 0
+                  self.pending = False
+                  self.cancel_event: threading.Event | None = None
+                  self.results = SimpleQueue()
+                  self.workers: list[threading.Thread] = []
+
+              def cancel(self) -> None:
+                  if self.cancel_event is not None:
+                      self.cancel_event.set()
+                  self.generation += 1
+                  self.pending = False
+
+              def request(self, asset: MediaAsset) -> None:
+                  self.cancel()
+                  generation = self.generation
+                  event = self.cancel_event = threading.Event()
+                  self.pending = True
+
+                  def decode():
+                      try:
+                          result = MediaPreviewResult(asset, media_cover_png(asset, event))
+                      except PreviewCancelled:
+                          return
+                      except (ValueError, OSError) as exc:
+                          result = MediaPreviewResult(asset, error=str(exc))
+                      except Exception:
+                          result = MediaPreviewResult(asset, error="封面读取失败，请重新导入或更换文件。")
+                      if not event.is_set():
+                          self.results.put((generation, result))
+
+                  worker = threading.Thread(target=decode, name="media-cover", daemon=True)
+                  self.workers = [thread for thread in self.workers if thread.is_alive()]
+                  self.workers.append(worker)
+                  worker.start()
+
+              def shutdown(self) -> None:
+                  self.cancel()
+                  deadline = time.monotonic() + 3
+                  for thread in self.workers:
+                      thread.join(timeout=max(0, deadline - time.monotonic()))
+                  self.workers = [thread for thread in self.workers if thread.is_alive()]
+
+              def poll(self) -> MediaPreviewResult | None:
+                  current = None
+                  while True:
+                      try:
+                          generation, result = self.results.get_nowait()
+                      except Empty:
+                          break
+                      if generation == self.generation:
+                          current = result
+                          self.pending = False
+                  return current
+
+
           @dataclass
           class MediaTask:
               recipient: Recipient
@@ -379,12 +523,6 @@ jobs:
               values = {"region": "", "ip": ""}
               for index, match in enumerate(labels):
                   kind = match.lastgroup
-          '@
-          [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (2/9)
-        run: |
-          $payload = @'
                   if kind not in values:
                       continue
                   end = labels[index + 1].start() if index + 1 < len(labels) else len(line)
@@ -523,6 +661,12 @@ jobs:
 
           def parse_text(text: str, source: str = "导入名单") -> ImportResult:
               """Accept supplied labeled TXT, one ID per line, and headed CSV/TSV."""
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (3/10)
+        run: |
+          $payload = @'
               result = ImportResult([])
               lines = [line.strip() for line in text.lstrip("\ufeff").splitlines()
                        if line.strip() and not line.lstrip().startswith("#")]
@@ -627,12 +771,6 @@ jobs:
                   else:
                       clone = Recipient(record.douyin_id, record.nickname, list(record.sources), record.gender, record.age,
                                         record.region, record.ip_region, list(record.raw_details))
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (3/9)
-        run: |
-          $payload = @'
                       existing.append(clone)
                       by_id[clone.douyin_id] = clone
                       added += 1
@@ -746,12 +884,20 @@ jobs:
                   self.runtime_clock = RuntimeClock(initial_seconds)
                   self.clock_timer = None
                   self.media_timer = None
+                  self.media_preview_timer = None
+                  self.media_reveal_timer = None
+                  self.media_preview_loader = MediaPreviewLoader()
+                  self.media_preview_source = None
+                  self.media_preview_photo = None
+                  self.media_preview_dialog = None
+                  self.media_preview_placeholder = "导入媒体后显示预览"
                   self.media_asset: MediaAsset | None = None
                   self.media_queue = FollowMediaQueue()
                   self.follow_media_var = tk.BooleanVar(value=False)
                   self.media_name_var = tk.StringVar(value="尚未选择媒体文件")
                   self.media_info_var = tk.StringVar(value="支持图片、视频、音频")
                   self.media_status_var = tk.StringVar(value="关注后媒体规则未启用")
+                  self.media_cover_state_var = tk.StringVar(value="支持视频封面与图片预览")
                   self.local_time_var = tk.StringVar()
                   self.runtime_var = tk.StringVar()
                   self.list_expanded = False
@@ -789,6 +935,12 @@ jobs:
                   root.title(APP_NAME)
                   root.configure(bg=COLORS["bg"])
                   width = max(1060, min(1540, root.winfo_screenwidth() - 40))
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (4/10)
+        run: |
+          $payload = @'
                   height = max(760, min(940, root.winfo_screenheight() - 80))
                   root.geometry(f"{width}x{height}")
                   root.minsize(1060, 760)
@@ -883,12 +1035,6 @@ jobs:
                   self.label(note, f"WINDOWS  /  v{VERSION}", 8, "muted").pack(anchor="w")
 
                   main = tk.Frame(self.root, bg=COLORS["bg"])
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (4/9)
-        run: |
-          $payload = @'
                   main.pack(side="left", expand=True, fill="both", padx=18, pady=14)
                   header = tk.Frame(main, bg=COLORS["bg"])
                   header.pack(fill="x")
@@ -981,6 +1127,12 @@ jobs:
                   table_frame.grid(row=3, column=0, sticky="nsew", padx=14)
                   table_frame.rowconfigure(0, weight=1)
                   table_frame.columnconfigure(0, weight=1)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (5/10)
+        run: |
+          $payload = @'
                   self.table = ttk.Treeview(table_frame, columns=tuple(TABLE_COLUMNS),
                                             show="headings", selectmode="extended", height=20)
                   for column, (caption, width, minimum) in TABLE_COLUMNS.items():
@@ -1041,6 +1193,7 @@ jobs:
                                          relief="flat", padx=10, pady=8, state="disabled", font=("Microsoft YaHei UI", 9))
                   self.preview.pack(fill="x", padx=16)
                   media_frame = tk.Frame(compose, bg=COLORS["card"])
+                  self.media_section = media_frame
                   media_frame.pack(fill="x", padx=16, pady=(12, 4))
                   self.label(media_frame, "关注后媒体", 11, bold=True).pack(anchor="w")
                   tk.Checkbutton(media_frame, text="对方关注后发送媒体文件", variable=self.follow_media_var,
@@ -1052,14 +1205,23 @@ jobs:
                   self.button(media_actions, "导入媒体", self.choose_media, padx=10, pady=5).pack(side="left")
                   self.button(media_actions, "清除", self.clear_media, padx=10, pady=5).pack(side="left", padx=6)
                   self.button(media_actions, "关注回执", self.import_follow_receipts, padx=10, pady=5).pack(side="right")
-                  self.label(media_frame, size=9, textvariable=self.media_name_var, wraplength=295, justify="left").pack(anchor="w", pady=(8, 3))
-                  self.label(media_frame, size=8, color="muted", textvariable=self.media_info_var).pack(anchor="w")
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (5/9)
-        run: |
-          $payload = @'
+                  self.media_name_label = self.label(media_frame, size=9, textvariable=self.media_name_var,
+                                                     width=1, anchor="w", wraplength=295, justify="left")
+                  self.media_name_label.pack(fill="x", pady=(8, 6))
+                  self.media_name_label.bind("<Configure>", lambda event: self.media_name_label.configure(wraplength=max(1, event.width)))
+                  self.media_cover_canvas = tk.Canvas(media_frame, height=180, width=1, bg=COLORS["input"],
+                                                      highlightthickness=1, highlightbackground=COLORS["line"])
+                  self.media_cover_canvas.pack(fill="x")
+                  self.media_cover_canvas.bind("<Configure>", self.render_media_cover)
+                  self.media_cover_canvas.bind("<Button-1>", lambda _event: self.open_media_preview())
+                  media_info_row = tk.Frame(media_frame, bg=COLORS["card"])
+                  media_info_row.pack(fill="x", pady=(5, 0))
+                  self.label(media_info_row, size=8, color="muted", textvariable=self.media_info_var).pack(side="left")
+                  self.media_cover_button = self.button(media_info_row, "查看大图", self.open_media_preview, padx=8, pady=3, state="disabled")
+                  self.media_cover_button.pack(side="right")
+                  self.media_cover_state_label = self.label(media_frame, size=8, color="muted",
+                                                           textvariable=self.media_cover_state_var, wraplength=295, justify="left")
+                  self.media_cover_state_label.pack(anchor="w", pady=(3, 0))
                   self.label(media_frame, size=8, color="muted", textvariable=self.media_status_var, wraplength=295, justify="left").pack(anchor="w", pady=(5, 0))
                   settings = tk.Frame(compose, bg=COLORS["card"])
                   settings.pack(fill="x", padx=16, pady=(10, 4))
@@ -1143,6 +1305,12 @@ jobs:
                   save_runtime_offset(self.runtime_path, seconds)
                   self.runtime_clock.set_initial(seconds)
                   self.refresh_clock_labels()
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (6/10)
+        run: |
+          $payload = @'
                   self.log("计时", f"初始已运行时长已设为 {format_duration(seconds)}。")
                   self.toast_var.set("计时设置已保存，已运行时长将从设定值继续累计。")
 
@@ -1199,8 +1367,131 @@ jobs:
                   self.media_name_var.set(asset.name)
                   size = f"{asset.size / 1024 / 1024:.2f} MB" if asset.size >= 1024 * 1024 else f"{asset.size / 1024:.1f} KB"
                   self.media_info_var.set(f"{asset.kind}  ·  {size}")
+                  self.start_media_preview(asset)
                   self.refresh_media_status()
                   self.log("媒体", f"已选择 {asset.name}。")
+                  if self.media_reveal_timer is not None:
+                      self.root.after_cancel(self.media_reveal_timer)
+                  self.media_reveal_timer = self.root.after_idle(self.reveal_media_preview)
+
+              def reveal_media_preview(self) -> None:
+                  self.media_reveal_timer = None
+                  self.root.update_idletasks()
+                  bounds = self.compose_canvas.bbox("all")
+                  if bounds:
+                      self.compose_canvas.yview_moveto(max(0, self.media_section.winfo_y() - 8) / max(1, bounds[3]))
+
+              def reset_media_preview(self, placeholder: str = "导入媒体后显示预览") -> None:
+                  self.media_preview_loader.cancel()
+                  if self.media_preview_timer is not None:
+                      self.root.after_cancel(self.media_preview_timer)
+                      self.media_preview_timer = None
+                  self.close_media_preview()
+                  self.media_preview_source = None
+                  self.media_preview_photo = None
+                  self.media_preview_placeholder = placeholder
+                  self.media_cover_button.configure(state="disabled")
+                  self.media_cover_canvas.configure(cursor="")
+                  self.media_cover_state_label.configure(fg=COLORS["muted"])
+                  self.render_media_cover()
+
+              def start_media_preview(self, asset: MediaAsset) -> None:
+                  if asset.kind == "音频":
+                      self.reset_media_preview("音频文件\n无视频画面")
+                      self.media_cover_state_var.set("已选择音频文件")
+                      return
+                  caption = "视频封面" if asset.kind == "视频" else "图片预览"
+                  self.reset_media_preview(f"正在读取{caption}…")
+                  self.media_cover_state_var.set(f"正在读取{caption}…")
+                  self.media_preview_loader.request(asset)
+                  self.media_preview_timer = self.root.after(60, self.poll_media_preview)
+
+              def poll_media_preview(self) -> None:
+                  self.media_preview_timer = None
+                  result = self.media_preview_loader.poll()
+                  if result is not None and result.asset == self.media_asset:
+                      error = result.error
+                      if not error:
+                          try:
+                              if inspect_media(result.asset.path) != result.asset:
+                                  raise ValueError("媒体文件已变更，请重新导入。")
+                              self.media_preview_source = tk.PhotoImage(master=self.root, data=base64.b64encode(result.png), format="png")
+                          except (tk.TclError, OSError, ValueError):
+                              error = "封面无法显示或文件已变更，请重新导入。"
+                      if error:
+                          self.media_preview_source = None
+                          self.media_preview_placeholder = "封面暂不可用"
+                          self.media_cover_state_var.set(error)
+                          self.media_cover_state_label.configure(fg=COLORS["red"])
+                          self.log("媒体", f"{result.asset.name}：{error}")
+                      else:
+                          caption = "视频封面" if result.asset.kind == "视频" else "图片预览"
+                          self.media_cover_state_var.set(f"{caption} · 点击查看大图")
+                          self.media_cover_button.configure(state="normal")
+                          self.media_cover_canvas.configure(cursor="hand2")
+                      self.render_media_cover()
+                  if self.media_preview_loader.pending:
+                      self.media_preview_timer = self.root.after(60, self.poll_media_preview)
+
+              def draw_media_image(self, canvas, source):
+                  canvas.delete("all")
+                  width, height = max(24, canvas.winfo_width()), max(24, canvas.winfo_height())
+                  factor = max(1, math.ceil(source.width() / (width - 16)), math.ceil(source.height() / (height - 16)))
+                  photo = source.subsample(factor, factor) if factor > 1 else source
+                  canvas.create_image(width / 2, height / 2, image=photo, anchor="center")
+                  return photo
+
+              def render_media_cover(self, _event=None) -> None:
+                  canvas = self.media_cover_canvas
+                  if self.media_preview_source is not None:
+                      self.media_preview_photo = self.draw_media_image(canvas, self.media_preview_source)
+                  else:
+                      canvas.delete("all")
+                      canvas.create_text(max(24, canvas.winfo_width()) / 2, max(24, canvas.winfo_height()) / 2,
+                                         text=self.media_preview_placeholder, width=max(16, canvas.winfo_width() - 24),
+                                         fill=COLORS["muted"], font=("Microsoft YaHei UI", 10), justify="center")
+
+              def close_media_preview(self) -> None:
+                  if self.media_preview_dialog is not None:
+                      self.media_preview_dialog.destroy()
+                      self.media_preview_dialog = None
+
+              def open_media_preview(self) -> None:
+                  if self.media_preview_source is None or self.media_asset is None:
+                      return
+                  try:
+                      if inspect_media(self.media_asset.path) != self.media_asset:
+                          raise ValueError("文件已变更")
+                  except (OSError, ValueError):
+                      self.reset_media_preview("文件已变更，请重新导入")
+                      self.media_cover_state_var.set("媒体文件已变更或不可用，请重新导入。")
+                      return
+                  if self.media_preview_dialog is not None:
+                      self.media_preview_dialog.lift()
+                      return
+                  dialog = self.media_preview_dialog = tk.Toplevel(self.root)
+                  dialog.title("视频封面预览" if self.media_asset.kind == "视频" else "图片预览")
+                  dialog.configure(bg=COLORS["card"])
+                  dialog.transient(self.root)
+                  width = min(940, max(480, self.root.winfo_screenwidth() - 80))
+                  height = min(680, max(360, self.root.winfo_screenheight() - 100))
+                  dialog.geometry(f"{width}x{height}")
+                  dialog.minsize(420, 320)
+                  title = self.label(dialog, self.media_asset.name, 11, bold=True, anchor="w", justify="left", wraplength=width - 40)
+                  title.pack(fill="x", padx=20, pady=(16, 10))
+                  title.bind("<Configure>", lambda event: title.configure(wraplength=max(1, event.width)))
+                  self.button(dialog, "关闭预览", self.close_media_preview, padx=12, pady=6).pack(side="bottom", pady=12)
+                  canvas = tk.Canvas(dialog, bg=COLORS["input"], highlightthickness=0)
+                  canvas.pack(fill="both", expand=True, padx=20)
+
+                  def redraw(_event=None):
+                      if self.media_preview_source is not None:
+                          dialog.preview_photo = self.draw_media_image(canvas, self.media_preview_source)
+
+                  canvas.bind("<Configure>", redraw)
+                  dialog.protocol("WM_DELETE_WINDOW", self.close_media_preview)
+                  dialog.bind("<Escape>", lambda _event: self.close_media_preview())
+                  return dialog
 
               def choose_media(self) -> None:
                   filename = filedialog.askopenfilename(title="选择关注后发送的媒体文件", filetypes=[
@@ -1214,6 +1505,11 @@ jobs:
 
               def clear_media(self) -> None:
                   self.cancel_media_tasks()
+                  self.reset_media_preview()
+                  self.media_cover_state_var.set("支持视频封面与图片预览")
+                  if self.media_reveal_timer is not None:
+                      self.root.after_cancel(self.media_reveal_timer)
+                      self.media_reveal_timer = None
                   self.media_asset = None
                   self.follow_media_var.set(False)
                   self.media_name_var.set("尚未选择媒体文件")
@@ -1250,6 +1546,12 @@ jobs:
                       self.media_timer = self.root.after(500, self.process_media_tick)
                   return added, duplicate, skipped
 
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (7/10)
+        run: |
+          $payload = @'
               def import_follow_receipts(self) -> None:
                   if not self.follow_media_var.get() or self.media_asset is None:
                       messagebox.showinfo("媒体规则", "请先启用关注后媒体规则，并选择媒体文件。", parent=self.root)
@@ -1280,12 +1582,6 @@ jobs:
                   if self.media_timer is not None:
                       self.root.after_cancel(self.media_timer)
                       self.media_timer = None
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (6/9)
-        run: |
-          $payload = @'
                   count = self.media_queue.cancel_pending()
                   if count:
                       self.log("媒体", f"已取消尚未处理的媒体任务 {count} 条。")
@@ -1497,6 +1793,12 @@ jobs:
                   return visible
 
               def sync_filter_choices(self) -> None:
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (8/10)
+        run: |
+          $payload = @'
                   groups = list(dict.fromkeys(s for record in self.records for s in record.sources))
                   self.source_combo.configure(values=["全部来源", *groups])
                   genders = list(dict.fromkeys(["男", "女", *[r.gender for r in self.records if r.gender]]))
@@ -1528,12 +1830,6 @@ jobs:
               def show_clicked_recipient(self, event) -> None:
                   row = self.table.identify_row(event.y)
                   if row and self.table.identify_region(event.x, event.y) in {"cell", "tree"}:
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (7/9)
-        run: |
-          $payload = @'
                       self.open_recipient_details(row)
 
               def open_recipient_details(self, identifier: str | None = None):
@@ -1765,6 +2061,12 @@ jobs:
                   if total:
                       seconds = int(self.session.elapsed)
                       remaining = self.session.remaining * getattr(self, "interval_ms", 800) / 1000
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (9/10)
+        run: |
+          $payload = @'
                       self.progress_text.set(f"{states[self.session.state]}  {self.session.cursor} / {total} 人  ·  {percent:.0f}%\n"
                                              f"用时 {seconds // 60:02d}:{seconds % 60:02d}  ·  预计剩余 {remaining:.0f} 秒")
                   else:
@@ -1795,16 +2097,12 @@ jobs:
                   except OSError as exc:
                       messagebox.showerror("导出失败", str(exc), parent=self.root)
                       return
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (8/9)
-        run: |
-          $payload = @'
                   self.toast_var.set(f"运行日志已导出：{Path(filename).name}")
 
               def shutdown_timers(self) -> None:
-                  for name in ("timer", "search_timer", "clock_timer", "media_timer", "table_layout_timer"):
+                  self.media_preview_loader.shutdown()
+                  for name in ("timer", "search_timer", "clock_timer", "media_timer", "table_layout_timer",
+                               "media_preview_timer", "media_reveal_timer"):
                       identifier = getattr(self, name, None)
                       if identifier is not None:
                           self.root.after_cancel(identifier)
@@ -1970,9 +2268,84 @@ jobs:
                   assert len(app.table.get_children()) == 0
                   app.reset_filters()
                   assert len(app.table.get_children()) == 6
+                  decoder = preview_executable()
+                  if getattr(sys, "frozen", False):
+                      assert Path(decoder).resolve().is_relative_to(Path(sys._MEIPASS).resolve())
+                  red_video = Path(profile_directory.name) / "即将发送的完整视频文件名 [中文 空格] 横屏.mp4"
+                  blue_video = Path(profile_directory.name) / "即将发送的视频 竖屏.mp4"
+                  for path, size, color in ((red_video, "160x90", "red"), (blue_video, "90x160", "blue")):
+                      subprocess.run([decoder, "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
+                                      f"color=c={color}:s={size}:r=6:d=0.5", "-c:v", "mpeg4", "-q:v", "2",
+                                      "-pix_fmt", "yuv420p", "-threads", "1", str(path)], check=True,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15,
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+                  def wait_for_cover():
+                      deadline = time.monotonic() + 20
+                      while app.media_preview_loader.pending or app.media_preview_timer is not None:
+                          assert time.monotonic() < deadline, "Media preview did not finish"
+                          root.update()
+                          time.sleep(0.01)
+                      root.update_idletasks()
+
+                  root.deiconify()
+                  app.focus_editor()
+                  app.set_media_file(red_video)
+                  assert app.media_preview_source is None
+                  assert str(app.media_cover_button.cget("state")) == "disabled"
+                  wait_for_cover()
+                  assert app.media_preview_source is not None
+                  assert app.media_name_var.get() == red_video.name
+                  assert str(app.media_cover_button.cget("state")) == "normal"
+                  picture = app.media_preview_source
+                  assert picture.width() > picture.height()
+                  pixel = picture.get(picture.width() // 2, picture.height() // 2)
+                  assert pixel[0] > 180 and pixel[1] < 80 and pixel[2] < 80
+                  assert app.media_preview_photo.width() <= app.media_cover_canvas.winfo_width() - 16
+                  assert app.media_preview_photo.height() <= app.media_cover_canvas.winfo_height() - 16
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (10/10)
+        run: |
+          $payload = @'
+                  dialog = app.open_media_preview()
+                  root.update()
+                  assert dialog is app.media_preview_dialog and dialog.title() == "视频封面预览"
+                  assert hasattr(dialog, "preview_photo")
                   media_path = Path(profile_directory.name) / "关注后发送的媒体.PNG"
-                  media_path.write_bytes(b"media-name-preview-fixture")
+                  picture.write(str(media_path), format="png")
+                  app.set_media_file(blue_video)
+                  assert app.media_preview_dialog is None and app.media_preview_source is None
+                  wait_for_cover()
+                  picture = app.media_preview_source
+                  assert picture is not None and picture.width() < picture.height()
+                  pixel = picture.get(picture.width() // 2, picture.height() // 2)
+                  assert pixel[2] > 180 and pixel[0] < 80 and pixel[1] < 80
+                  app.set_media_file(red_video)
+                  app.set_media_file(blue_video)
+                  wait_for_cover()
+                  assert app.media_asset.path == blue_video.resolve()
+                  pixel = app.media_preview_source.get(10, 10)
+                  assert pixel[2] > 180 and pixel[0] < 80
+                  app.set_media_file(red_video)
+                  app.clear_media()
+                  root.update()
+                  assert app.media_preview_source is None and not app.media_preview_loader.pending
+                  assert app.media_preview_timer is None
+                  audio_path = Path(profile_directory.name) / "关注音频.mp3"
+                  audio_path.write_bytes(b"audio-name-fixture")
+                  app.set_media_file(audio_path)
+                  assert app.media_preview_source is None and "音频" in app.media_preview_placeholder
+                  assert not app.media_preview_loader.pending
+                  broken_video = Path(profile_directory.name) / "无法读取的封面.mp4"
+                  broken_video.write_bytes(b"not-a-video")
+                  app.set_media_file(broken_video)
+                  wait_for_cover()
+                  assert app.media_preview_source is None and "无法读取封面" in app.media_cover_state_var.get()
                   app.set_media_file(media_path)
+                  wait_for_cover()
+                  assert app.media_preview_source is not None and "图片预览" in app.media_cover_state_var.get()
                   app.follow_media_var.set(True)
                   app.toggle_follow_media()
                   assert app.media_name_var.get() == media_path.name
@@ -1996,7 +2369,9 @@ jobs:
                                                                 "local_clock", "custom_runtime", "media_filename", "follow_receipts",
                                                                 "media_deduplication", "media_cancel", "adaptive_columns", "status_visible",
                                                                 "complete_cell_wrapping", "imported_filenames", "partial_import",
-                                                                "filename_clear", "compact_stats", "region_aliases"]},
+                                                                "filename_clear", "compact_stats", "region_aliases", "real_video_cover",
+                                                                "portrait_video_cover", "cover_enlargement", "cover_switch",
+                                                                "cover_clear", "audio_placeholder", "corrupt_cover_error", "image_cover"]},
                                                     ensure_ascii=False, indent=2), encoding="utf-8")
               finally:
                   if "app" in locals():
@@ -2044,12 +2419,6 @@ jobs:
                   if "--smoke-test" not in sys.argv:
                       try:
                           messagebox.showerror("程序启动失败", f"请将以下错误反馈给维护者：\n\n{detail[-1500:]}\n\n错误日志：{log_path}")
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (9/9)
-        run: |
-          $payload = @'
                       except Exception:
                           pass
                   raise SystemExit(1)
@@ -2060,14 +2429,19 @@ jobs:
         run: |
           $payload = @'
           import tempfile
+          import struct
+          import subprocess
+          import threading
+          import time
           import unittest
           from unittest import mock
           from pathlib import Path
 
-          from app import (MAX_MESSAGE, TABLE_COLUMNS, AccountProfile, FollowMediaQueue, Recipient, RuntimeClock, Session,
+          from app import (MAX_MESSAGE, TABLE_COLUMNS, AccountProfile, FollowMediaQueue, MediaPreviewLoader, PreviewCancelled,
+                           Recipient, RuntimeClock, Session,
                            allocate_column_widths,
                            csv_cell, decode_file, duration_seconds, filter_records, format_duration, inspect_media, load_profile,
-                           load_runtime_offset,
+                           load_runtime_offset, media_cover_png, preview_executable,
                            merge_records, normalize_profile, parse_age, parse_text, profile_display_text,
                            read_list, recipient_details_text, render_message, save_profile, save_runtime_offset, sort_records,
                            valid_id, wrap_cell_text)
@@ -2271,15 +2645,15 @@ jobs:
                           columns = allocate_column_widths(width)
                           self.assertEqual(tuple(columns), tuple(TABLE_COLUMNS))
                           self.assertEqual(sum(columns.values()), width)
-                          self.assertTrue(all(value > 0 for value in columns.values()))
-                          self.assertGreaterEqual(columns["status"], TABLE_COLUMNS["status"][2])
-
           '@
           [IO.File]::WriteAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded test_app.py (2/3)
         run: |
           $payload = @'
+                          self.assertTrue(all(value > 0 for value in columns.values()))
+                          self.assertGreaterEqual(columns["status"], TABLE_COLUMNS["status"][2])
+
               def test_status_width_respects_scaled_windows_font(self):
                   for width in (440, 800, 1200):
                       columns = allocate_column_widths(width, {"status": 116})
@@ -2504,16 +2878,189 @@ jobs:
                       record = Recipient("00123")
                       for filename in ("one.jpg", "two.jpg"):
                           path = Path(directory) / filename
-                          path.write_bytes(b"image-file")
-                          self.assertEqual(queue.submit([record], inspect_media(path)), (1, 0))
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded test_app.py (3/3)
         run: |
           $payload = @'
+                          path.write_bytes(b"image-file")
+                          self.assertEqual(queue.submit([record], inspect_media(path)), (1, 0))
                       self.assertEqual(queue.process_next().asset.name, "one.jpg")
                       self.assertEqual(queue.process_next().asset.name, "two.jpg")
+
+
+          class MediaPreviewTests(unittest.TestCase):
+              @classmethod
+              def setUpClass(cls):
+                  cls.directory = tempfile.TemporaryDirectory(prefix="media-cover-tests-")
+                  cls.landscape = Path(cls.directory.name) / "待发送视频 [中文 空格] 横屏.mp4"
+                  cls.portrait = Path(cls.directory.name) / "待发送视频 竖屏.mp4"
+                  try:
+                      executable = preview_executable()
+                  except ValueError as exc:
+                      cls.directory.cleanup()
+                      raise unittest.SkipTest(str(exc))
+                  for path, size, color in ((cls.landscape, "160x90", "red"), (cls.portrait, "90x160", "blue")):
+                      subprocess.run([executable, "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
+                                      f"color=c={color}:s={size}:r=6:d=0.5", "-c:v", "mpeg4", "-q:v", "2",
+                                      "-pix_fmt", "yuv420p", "-threads", "1", str(path)], check=True,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15,
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+              @classmethod
+              def tearDownClass(cls):
+                  cls.directory.cleanup()
+
+              def assert_valid_png(self, png):
+                  self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+                  width, height = struct.unpack(">II", png[16:24])
+                  self.assertTrue(1 <= width <= 864 and 1 <= height <= 540)
+                  return width, height
+
+              def wait_result(self, loader):
+                  deadline = time.monotonic() + 5
+                  while time.monotonic() < deadline:
+                      if (result := loader.poll()) is not None:
+                          return result
+                      time.sleep(0.005)
+                  self.fail("封面任务没有及时返回结果")
+
+              def test_real_short_video_with_unicode_path(self):
+                  png = media_cover_png(inspect_media(self.landscape))
+                  width, height = self.assert_valid_png(png)
+                  self.assertAlmostEqual(width / height, 16 / 9, delta=0.01)
+
+              def test_portrait_keeps_its_aspect_ratio(self):
+                  png = media_cover_png(inspect_media(self.portrait))
+                  width, height = self.assert_valid_png(png)
+                  self.assertLess(width, height)
+                  self.assertAlmostEqual(width / height, 9 / 16, delta=0.01)
+
+              def test_imported_picture_can_also_be_previewed(self):
+                  png = media_cover_png(inspect_media(self.landscape))
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "图片 预览.PNG"
+                      path.write_bytes(png)
+                      width, height = self.assert_valid_png(media_cover_png(inspect_media(path)))
+                      self.assertGreater(width, height)
+
+              def test_corrupt_video_fails_without_returning_a_cover(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "无法播放.mp4"
+                      path.write_bytes(b"not-a-video")
+                      with self.assertRaisesRegex(ValueError, "无法读取封面"):
+                          media_cover_png(inspect_media(path))
+
+              def test_changed_and_audio_files_do_not_produce_video_covers(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "待更换.mp4"
+                      path.write_bytes(self.landscape.read_bytes())
+                      asset = inspect_media(path)
+                      path.write_bytes(b"changed-video")
+                      with self.assertRaisesRegex(ValueError, "已变更"):
+                          media_cover_png(asset)
+                      audio = Path(directory) / "音频.mp3"
+                      audio.write_bytes(b"audio-file")
+                      with self.assertRaisesRegex(ValueError, "音频"):
+                          media_cover_png(inspect_media(audio))
+
+              def test_cancelled_request_does_not_start_a_decoder(self):
+                  cancelled = threading.Event()
+                  cancelled.set()
+                  with mock.patch("app.subprocess.Popen") as popen:
+                      with self.assertRaises(PreviewCancelled):
+                          media_cover_png(inspect_media(self.landscape), cancelled)
+                  popen.assert_not_called()
+
+              def test_timeout_kills_the_decoder_process(self):
+                  process = mock.Mock()
+                  process.poll.return_value = None
+                  process.communicate.return_value = (b"", b"")
+                  with mock.patch("app.preview_executable", return_value="decoder"), mock.patch("app.subprocess.Popen", return_value=process):
+                      with self.assertRaisesRegex(ValueError, "超时"):
+                          media_cover_png(inspect_media(self.landscape), timeout=0)
+                  process.kill.assert_called_once()
+
+              def test_cancellation_while_decoding_kills_the_process(self):
+                  cancelled = threading.Event()
+                  process = mock.Mock()
+                  process.poll.return_value = None
+
+                  def communicate(timeout=None):
+                      if timeout is not None:
+                          cancelled.set()
+                          raise subprocess.TimeoutExpired("decoder", timeout)
+                      return b"", b""
+
+                  process.communicate.side_effect = communicate
+                  with mock.patch("app.preview_executable", return_value="decoder"), mock.patch("app.subprocess.Popen", return_value=process):
+                      with self.assertRaises(PreviewCancelled):
+                          media_cover_png(inspect_media(self.landscape), cancelled)
+                  process.kill.assert_called_once()
+
+              def test_switching_files_discards_the_previous_queued_cover(self):
+                  old, new = inspect_media(self.landscape), inspect_media(self.portrait)
+                  loader = MediaPreviewLoader()
+                  with mock.patch("app.media_cover_png", side_effect=lambda asset, _event: asset.name.encode("utf-8")):
+                      loader.request(old)
+                      deadline = time.monotonic() + 5
+                      while loader.results.empty() and time.monotonic() < deadline:
+                          time.sleep(0.005)
+                      self.assertFalse(loader.results.empty())
+                      loader.request(new)
+                      result = self.wait_result(loader)
+                  self.assertEqual((result.asset, result.png), (new, new.name.encode("utf-8")))
+                  self.assertFalse(loader.pending)
+
+              def test_clearing_a_pending_preview_never_returns_the_old_cover(self):
+                  entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+                  def decode(_asset, _event):
+                      entered.set()
+                      release.wait(5)
+                      finished.set()
+                      return b"old-cover"
+
+                  loader = MediaPreviewLoader()
+                  try:
+                      with mock.patch("app.media_cover_png", side_effect=decode):
+                          loader.request(inspect_media(self.landscape))
+                          self.assertTrue(entered.wait(5))
+                          loader.cancel()
+                          release.set()
+                          self.assertTrue(finished.wait(5))
+                          self.assertIsNone(loader.poll())
+                          self.assertFalse(loader.pending)
+                  finally:
+                      release.set()
+
+              def test_background_error_becomes_a_readable_preview_failure(self):
+                  loader = MediaPreviewLoader()
+                  with mock.patch("app.media_cover_png", side_effect=ValueError("无法读取封面")):
+                      loader.request(inspect_media(self.landscape))
+                      result = self.wait_result(loader)
+                  self.assertEqual(result.error, "无法读取封面")
+                  self.assertEqual(result.png, b"")
+                  self.assertFalse(loader.pending)
+
+              def test_shutdown_waits_for_pending_decoder_to_stop(self):
+                  entered = threading.Event()
+
+                  def decode(_asset, cancel):
+                      entered.set()
+                      if cancel.wait(5):
+                          raise PreviewCancelled()
+                      return b"unexpected-cover"
+
+                  loader = MediaPreviewLoader()
+                  with mock.patch("app.media_cover_png", side_effect=decode):
+                      loader.request(inspect_media(self.landscape))
+                      self.assertTrue(entered.wait(5))
+                      loader.shutdown()
+                  self.assertEqual(loader.workers, [])
+                  self.assertFalse(loader.pending)
+                  self.assertIsNone(loader.poll())
 
 
           class MessageLimitTests(unittest.TestCase):
@@ -2642,7 +3189,7 @@ jobs:
           同一 ID 和同一媒体文件的重复回执只生成一次任务；选择其他文件可以生成新任务。
           文件丢失或变更会标为异常；重新选择可用文件后可重新导入回执。
           关闭规则、清除媒体或点击“停止”会取消未处理的媒体任务。规则不主动轮询抖音，也不自行生成关注事件；尚未接入真实关注通知和媒体发送接口。
-          文件类型依据扩展名识别，此版本提供文件名预览；不包含媒体解码与缩略图播放。
+          文件类型依据扩展名识别，媒体预览功能见下方 v1.7.0 说明。
 
           右下角每秒读取运行电脑的本地日期和时间；Windows 时区与系统时间改变后，显示也随之更新。
           底部“本次运行”从程序启动起计数；“已运行”支持设置初始时长，然后从设定值继续累计。
@@ -2673,19 +3220,33 @@ jobs:
 
           构建包含 49 项逻辑测试，并在 Windows 源码与 EXE 检查中验证三个窗口宽度下的列宽、状态可见性、完整换行、文件名显示和清空操作。
 
+          ## v1.7.0 视频封面与媒体预览
+
+          导入视频后，“关注后媒体”区域会显示该视频的实际画面，并自动滚动到媒体区域。
+          上方显示完整文件名，下方显示文件类型与大小，方便确认当前选中的视频。
+          封面从视频前段画面中提取，横屏与竖屏均保持原有比例；点击封面或“查看大图”可打开放大的预览窗口。
+          导入图片时显示图片预览；音频显示对应文件信息与音频占位提示。
+
+          封面读取在后台进行。更换文件时立即清除旧封面并取消旧任务；清除媒体时同步清除预览和预览窗口。
+          损坏文件或读取超时会显示提示，可重新导入；程序退出时会停止正在读取封面的任务。
+          Windows 编译配置会将视频读取组件打入 EXE，并检查打包后的视频封面读取，无需单独安装播放器或视频工具。
+
+          当前构建包含 61 项逻辑检查；Windows 源码与 EXE 检查还会使用两个真实短视频验证封面的颜色、横竖屏比例、放大、切换、清除、图片预览和异常提示。
+          封面读取使用 imageio-ffmpeg 0.6.0 所附的 FFmpeg；组件来源与许可证信息一并写入构建产物的 `THIRD_PARTY_NOTICES.txt`。
+
           ## 本地运行与构建
 
           安装包含 Tkinter 的 Python 3.12 后：
 
           ```powershell
+          python -m pip install -r requirements.txt
           python app.py
           python -m unittest -v
           python app.py --smoke-test smoke-source.json
-          python -m pip install PyInstaller==6.22.3
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --name DouyinSender app.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --collect-all imageio_ffmpeg --copy-metadata imageio-ffmpeg --name DouyinSender app.py
           ```
 
-          可直接运行 `build_windows.bat`。输出位于 `dist/DouyinSender.exe`。
+          也可直接运行 `build_windows.bat`，脚本会先安装依赖。输出位于 `dist/DouyinSender.exe`。
           本地修改源码后，运行 `python make_workflow.py` 可重新生成包含最新源码的独立工作流。
           若缺少 Tk/Tcl 或程序启动失败，错误信息会写到用户 TEMP 目录中的 `douyin-sender-error.log`。
 
@@ -2701,8 +3262,24 @@ jobs:
           - [actions/setup-python](https://github.com/actions/setup-python)
           - [actions/upload-artifact](https://github.com/actions/upload-artifact)
           - [PyInstaller 用法](https://pyinstaller.org/en/stable/usage.html)
+          - [imageio-ffmpeg 源码与许可证](https://github.com/imageio/imageio-ffmpeg)
+          - [FFmpeg 视频滤镜](https://ffmpeg.org/ffmpeg-filters.html)
+          - [FFmpeg 源码与许可证](https://ffmpeg.org/download.html)
           '@
           [IO.File]::WriteAllText((Join-Path $PWD 'README.md'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded requirements.txt (1/1)
+        run: |
+          $payload = @'
+          imageio-ffmpeg==0.6.0
+          PyInstaller==6.22.3
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD 'requirements.txt'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Install pinned build and media dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test list parsing and task queue
         run: |
@@ -2715,14 +3292,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path smoke-source.json)) { throw 'Source GUI smoke report missing' }
 
-      - name: Install pinned build dependency
-        run: |
-          python -m pip install PyInstaller==6.22.3
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
       - name: Build standalone Windows EXE
         run: |
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --name DouyinSender app.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --collect-all imageio_ffmpeg --copy-metadata imageio-ffmpeg --name DouyinSender app.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Check packaged EXE and prepare download
@@ -2743,6 +3315,25 @@ jobs:
           Copy-Item $exe 'release/DouyinSender.exe'
           Copy-Item README.md 'release/README.md'
           Copy-Item smoke-source.json,smoke-exe.json -Destination release
+          $notices = @'
+          from pathlib import Path
+          from importlib.metadata import distribution
+          import subprocess
+          import imageio_ffmpeg
+          package = distribution('imageio-ffmpeg')
+          parts = ['imageio-ffmpeg 0.6.0: https://github.com/imageio/imageio-ffmpeg',
+                   'FFmpeg sources and license: https://ffmpeg.org/download.html',
+                   'FFmpeg binary build sources: https://github.com/imageio/imageio-binaries']
+          for item in package.files or []:
+              if item.name.lower().startswith('license'):
+                  parts.append(package.locate_file(item).read_text(encoding='utf-8', errors='replace'))
+          result = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-L'], stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, check=True)
+          parts.append(result.stdout.decode('utf-8', errors='replace'))
+          Path('release/THIRD_PARTY_NOTICES.txt').write_text('\n\n'.join(parts), encoding='utf-8')
+          '@
+          $notices | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $hash = (Get-FileHash 'release/DouyinSender.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
           [IO.File]::WriteAllText((Join-Path $PWD 'release/SHA256SUMS.txt'), "$hash  DouyinSender.exe`n", [Text.UTF8Encoding]::new($false))
           "Built DouyinSender.exe. Download DouyinSender-Windows-x64 from Artifacts." >> $env:GITHUB_STEP_SUMMARY
