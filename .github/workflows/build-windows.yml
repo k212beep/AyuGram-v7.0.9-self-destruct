@@ -1,7 +1,7 @@
 # Upload this single file as .github/workflows/build-windows.yml
 # It embeds all source and uses no real recipient data, Secrets, or account logins.
 name: Build Windows App
-run-name: Windows v1.16.2 · ${{ github.ref_name }}
+run-name: Windows v1.17.0 · ${{ github.ref_name }}
 
 on:
   push:
@@ -32,7 +32,7 @@ jobs:
           architecture: x64
 
 
-      - name: Write embedded app.py (1/18)
+      - name: Write embedded app.py (1/19)
         run: |
           $payload = @'
           """Desktop messaging workbench with a local task queue."""
@@ -62,7 +62,7 @@ jobs:
 
 
           APP_NAME = "抖音群发工作台"
-          VERSION = "1.16.2"
+          VERSION = "1.17.0"
           UI_SCALE = 0.85
           MAX_FILE_BYTES = 5 * 1024 * 1024
           MAX_RECIPIENTS = 20000
@@ -96,14 +96,13 @@ jobs:
               r"(?:所\s*在\s*地|地\s*区)(?=\s*[:：=]))|"
               r"(?P<other>评\s*论\s*(?:次\s*数|数\s*量|数)|抖音号|抖音\s*ID|douyin[_ ]?id|昵\s*称|性\s*别|年\s*龄|来\s*源)", re.I)
           TABLE_COLUMNS = {
-              "name": ("昵称", 135, 60), "id": ("抖音号", 148, 76),
-              "gender": ("性别", 52, 44), "age": ("年龄", 52, 44),
-              "region": ("资料地区", 150, 74), "ip_region": ("IP属地", 110, 66),
-              "comment_count": ("评论次数", 82, 64),
-              "source": ("来源", 120, 64), "status": ("状态", 82, 76),
+              "name": ("昵称", 220, 80), "id": ("抖音号", 156, 64),
+              "gender": ("性别", 34, 26), "age": ("年龄", 36, 26),
+              "region": ("资料地区", 100, 38), "ip_region": ("IP属地", 64, 38),
+              "comment_count": ("评论次数", 66, 38),
+              "source": ("来源", 104, 54), "status": ("状态", 76, 54),
           }
-          TABLE_ANCHORS = {column: "center" if column in {"gender", "age", "comment_count"} else "w"
-                           for column in TABLE_COLUMNS}
+          TABLE_ANCHORS = {column: "center" for column in TABLE_COLUMNS}
           COLORS = {
               "bg": "#0B1020", "side": "#10182A", "card": "#151F33",
               "input": "#0C1425", "line": "#293952", "text": "#F0F5FF",
@@ -361,7 +360,7 @@ jobs:
           '@
           [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded app.py (2/18)
+      - name: Write embedded app.py (2/19)
         run: |
           $payload = @'
                   process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -607,8 +606,9 @@ jobs:
 
 
           def allocate_column_widths(available: int, minimums: dict[str, int] | None = None,
-                                     columns: tuple[str, ...] | None = None) -> dict[str, int]:
-              """Keep every column inside the viewport, reserving status width first."""
+                                     columns: tuple[str, ...] | None = None,
+                                     maximums: dict[str, int] | None = None) -> dict[str, int]:
+              """Keep columns inside the viewport and give identity columns spare space."""
               columns = tuple(TABLE_COLUMNS) if columns is None else columns
               if not columns:
                   return {}
@@ -616,23 +616,40 @@ jobs:
               minimums = {key: max(1, (minimums or {}).get(key, TABLE_COLUMNS[key][2])) for key in columns}
               keys = list(columns)
               if available < sum(minimums.values()):
-                  reserved = "status" if "status" in keys else keys[-1]
-                  status = min(minimums[reserved], available - len(keys) + 1)
-                  keys.remove(reserved)
-                  budget = available - status - len(keys)
+                  reserved = [key for key in ("status", "name") if key in keys] or [keys[-1]]
+                  widths = {key: 1 for key in keys}
+                  budget = available - len(keys)
+                  for key in reserved:
+                      extra = min(minimums[key] - 1, budget)
+                      widths[key] += extra
+                      budget -= extra
+                      keys.remove(key)
                   weights = {key: minimums[key] for key in keys}
-                  widths = {reserved: status, **{key: 1 for key in keys}}
               else:
                   widths = dict(minimums)
                   budget = available - sum(widths.values())
-                  weights = {key: max(1, TABLE_COLUMNS[key][1] - minimums[key]) for key in keys}
-              total = sum(weights.values()) or 1
-              shares = {key: budget * weights[key] / total for key in keys}
-              for key in keys:
-                  widths[key] += int(shares[key])
-              remainder = available - sum(widths.values())
-              for key in sorted(keys, key=lambda key: shares[key] % 1, reverse=True)[:remainder]:
-                  widths[key] += 1
+                  weights = {key: 5 if key == "name" else 3 if key == "id" else 1 for key in keys}
+              limits = {key: max(widths[key], (maximums or {}).get(key, available)) for key in columns}
+              while budget:
+                  active = [key for key in keys if widths[key] < limits[key]]
+                  if not active:
+                      # Identity columns absorb surplus if all optional caps are reached.
+                      widths["name" if "name" in columns else columns[0]] += budget
+                      break
+                  total = sum(weights[key] for key in active) or 1
+                  shares = {key: budget * weights[key] / total for key in active}
+                  spent = 0
+                  for key in active:
+                      extra = min(limits[key] - widths[key], int(shares[key]))
+                      widths[key] += extra
+                      spent += extra
+                  budget -= spent
+                  if not spent:
+                      for key in sorted(active, key=lambda key: shares[key], reverse=True):
+                          widths[key] += 1
+                          budget -= 1
+                          if not budget:
+                              break
               return {key: widths[key] for key in columns}
 
 
@@ -665,6 +682,12 @@ jobs:
           def parse_gender(value: str) -> str:
               value = optional_text(value)
               mapping = {"m": "男", "male": "男", "男性": "男", "f": "女", "female": "女", "女性": "女"}
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (3/19)
+        run: |
+          $payload = @'
               if re.fullmatch(r"[男女](?:\s*\d{1,3}\s*岁)?", value):
                   return value[0]
               return mapping.get(value.casefold(), value)
@@ -685,12 +708,6 @@ jobs:
                   return None
               following = LOCATION_LABELS.search(line, match.end())
               value = line[match.end():following.start() if following else len(line)]
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (3/18)
-        run: |
-          $payload = @'
               value = re.split(r"[（(]", value, maxsplit=1)[0].strip(" \t\u3000:：=,，;；|")
               return parse_comment_count(value)
 
@@ -906,6 +923,12 @@ jobs:
 
           @dataclass
           class CollectionBatch:
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (4/19)
+        run: |
+          $payload = @'
               target: str
               kind: str
               records: list[Recipient]
@@ -938,12 +961,6 @@ jobs:
           @dataclass
           class CollectionPreferences:
               last_target: str = ""
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (4/18)
-        run: |
-          $payload = @'
               targets: dict[str, TargetProfile] = field(default_factory=dict)
 
 
@@ -1167,6 +1184,12 @@ jobs:
                   self.generation = 0
                   self.cancel_event: threading.Event | None = None
                   self.results = SimpleQueue()
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (5/19)
+        run: |
+          $payload = @'
                   self.workers: list[threading.Thread] = []
 
               def request(self, paths, kind: str, target: str, directory: Path, existing_ids=()) -> None:
@@ -1183,12 +1206,6 @@ jobs:
                           batch = read_collection_batch(paths, kind, target, event)
                           if len(known | {r.douyin_id for r in batch.records}) > MAX_RECIPIENTS:
                               raise ValueError(f"合并后的名单超过 {MAX_RECIPIENTS:,} 人，请先清理名单或拆分文件。")
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (5/18)
-        run: |
-          $payload = @'
                           saved = save_collection_batch(batch, directory, event)
                           result = CollectionResult(batch, saved)
                       except CollectionCancelled:
@@ -1394,6 +1411,10 @@ jobs:
                   self.imported_files: list[Path] = []
                   self.imported_names_var = tk.StringVar(value="")
                   self.table_layout_timer = None
+                  self.table_grid_timer = None
+                  self.table_grid_lines = []
+                  self.table_row_height = ui_pixels(30)
+                  self.table_cell_padding = ui_pixels(3)
                   self.table_widths: dict[str, int] = {}
                   self.session = Session()
                   self.logs: list[tuple[str, str, str]] = []
@@ -1443,6 +1464,12 @@ jobs:
                   if self.view_load_error:
                       self.log("设置", "列表显示设置未能读取，已恢复显示评论次数。")
                   if self.collection_preferences_error:
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (6/19)
+        run: |
+          $payload = @'
                       self.log("设置", "账号资料未能读取，可在“搜索账号”中重新填写。")
                   self.update_stats()
                   self.tick_clock()
@@ -1452,28 +1479,22 @@ jobs:
 
                   style = ttk.Style(self.root)
                   self.table_font = tkfont.Font(root=self.root, family="Microsoft YaHei UI", size=ui_font_size(9))
-                  self.table_heading_font = tkfont.Font(root=self.root, family="Microsoft YaHei UI", size=ui_font_size(8))
+                  self.table_heading_font = tkfont.Font(root=self.root, family="Microsoft YaHei UI", size=ui_font_size(9), weight="bold")
                   self.measure_table_text = lru_cache(maxsize=100000)(self.table_font.measure)
                   self.wrapped_table_text = lru_cache(maxsize=100000)(
                       lambda value, width: wrap_cell_text(value, width, self.measure_table_text))
                   style.theme_use("clam")
                   style.configure("TFrame", background=COLORS["card"])
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (6/18)
-        run: |
-          $payload = @'
                   style.configure("TCombobox", fieldbackground=COLORS["input"], background=COLORS["line"],
                                   foreground=COLORS["text"], arrowcolor=COLORS["muted"], padding=ui_pixels(5))
                   style.map("TCombobox", fieldbackground=[("readonly", COLORS["input"])],
                             selectbackground=[("readonly", COLORS["input"])],
                             selectforeground=[("readonly", COLORS["text"])])
                   style.configure("Treeview", background=COLORS["input"], fieldbackground=COLORS["input"],
-                                  foreground=COLORS["text"], rowheight=ui_pixels(26), borderwidth=0,
+                                  foreground=COLORS["text"], rowheight=self.table_row_height, borderwidth=1,
                                   font=self.table_font)
-                  style.configure("Treeview.Heading", background=COLORS["card"], foreground=COLORS["muted"],
-                                  relief="flat", padding=(ui_pixels(2), ui_pixels(5)), font=self.table_heading_font)
+                  style.configure("Treeview.Heading", background="#1B2A40", foreground=COLORS["text"],
+                                  relief="flat", padding=(ui_pixels(1), ui_pixels(5)), font=self.table_heading_font)
                   style.map("Treeview", background=[("selected", "#214D53")], foreground=[("selected", "#FFFFFF")])
                   style.map("Treeview.Heading", background=[("active", COLORS["hover"])])
                   style.configure("Vertical.TScrollbar", background=COLORS["line"], troughcolor=COLORS["input"],
@@ -1584,8 +1605,10 @@ jobs:
                   body = self.body = tk.Frame(main, bg=COLORS["bg"])
                   body.grid(row=2, column=0, sticky="nsew")
                   body.columnconfigure(0, weight=1, minsize=410)
-                  body.columnconfigure(1, weight=0, minsize=310)
-                  body.columnconfigure(2, weight=0, minsize=280)
+                  body.columnconfigure(1, weight=0, minsize=250)
+                  body.columnconfigure(2, weight=0, minsize=240)
+                  self.body_layout_mode = "compact"
+                  body.bind("<Configure>", self.update_body_columns)
                   body.rowconfigure(0, weight=1)
                   list_card = self.list_card = self.card(body)
                   list_card.grid(row=0, column=0, rowspan=3, sticky="nsew", padx=(0, 8))
@@ -1631,6 +1654,12 @@ jobs:
                       badge = self.label(collection_nav, "✓ 已保存至本地", size=8, color="accent", bold=True,
                                          padx=6, pady=2, cursor="hand2")
                       badge.configure(bg=COLORS["input"])
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (7/19)
+        run: |
+          $payload = @'
                       badge.grid(row=2, column=index, padx=2, pady=(2, 0))
                       badge.grid_remove()
                       badge.bind("<Button-1>", lambda _event, selected=kind: self.open_collection(selected))
@@ -1643,12 +1672,6 @@ jobs:
                   ttk.Combobox(second_filter, textvariable=self.age_mode_var, values=["全部年龄", "已填年龄", "未填年龄"],
                                state="readonly", width=7).pack(side="left", padx=6)
                   self.label(second_filter, "年龄", 8, "muted").pack(side="left", padx=(0, 3))
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (7/18)
-        run: |
-          $payload = @'
                   for index, variable in enumerate((self.min_age_var, self.max_age_var)):
                       if index:
                           self.label(second_filter, "至", 8, "muted").pack(side="left", padx=3)
@@ -1682,14 +1705,16 @@ jobs:
                       self.table.column(column, width=ui_pixels(width), minwidth=1, stretch=False,
                                         anchor=TABLE_ANCHORS[column])
                   self.table.configure(displaycolumns=self.displayed_columns())
-                  yscroll = ttk.Scrollbar(table_frame, command=self.table.yview)
-                  self.table.configure(yscrollcommand=yscroll.set)
+                  yscroll = self.table_yscroll = ttk.Scrollbar(table_frame, command=self.table.yview)
+                  self.table.configure(yscrollcommand=self.table_scrolled)
                   yscroll.grid(row=0, column=1, sticky="ns")
                   self.table.grid(row=0, column=0, sticky="nsew")
                   self.table.bind("<Configure>", self.schedule_table_layout)
                   self.table.bind("<Button-1>", self.block_column_resize, add="+")
                   self.table.tag_configure("done", foreground=COLORS["accent"])
                   self.table.tag_configure("stopped", foreground=COLORS["muted"])
+                  self.table.tag_configure("row_even", background=COLORS["input"])
+                  self.table.tag_configure("row_odd", background="#111E31")
                   self.table.bind("<<TreeviewSelect>>", lambda _event: self.update_preview())
                   self.table.bind("<Double-1>", self.show_clicked_recipient)
                   self.table.bind("<Return>", lambda _event: self.open_recipient_details())
@@ -1747,7 +1772,7 @@ jobs:
                   scope_row = tk.Frame(compose, bg=COLORS["card"])
                   scope_row.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 10))
                   self.label(scope_row, "任务范围", 9, "muted").pack(side="left", padx=(0, 6))
-                  self.scope_combo = ttk.Combobox(scope_row, textvariable=self.scope_var, state="readonly", width=12,
+                  self.scope_combo = ttk.Combobox(scope_row, textvariable=self.scope_var, state="readonly", width=10,
                                                    values=["当前筛选结果", "全部导入名单", "仅选中的接收人"])
                   self.scope_combo.pack(side="left", fill="x", expand=True)
 
@@ -1786,6 +1811,12 @@ jobs:
                   self.media_rule_check = tk.Checkbutton(rules, text="对方关注后发送媒体文件", variable=self.follow_media_var,
                                  command=self.toggle_follow_media, bg=COLORS["card"], fg=COLORS["text"],
                                  activebackground=COLORS["card"], activeforeground=COLORS["text"],
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (8/19)
+        run: |
+          $payload = @'
                                  font=("Microsoft YaHei UI", 9), selectcolor=COLORS["input"])
                   self.media_rule_check.pack(anchor="w", padx=5, pady=(1, 2))
                   rule_actions = tk.Frame(rules, bg=COLORS["card"])
@@ -1799,12 +1830,6 @@ jobs:
 
                   log_card = self.log_card = self.card(body)
                   log_card.grid(row=1, column=2, sticky="nsew", pady=(7, 0))
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (8/18)
-        run: |
-          $payload = @'
                   log_header = tk.Frame(log_card, bg=COLORS["card"])
                   log_header.pack(fill="x", padx=9, pady=(5, 2))
                   self.label(log_header, "运行日志", 9, bold=True).pack(side="left")
@@ -1985,6 +2010,12 @@ jobs:
                           messagebox.showinfo("任务进行中", "请等待当前任务完成后再保存目标资料。", parent=dialog)
                           return
                       try:
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (9/19)
+        run: |
+          $payload = @'
                           identifier = collection_target(self.target_form["target"].get())
                           targets = dict(self.collection_preferences.targets)
                           targets[identifier] = TargetProfile(self.target_form["nickname"].get(), self.target_form["fans_private"].get(),
@@ -1994,12 +2025,6 @@ jobs:
                                                              self.target_form["region"].get(), self.target_form["live_ip"].get(),
                                                              parse_target_count(self.target_form["fans_collected_count"].get()),
                                                              parse_target_count(self.target_form["following_collected_count"].get()))
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (9/18)
-        run: |
-          $payload = @'
                           preferences = save_collection_preferences(self.collection_preferences_path, CollectionPreferences(identifier, targets))
                       except (OSError, ValueError) as exc:
                           messagebox.showinfo("目标资料未保存", str(exc), parent=dialog)
@@ -2167,6 +2192,12 @@ jobs:
                   self.refresh_collection_files()
                   self.sync_collection_controls()
                   # Windows font metrics can require more height than the nominal scaled
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (10/19)
+        run: |
+          $payload = @'
                   # size. Measure the complete form after scaling before allowing resize.
                   dialog.update_idletasks()
                   minimum_width = max(ui_pixels(760), dialog.winfo_reqwidth())
@@ -2188,12 +2219,6 @@ jobs:
                   if self.collection_dialog is None:
                       return
                   self.collection_files_var.set(f"已选择 {len(self.collection_paths)} 个文件" if self.collection_paths else "尚未选择名单文件")
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (10/18)
-        run: |
-          $payload = @'
                   self.collection_file_text.configure(state="normal")
                   self.collection_file_text.delete("1.0", "end")
                   self.collection_file_text.insert("1.0", "\n".join(path.name for path in self.collection_paths)
@@ -2395,6 +2420,12 @@ jobs:
                       self.root.after_cancel(self.media_preview_timer)
                       self.media_preview_timer = None
                   self.close_media_preview()
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (11/19)
+        run: |
+          $payload = @'
                   if self.media_cover_draw_timer is not None:
                       self.root.after_cancel(self.media_cover_draw_timer)
                       self.media_cover_draw_timer = None
@@ -2418,12 +2449,6 @@ jobs:
                       self.reset_media_preview("音频文件\n无视频画面")
                       self.set_media_cover_state("已选择音频文件")
                       return
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (11/18)
-        run: |
-          $payload = @'
                   caption = "视频封面" if asset.kind == "视频" else "图片预览"
                   self.reset_media_preview(f"正在读取{caption}…")
                   self.set_media_cover_state(f"正在读取{caption}…")
@@ -2614,6 +2639,12 @@ jobs:
                       return
                   try:
                       self.set_media_file(Path(filename))
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (12/19)
+        run: |
+          $payload = @'
                   except (ValueError, OSError) as exc:
                       messagebox.showerror("媒体文件不可用", str(exc), parent=self.root)
 
@@ -2637,12 +2668,6 @@ jobs:
                   self.refresh_media_status()
 
               def toggle_follow_back(self) -> None:
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (12/18)
-        run: |
-          $payload = @'
                   text = "已启用对方关注后自动回关。" if self.follow_back_var.get() else "已关闭对方关注后自动回关。"
                   self.toast_var.set(text)
                   self.log("回关设置", text)
@@ -2819,12 +2844,92 @@ jobs:
                   if self.table.identify_region(event.x, event.y) == "separator":
                       return "break"
 
+              def update_body_columns(self, event) -> None:
+                  mode = "compact" if event.width < ui_pixels(1180) else "medium" if event.width < ui_pixels(1400) else "wide"
+                  if mode == self.body_layout_mode:
+                      return
+                  self.body_layout_mode = mode
+                  message_width, media_width = {"compact": (250, 240), "medium": (285, 260), "wide": (310, 280)}[mode]
+                  self.body.columnconfigure(1, minsize=ui_pixels(message_width))
+                  self.body.columnconfigure(2, minsize=ui_pixels(media_width))
+
               def schedule_table_layout(self, event) -> None:
+                  self.schedule_table_grid()
                   if max(8, event.width - 4) == sum(self.table_widths.values()):
                       return
                   if self.table_layout_timer is not None:
                       self.root.after_cancel(self.table_layout_timer)
                   self.table_layout_timer = self.root.after(100, self.relayout_table)
+
+              def table_scrolled(self, first, last) -> None:
+                  self.table_yscroll.set(first, last)
+                  view = (first, last)
+                  if view != getattr(self, "table_grid_view", None):
+                      self.table_grid_view = view
+                      self.schedule_table_grid()
+
+              def schedule_table_grid(self) -> None:
+                  if self.table_grid_timer is None:
+                      self.table_grid_timer = self.root.after_idle(self.draw_table_grid)
+
+              def forward_table_grid_event(self, event, sequence):
+                  x, y = event.x_root - self.table.winfo_rootx(), event.y_root - self.table.winfo_rooty()
+                  self.table.focus_set()
+                  if sequence == "<Double-Button-1>":
+                      event.x, event.y, event.widget = x, y, self.table
+                      self.show_clicked_recipient(event)
+                  else:
+                      options = {"x": x, "y": y, "state": event.state}
+                      if sequence == "<MouseWheel>":
+                          options["delta"] = event.delta
+                      self.table.event_generate(sequence, **options)
+                  return "break"
+
+              def draw_table_grid(self) -> None:
+                  self.table_grid_timer = None
+                  width, height = self.table.winfo_width(), self.table.winfo_height()
+                  if width < 8 or height < 8 or not self.table_widths:
+                      return
+                  columns = self.displayed_columns()
+                  heading_bottom = 0
+                  sample_x = 2 + self.table_widths[columns[0]] // 2
+                  for y in range(min(height, ui_pixels(100))):
+                      if self.table.identify_region(sample_x, y) == "heading":
+                          heading_bottom = y + 1
+                      elif heading_bottom:
+                          break
+                  first = self.table.identify_row(heading_bottom + 2)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (13/19)
+        run: |
+          $payload = @'
+                  box = self.table.bbox(first) if first else ()
+                  start_x = box[0] if box else 2
+                  first_y = box[1] if box else heading_bottom
+                  row_height = box[3] if box else self.table_row_height
+                  positions = [start_x]
+                  for column in columns:
+                      positions.append(positions[-1] + self.table_widths[column])
+                  segments = [(min(width - 2, x), 1, 1, height - 2) for x in positions]
+                  segments += [(start_x, y - 1, max(1, positions[-1] - start_x), 1)
+                               for y in range(max(2, first_y), height, max(1, row_height))]
+                  if segments == getattr(self, "table_grid_segments", None):
+                      return
+                  while len(self.table_grid_lines) < len(segments):
+                      line = tk.Frame(self.table, bg="#30435B", bd=0, highlightthickness=0)
+                      for sequence in ("<Button-1>", "<ButtonRelease-1>", "<Double-Button-1>",
+                                       "<B1-Motion>", "<MouseWheel>", "<Button-4>", "<Button-5>"):
+                          line.bind(sequence, lambda event, seq=sequence: self.forward_table_grid_event(event, seq))
+                      self.table_grid_lines.append(line)
+                  for line, (x, y, line_width, line_height) in zip(self.table_grid_lines, segments):
+                      line.place(x=x, y=y, width=line_width, height=line_height)
+                      line.lift()
+                  for line in self.table_grid_lines[len(segments):]:
+                      line.place_forget()
+                  self.table_grid_segments = segments
+                  self.table_grid_header_bottom = first_y
 
               def displayed_columns(self) -> tuple[str, ...]:
                   return tuple(column for column in TABLE_COLUMNS
@@ -2854,21 +2959,26 @@ jobs:
                   if self.table.winfo_width() <= 8:
                       available = sum(ui_pixels(TABLE_COLUMNS[key][1]) for key in columns)
                   minimums = {key: ui_pixels(value[2]) for key, value in TABLE_COLUMNS.items()}
-                  minimums["status"] = max(minimums["status"], self.measure_table_text("等待处理") + ui_pixels(14))
+                  references = {"name": "昵称示例", "id": "00000000", "gender": "女", "age": "99",
+                                "region": "江苏", "ip_region": "上海", "comment_count": "100",
+                                "source": "互相关注", "status": "等待处理"}
+                  for key in columns:
+                      minimums[key] = max(minimums[key], self.measure_table_text(references[key]) + 2 * self.table_cell_padding)
                   captions = {key: TABLE_COLUMNS[key][0] + ((" ▼" if self.sort_descending else " ▲")
                               if key == self.sort_column else "") for key in columns}
-                  heading_minimums = {key: self.table_heading_font.measure(captions[key]) + 2 * ui_pixels(2) + 2
+                  heading_minimums = {key: self.table_heading_font.measure(captions[key]) + 2 * ui_pixels(1) + 2
                                      for key in columns}
-                  heading_minimums["status"] = max(heading_minimums["status"], minimums["status"])
-                  if sum(minimums[key] for key in columns) > available >= sum(heading_minimums.values()):
-                      minimums = heading_minimums
-                  self.table_widths = allocate_column_widths(available, minimums, columns=columns)
+                  minimums = {key: max(minimums[key], heading_minimums[key]) for key in columns}
+                  maximums = {key: max(minimums[key], ui_pixels(limit)) for key, limit in {
+                      "id": 220, "gender": 38, "age": 40, "region": 130, "ip_region": 64,
+                      "comment_count": 76, "source": 118, "status": 86}.items() if key in columns}
+                  self.table_widths = allocate_column_widths(available, minimums, columns=columns, maximums=maximums)
                   for column, (caption, _width, _minimum) in TABLE_COLUMNS.items():
                       if column not in self.table_widths:
                           continue
                       width = self.table_widths[column]
                       self.table.column(column, width=width)
-                      heading = wrap_cell_text(captions[column], max(1, width - 2 * ui_pixels(2) - 2), self.table_heading_font.measure)
+                      heading = wrap_cell_text(captions[column], max(1, width - 2 * ui_pixels(1) - 2), self.table_heading_font.measure)
                       self.table.heading(column, text=heading, anchor=TABLE_ANCHORS[column])
                   self.table.xview_moveto(0)
 
@@ -2884,12 +2994,6 @@ jobs:
                       return
                   self.filter_hint_var.set(
                       f"筛选结果 {len(visible_records):,} 人 · 表头排序 · 双击查看完整资料"
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (13/18)
-        run: |
-          $payload = @'
                       if len(visible_records) != len(self.records) else "搜索昵称 / 抖音号 · 表头排序 · 双击查看完整资料")
                   self.filter_hint_label.configure(fg=COLORS["muted"])
                   self.visible_records = visible_records
@@ -2904,28 +3008,30 @@ jobs:
                       self.table.delete(*children)
                   visible = []
                   max_lines = 1
-                  for recipient in self.visible_records:
+                  for row_index, recipient in enumerate(self.visible_records):
                       status = self.session.statuses.get(recipient.douyin_id, "待开始")
                       tag = "done" if status == "已处理" else "stopped" if status == "已停止" else ""
-                      raw_values = (recipient.nickname or "未填写", recipient.douyin_id, recipient.gender or "未填写",
-                                    str(recipient.age) if recipient.age is not None else "未填写", recipient.region or "未填写",
-                                    recipient.ip_region or "未填写",
+                      raw_values = (recipient.nickname or "未填写", recipient.douyin_id, recipient.gender or "—",
+                                    str(recipient.age) if recipient.age is not None else "—", recipient.region or "—",
+                                    recipient.ip_region or "—",
                                     str(recipient.comment_count) if recipient.comment_count is not None else "—",
-                                    recipient_source_text(recipient.sources) or "未填写", status)
-                      values = tuple(self.wrapped_table_text(value, max(1, self.table_widths[column] - 2 * ui_pixels(6)))
+                                    recipient_source_text(recipient.sources).replace(" / ", "\n") or "—", status)
+                      values = tuple(self.wrapped_table_text(value, max(1, self.table_widths[column] - 2 * self.table_cell_padding))
                                      if column in self.table_widths else value for column, value in zip(TABLE_COLUMNS, raw_values))
                       max_lines = max(max_lines, *(value.count("\n") + 1 for column, value in zip(TABLE_COLUMNS, values)
                                                   if column in self.table_widths))
                       self.table.insert("", "end", iid=recipient.douyin_id,
-                                        values=values, tags=(tag,))
+                                        values=values, tags=("row_even" if row_index % 2 == 0 else "row_odd", tag))
                       visible.append(recipient.douyin_id)
-                  ttk.Style(self.root).configure("Treeview", rowheight=max(ui_pixels(26), max_lines * self.table_font.metrics("linespace") + ui_pixels(8)))
+                  self.table_row_height = max(ui_pixels(30), max_lines * self.table_font.metrics("linespace") + ui_pixels(10))
+                  ttk.Style(self.root).configure("Treeview", rowheight=self.table_row_height)
                   remaining_selection = selected.intersection(visible)
                   if remaining_selection:
                       self.table.selection_set(*remaining_selection)
                   self.table.yview_moveto(scroll_position)
                   self.refresh_roster_count_labels()
                   self.update_preview()
+                  self.schedule_table_grid()
 
               def filtered_records(self) -> list[Recipient]:
                   def age_bound(variable):
@@ -3016,6 +3122,12 @@ jobs:
                   self.button(actions, "复制资料", copy_details).pack(side="left")
                   self.button(actions, "关闭", dialog.destroy, primary=True).pack(side="right")
                   dialog.bind("<Escape>", lambda _event: dialog.destroy())
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (14/19)
+        run: |
+          $payload = @'
                   self.scale_ui(dialog)
                   return dialog
 
@@ -3128,12 +3240,6 @@ jobs:
                       button.configure(state="disabled" if busy else "normal")
                   self.pause_button.configure(state="normal" if busy else "disabled")
                   self.stop_button.configure(state="normal" if busy or self.media_queue.pending else "disabled")
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (14/18)
-        run: |
-          $payload = @'
                   self.scope_combo.configure(state="disabled" if locked else "readonly")
                   self.pause_button.configure(text="继续" if self.session.state == "paused" else "暂停")
                   self.sync_collection_controls()
@@ -3262,7 +3368,7 @@ jobs:
                   self.collection_importer.shutdown()
                   self.media_preview_loader.shutdown()
                   for name in ("timer", "search_timer", "clock_timer", "media_timer", "table_layout_timer",
-                               "media_preview_timer", "media_reveal_timer", "media_cover_draw_timer", "media_dialog_draw_timer", "collection_timer"):
+                               "media_preview_timer", "media_reveal_timer", "media_cover_draw_timer", "media_dialog_draw_timer", "collection_timer", "table_grid_timer"):
                       identifier = getattr(self, name, None)
                       if identifier is not None:
                           self.root.after_cancel(identifier)
@@ -3285,6 +3391,12 @@ jobs:
                       window.update_idletasks()
                       return
                   if time.monotonic() >= deadline:
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (15/19)
+        run: |
+          $payload = @'
                       raise RuntimeError(f"GUI window did not become visible within {timeout_seconds:g}s; state={window.state()}")
                   time.sleep(.01)
 
@@ -3367,12 +3479,6 @@ jobs:
                                   "video_preview": [app.media_cover_canvas.winfo_width(), app.media_cover_canvas.winfo_height()],
                                   "sections": {name: {"mapped": bool(widget.winfo_ismapped()),
                                                       "x": widget.winfo_rootx() - root.winfo_rootx(),
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (15/18)
-        run: |
-          $payload = @'
                                                       "y": widget.winfo_rooty() - root.winfo_rooty(),
                                                       "width": widget.winfo_width(), "height": widget.winfo_height()}
                                                for name, widget in essential.items()}}
@@ -3414,6 +3520,8 @@ jobs:
                       snapshot["all_sections_visible"] = True
 
                   def assert_table_alignment():
+                      app.schedule_table_grid()
+                      root.update_idletasks()
                       columns = app.displayed_columns()
                       assert tuple(app.table["displaycolumns"]) == columns
                       assert sum(app.table.column(key, "width") for key in columns) <= app.table.winfo_width() - 4
@@ -3425,7 +3533,19 @@ jobs:
                           assert app.table.identify_column(center) == f"#{index}"
                           assert any(app.table.identify_region(center, heading_y) == "heading" for heading_y in range(y))
                           assert str(app.table.heading(column, "anchor")) == str(app.table.column(column, "anchor")) == TABLE_ANCHORS[column]
-                          assert "\n" not in app.table.heading(column, "text"), f"Heading wrapped: {column}"
+                          heading_lines = app.table.heading(column, "text").split("\n")
+                          assert len(heading_lines) == 1, f"Heading wrapped: {column}"
+                          assert all(app.table_heading_font.measure(line) <= width - 2 * ui_pixels(1) - 2 for line in heading_lines)
+                      assert app.table_widths["name"] >= app.measure_table_text("昵称示例") + 2 * app.table_cell_padding
+                      assert app.table_widths["ip_region"] <= max(ui_pixels(64), app.measure_table_text("上海") + 2 * app.table_cell_padding)
+                      assert app.table.set("fixture_002", "name") == "联系人乙"
+                      vertical = [segment for segment in app.table_grid_segments if segment[2] == 1]
+                      assert len(vertical) == len(columns) + 1
+                      for column, (x, _y, _w, _h) in ((key, app.table.bbox("fixture_001", key)) for key in columns):
+                          assert any(segment[0] == x for segment in vertical), f"Grid column misaligned: {column}"
+                      assert any(segment[3] == 1 and segment[1] >= app.table_grid_header_bottom - 1
+                                 for segment in app.table_grid_segments)
+                      assert all(line.winfo_ismapped() for line in app.table_grid_lines[:len(app.table_grid_segments)])
 
                   def assert_target_settings_layout():
                       dialog = app.target_settings_dialog
@@ -3450,6 +3570,12 @@ jobs:
                       app.relayout_table()
                       root.update()
                       assert app.stat_vars[0].get() == expected and app.visible_var.get() == f"共 {expected} 人"
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (16/19)
+        run: |
+          $payload = @'
                       for widget, text in ((app.stat_value_labels[0], expected), (app.visible_count_label, f"共 {expected} 人")):
                           font = tkfont.Font(root=root, font=widget.cget("font"))
                           assert font.measure(text) <= widget.winfo_width(), f"Roster count text clipped: {text}"
@@ -3528,7 +3654,7 @@ jobs:
                       assert app.table.set("fixture_001", "ip_region").replace("\n", "") == "上海"
                       for iid in app.table.get_children():
                           for key in app.displayed_columns():
-                              assert all(app.measure_table_text(line) <= app.table.column(key, "width") - 2 * ui_pixels(6)
+                              assert all(app.measure_table_text(line) <= app.table.column(key, "width") - 2 * app.table_cell_padding
                                          for line in app.table.set(iid, key).split("\n"))
                       assert int(app.target_result_label.cget("wraplength")) == app.target_result_label.winfo_width()
                       app.comment_column_check.invoke()
@@ -3551,12 +3677,6 @@ jobs:
 
                   def assert_collection_layout():
                       root.update_idletasks()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (16/18)
-        run: |
-          $payload = @'
                       dialog = app.collection_dialog
                       widgets = {
                           "data_source": app.collection_source_label, "target": app.collection_target_entry,
@@ -3645,6 +3765,12 @@ jobs:
                   assert app.collection_saved_path is None
                   assert "文件不存在" in app.collection_detail_var.get()
                   assert float(app.collection_progress["value"]) == 0
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (17/19)
+        run: |
+          $payload = @'
                   assert str(app.collection_retry_button.cget("state")) == "normal"
                   assert len(app.records) == 2
                   missing_list.write_text("fixture_001", encoding="utf-8")
@@ -3758,12 +3884,6 @@ jobs:
                   assert_roster_counts(6)
                   app.collection_target_var.set(original_target)
                   assert all("采集成功" in variable.get() for variable in app.collection_status_vars.values())
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (17/18)
-        run: |
-          $payload = @'
                   assert "粉丝 12,345 人" in app.collection_totals_var.get() and "关注 678 人" in app.collection_totals_var.get()
                   assert_roster_counts(13025)
                   original_scale_ui = app.scale_ui
@@ -3886,6 +4006,12 @@ jobs:
                   app.refresh_table()
                   assert "最小年龄" in app.filter_hint_var.get()
                   app.reset_filters()
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (18/19)
+        run: |
+          $payload = @'
                   app.gender_var.set("未填写")
                   app.refresh_table()
                   assert len(app.table.get_children()) == 0
@@ -4007,12 +4133,6 @@ jobs:
                   app.follow_media_var.set(True)
                   app.toggle_follow_media()
                   assert app.media_name_var.get() == media_path.name
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (18/18)
-        run: |
-          $payload = @'
                   assert app.accept_follow_receipts([Recipient("demo_001"), Recipient("outside_001")]) == (1, 0, 1)
                   app.root.after_cancel(app.media_timer)
                   app.media_timer = None
@@ -4050,6 +4170,8 @@ jobs:
                                                                 "collection_saved_local_badges",
                                                                 "consistent_roster_totals", "count_refresh_after_settings_and_import",
                                                                 "count_scope_and_filter_independence", "maximum_roster_count_layout",
+                                                                "recipient_grid_lines", "centered_table_cells", "nickname_width_priority",
+                                                                "compact_ip_column", "single_line_table_headings", "alternating_table_rows",
                                                                 "collection_dialog_layout", "collection_measured_minimum", "collection_larger_fonts",
                                                                 "local_account_lookup", "manual_data_source",
                                                                 "collection_failure_retry", "collection_csv_saved", "collection_three_categories",
@@ -4071,6 +4193,12 @@ jobs:
 
 
           def main() -> int:
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (19/19)
+        run: |
+          $payload = @'
               # Delay Tk loading so importer/queue tests also run on headless systems.
               global tk, filedialog, messagebox, ttk
               parser = argparse.ArgumentParser(description=APP_NAME)
@@ -4344,6 +4472,36 @@ jobs:
 
 
           class TableLayoutTests(unittest.TestCase):
+              def test_metadata_caps_release_space_to_names_and_ids(self):
+                  caps = {"ip_region": 64, "gender": 38, "age": 40, "comment_count": 76,
+                          "source": 118, "status": 86, "region": 130, "id": 220}
+                  previous_name = 0
+                  for width in (440, 640, 800, 1200, 1600):
+                      columns = allocate_column_widths(width, maximums=caps)
+                      self.assertEqual(sum(columns.values()), width)
+                      self.assertGreaterEqual(columns["name"], TABLE_COLUMNS["name"][2])
+                      self.assertGreaterEqual(columns["id"], TABLE_COLUMNS["id"][2])
+                      self.assertGreaterEqual(columns["name"], previous_name)
+                      previous_name = columns["name"]
+                      for key, cap in caps.items():
+                          self.assertLessEqual(columns[key], cap)
+                  hidden = tuple(key for key in TABLE_COLUMNS if key != "comment_count")
+                  self.assertGreater(allocate_column_widths(640, columns=hidden, maximums=caps)["name"],
+                                     allocate_column_widths(640, maximums=caps)["name"])
+
+              def test_narrow_budget_preserves_name_and_status_before_metadata(self):
+                  for width in (300, 334, 360):
+                      columns = allocate_column_widths(width)
+                      self.assertEqual(sum(columns.values()), width)
+                      self.assertGreaterEqual(columns["name"], TABLE_COLUMNS["name"][2])
+                      self.assertGreaterEqual(columns["status"], TABLE_COLUMNS["status"][2])
+
+              def test_font_minimum_takes_precedence_over_a_smaller_metadata_cap(self):
+                  widths = allocate_column_widths(440, {"status": 116}, maximums={"status": 86, "ip_region": 64})
+                  self.assertEqual(sum(widths.values()), 440)
+                  self.assertEqual(widths["status"], 116)
+                  self.assertLessEqual(widths["ip_region"], 64)
+
               def test_hidden_comment_column_releases_width_without_losing_status(self):
                   visible = tuple(key for key in TABLE_COLUMNS if key != "comment_count")
                   for width in (300, 360, 640, 1200):
@@ -4515,6 +4673,12 @@ jobs:
                           for kind in kinds:
                               path = fans if kind == "粉丝" else following
                               merge_records(records, read_collection_batch([path], kind, "owner").records)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (3/6)
+        run: |
+          $payload = @'
                           indexed = {r.douyin_id:r for r in records}
                           self.assertEqual(len(indexed), 4)
                           self.assertEqual(recipient_source_text(indexed["00001"].sources), "互相关注")
@@ -4542,12 +4706,6 @@ jobs:
                       saved = save_collection_batch(batch, Path(directory)/"collections")
                       self.assertTrue(saved.is_file())
                       self.assertEqual(list(saved.parent.glob("*.tmp")), [])
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded test_app.py (3/6)
-        run: |
-          $payload = @'
                       with saved.open(encoding="utf-8-sig", newline="") as handle:
                           rows = list(csv.DictReader(handle))
                       self.assertEqual(len(rows), 1)
@@ -4734,6 +4892,12 @@ jobs:
               def test_text_and_status_sorts_and_complete_details(self):
                   self.assertEqual([r.douyin_id for r in sort_records(self.records, "id", True)], ["00004", "00003", "00002", "00001"])
                   result = sort_records(self.records, "status", statuses={"00002": "已处理"})
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (4/6)
+        run: |
+          $payload = @'
                   self.assertEqual({r.douyin_id for r in result}, {r.douyin_id for r in self.records})
                   self.records[0].raw_details = ["保留完整导入行，不截断原文"]
                   details = recipient_details_text(self.records[0])
@@ -4766,12 +4930,6 @@ jobs:
                   with mock.patch("app.time.monotonic", return_value=100) as monotonic:
                       clock = RuntimeClock(3600)
                       monotonic.return_value = 110
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded test_app.py (4/6)
-        run: |
-          $payload = @'
                       self.assertEqual((clock.actual, clock.displayed), (10, 3610))
                       clock.set_initial(7200)
                       monotonic.return_value = 120
@@ -4981,6 +5139,12 @@ jobs:
                   process.communicate.side_effect = communicate
                   with mock.patch("app.preview_executable", return_value="decoder"), mock.patch("app.subprocess.Popen", return_value=process):
                       with self.assertRaises(PreviewCancelled):
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (5/6)
+        run: |
+          $payload = @'
                           media_cover_png(inspect_media(self.landscape), cancelled)
                   process.kill.assert_called_once()
 
@@ -5022,12 +5186,6 @@ jobs:
 
               def test_background_error_becomes_a_readable_preview_failure(self):
                   loader = MediaPreviewLoader()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded test_app.py (5/6)
-        run: |
-          $payload = @'
                   with mock.patch("app.media_cover_png", side_effect=ValueError("无法读取封面")):
                       loader.request(inspect_media(self.landscape))
                       result = self.wait_result(loader)
@@ -5192,6 +5350,12 @@ jobs:
               def test_legacy_configuration_keeps_existing_values_with_empty_new_fields(self):
                   with tempfile.TemporaryDirectory() as directory:
                       path = Path(directory) / "collection-settings.json"
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (6/6)
+        run: |
+          $payload = @'
                       path.write_text('{"schema_version":1,"last_target":"0001","targets":{"0001":{"nickname":"旧昵称","fans_private":true,"following_private":false}}}', encoding="utf-8")
                       loaded = load_collection_preferences(path)
                       self.assertEqual(loaded.last_target, "0001")
@@ -5218,12 +5382,6 @@ jobs:
                       self.assertEqual(collection_display_count(preferences, "one", "粉丝", actual), 12345)
                       self.assertEqual(collection_display_count(preferences, "one", "关注", actual), 0)
                       self.assertEqual(collection_display_count(preferences, "one", "评论区", actual), actual)
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded test_app.py (6/6)
-        run: |
-          $payload = @'
                       self.assertEqual(collection_display_count(preferences, "two", "粉丝", actual), 8)
                       self.assertEqual(collection_display_count(preferences, "two", "关注", actual), actual)
                       self.assertEqual(collection_display_count(preferences, "missing", "粉丝", actual), actual)
@@ -5659,6 +5817,21 @@ jobs:
           修改设置、导入、切换目标、清空、重启及任务进度刷新均保持同步；分类汇总不会被排序、窗口重绘或任务计时重新覆盖。
           筛选命中人数显示在筛选提示行，顶部与名单底部继续显示总人数。名单记录、互相关注标记、任务队列和导出行数保持原有逻辑。
 
+          ## v1.17.0 接收名单表格排版
+
+          名单增加随列宽、行高和滚动位置同步的横纵表格线、交替行底色和加粗表头，表头及单元格统一居中。
+          优先保留昵称、抖音号和处理状态宽度，性别、年龄、IP 属地等短字段设置宽度上限；宽窗口的剩余空间主要分配给昵称与抖音号。
+          右侧内容区按窗口宽度收紧留白，为小窗口的名单释放宽度，宽窗口恢复较大的编辑与媒体区；IP 属地不再持续占据空白。
+          减少单元格左右留白，表头保持完整单行；普通四字昵称保持单行，较长资料自然换行，保留完整文字。
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD 'README.md'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded README.md (2/2)
+        run: |
+          $payload = @'
+          同一用户的多种来源按行居中显示，空的性别、年龄和地区显示为“—”。评论次数列隐藏后，释放的空间会重新分配。
+          保留原有筛选、排序、多选、滚动、双击完整资料及所有人数汇总；表格分隔线处的鼠标操作转交给原名单控件处理。
+
           ## 本地运行与构建
 
           安装包含 Tkinter 的 Python 3.12 后：
@@ -5668,12 +5841,6 @@ jobs:
           python app.py
           python -m unittest -v
           python app.py --smoke-test smoke-source.json
-          '@
-          [IO.File]::WriteAllText((Join-Path $PWD 'README.md'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded README.md (2/2)
-        run: |
-          $payload = @'
           python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --collect-all imageio_ffmpeg --copy-metadata imageio-ffmpeg --copy-metadata Pillow --name DouyinSender app.py
           ```
 
