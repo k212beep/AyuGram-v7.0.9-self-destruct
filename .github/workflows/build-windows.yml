@@ -1,7 +1,7 @@
 # Upload this single file as .github/workflows/build-windows.yml
 # It embeds all source and uses no real recipient data, Secrets, or account logins.
 name: Build Windows App
-run-name: Windows v1.15.0 · ${{ github.ref_name }}
+run-name: Windows v1.16.0 · ${{ github.ref_name }}
 
 on:
   push:
@@ -32,7 +32,7 @@ jobs:
           architecture: x64
 
 
-      - name: Write embedded app.py (1/17)
+      - name: Write embedded app.py (1/18)
         run: |
           $payload = @'
           """Desktop messaging workbench with a local task queue."""
@@ -62,7 +62,7 @@ jobs:
 
 
           APP_NAME = "抖音群发工作台"
-          VERSION = "1.15.0"
+          VERSION = "1.16.0"
           UI_SCALE = 0.85
           MAX_FILE_BYTES = 5 * 1024 * 1024
           MAX_RECIPIENTS = 20000
@@ -361,7 +361,7 @@ jobs:
           '@
           [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded app.py (2/17)
+      - name: Write embedded app.py (2/18)
         run: |
           $payload = @'
                   process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -688,7 +688,7 @@ jobs:
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded app.py (3/17)
+      - name: Write embedded app.py (3/18)
         run: |
           $payload = @'
               value = re.split(r"[（(]", value, maxsplit=1)[0].strip(" \t\u3000:：=,，;；|")
@@ -706,6 +706,15 @@ jobs:
               for name in ("sources", "raw_details"):
                   target = getattr(current, name)
                   target.extend(value for value in getattr(incoming, name) if value not in target)
+
+
+          def recipient_source_text(sources: list[str]) -> str:
+              labels = list(dict.fromkeys(sources))
+              if "粉丝" in labels and "关注" in labels:
+                  first = min(labels.index("粉丝"), labels.index("关注"))
+                  labels = [value for value in labels if value not in {"粉丝", "关注"}]
+                  labels.insert(first, "互相关注")
+              return " / ".join(labels)
 
 
           def filter_records(records: list[Recipient], query: str = "", source: str = "全部来源",
@@ -746,7 +755,7 @@ jobs:
                   values = {"name": record.nickname, "id": record.douyin_id, "gender": record.gender,
                             "age": record.age, "region": record.region, "ip_region": record.ip_region,
                             "comment_count": record.comment_count,
-                            "source": " / ".join(record.sources), "status": (statuses or {}).get(record.douyin_id, "待开始")}
+                            "source": recipient_source_text(record.sources), "status": (statuses or {}).get(record.douyin_id, "待开始")}
                   value = values.get(column, "")
                   return value.casefold() if isinstance(value, str) else value
               known = [record for record in records if key(record) not in (None, "")]
@@ -759,7 +768,7 @@ jobs:
                         ("年龄", f"{record.age} 岁" if record.age is not None else ""),
                         ("资料地区", record.region), ("IP属地", record.ip_region),
                         ("评论次数", str(record.comment_count) if record.comment_count is not None else ""),
-                        ("来源", " / ".join(record.sources)), ("状态", status)]
+                        ("来源", recipient_source_text(record.sources)), ("状态", status)]
               text = "\n\n".join(f"{label}：{value or '未填写'}" for label, value in fields)
               if record.raw_details:
                   text += "\n\n原始资料：\n\n" + "\n\n".join(record.raw_details)
@@ -922,11 +931,19 @@ jobs:
               following_count: int | None = None
               region: str = ""
               live_ip: str = ""
+              fans_collected_count: int | None = None
+              following_collected_count: int | None = None
 
 
           @dataclass
           class CollectionPreferences:
               last_target: str = ""
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (4/18)
+        run: |
+          $payload = @'
               targets: dict[str, TargetProfile] = field(default_factory=dict)
 
 
@@ -942,12 +959,6 @@ jobs:
               return count
 
 
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (4/17)
-        run: |
-          $payload = @'
           def normalize_collection_preferences(preferences: CollectionPreferences) -> CollectionPreferences:
               if not isinstance(preferences.last_target, str) or not isinstance(preferences.targets, dict):
                   raise ValueError("目标资料设置格式不正确。")
@@ -966,7 +977,8 @@ jobs:
                       raise ValueError("目标昵称最多 40 字，不能包含换行或控制字符。")
                   if type(profile.fans_private) is not bool or type(profile.following_private) is not bool:
                       raise ValueError("隐私标记必须为开或关。")
-                  for count in (profile.fans_count, profile.following_count):
+                  for count in (profile.fans_count, profile.following_count,
+                                profile.fans_collected_count, profile.following_collected_count):
                       if count is not None and (type(count) is not int or not 0 <= count <= 999999999999):
                           raise ValueError("粉丝和关注人数请填写 0–999999999999 之间的整数，或留空。")
                   for caption, value, limit in (("资料位置", profile.region, 80), ("实时IP", profile.live_ip, 64)):
@@ -975,7 +987,8 @@ jobs:
                   if target in targets:
                       raise ValueError("目标抖音号设置重复。")
                   targets[target] = TargetProfile(nickname, profile.fans_private, profile.following_private,
-                                                 profile.fans_count, profile.following_count, profile.region.strip(), profile.live_ip.strip())
+                                                 profile.fans_count, profile.following_count, profile.region.strip(), profile.live_ip.strip(),
+                                                 profile.fans_collected_count, profile.following_collected_count)
               return CollectionPreferences(last_target, targets)
 
 
@@ -992,7 +1005,8 @@ jobs:
                   if not isinstance(values, dict):
                       raise ValueError("目标资料设置内容不正确。")
                   targets[target] = TargetProfile(values.get("nickname", ""), values.get("fans_private", False), values.get("following_private", False),
-                                                 values.get("fans_count"), values.get("following_count"), values.get("region", ""), values.get("live_ip", ""))
+                                                 values.get("fans_count"), values.get("following_count"), values.get("region", ""), values.get("live_ip", ""),
+                                                 values.get("fans_collected_count"), values.get("following_collected_count"))
               return normalize_collection_preferences(CollectionPreferences(data.get("last_target", ""), targets))
 
 
@@ -1001,7 +1015,9 @@ jobs:
               write_json_atomic(path, {"schema_version": 1, "last_target": preferences.last_target,
                   "targets": {target: {"nickname": profile.nickname, "fans_private": profile.fans_private,
                                        "following_private": profile.following_private, "fans_count": profile.fans_count,
-                                       "following_count": profile.following_count, "region": profile.region, "live_ip": profile.live_ip}
+                                       "following_count": profile.following_count, "region": profile.region, "live_ip": profile.live_ip,
+                                       "fans_collected_count": profile.fans_collected_count,
+                                       "following_collected_count": profile.following_collected_count}
                               for target, profile in preferences.targets.items()}})
               return preferences
 
@@ -1050,6 +1066,13 @@ jobs:
           def collection_counts(records: list[Recipient]) -> dict[str, int]:
               return {kind: len({record.douyin_id for record in records if kind in record.sources})
                       for kind in COLLECTION_TYPES}
+
+
+          def collection_display_count(preferences: CollectionPreferences, target: str, kind: str, actual_count: int) -> int:
+              profile = preferences.targets.get(target)
+              field_name = {"粉丝": "fans_collected_count", "关注": "following_collected_count"}.get(kind)
+              configured = getattr(profile, field_name, None) if field_name else None
+              return actual_count if configured is None else configured
 
 
           class CollectionCancelled(Exception):
@@ -1163,6 +1186,12 @@ jobs:
                       if not event.is_set():
                           self.results.put((generation, result))
 
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (5/18)
+        run: |
+          $payload = @'
                   worker = threading.Thread(target=run, name="collection-import", daemon=True)
                   self.workers = [thread for thread in self.workers if thread.is_alive()]
                   self.workers.append(worker)
@@ -1201,12 +1230,6 @@ jobs:
 
           class Session:
               """Deterministic local queue, with no network or account integration."""
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (5/17)
-        run: |
-          $payload = @'
               def __init__(self) -> None:
                   self.state = "idle"
                   self.queue: list[Recipient] = []
@@ -1432,6 +1455,12 @@ jobs:
                   style.configure("Treeview", background=COLORS["input"], fieldbackground=COLORS["input"],
                                   foreground=COLORS["text"], rowheight=ui_pixels(26), borderwidth=0,
                                   font=self.table_font)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (6/18)
+        run: |
+          $payload = @'
                   style.configure("Treeview.Heading", background=COLORS["card"], foreground=COLORS["muted"],
                                   relief="flat", padding=(ui_pixels(2), ui_pixels(5)), font=self.table_heading_font)
                   style.map("Treeview", background=[("selected", "#214D53")], foreground=[("selected", "#FFFFFF")])
@@ -1449,12 +1478,6 @@ jobs:
                   return tk.Label(parent, text=text, bg=parent.cget("bg"), fg=COLORS[color],
                                   font=("Microsoft YaHei UI", size, "bold" if bold else "normal"), **options)
 
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (6/17)
-        run: |
-          $payload = @'
               def button(self, parent, text, command, primary=False, danger=False, **options):
                   bg = COLORS["accent"] if primary else COLORS["hover"]
                   fg = COLORS["bg"] if primary else COLORS["red"] if danger else COLORS["text"]
@@ -1614,6 +1637,12 @@ jobs:
                   third_filter.pack(fill="x")
                   ttk.Combobox(third_filter, textvariable=self.region_field_var, values=["任一地区", "资料地区", "IP属地"],
                                state="readonly", width=7).pack(side="left")
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (7/18)
+        run: |
+          $payload = @'
                   self.region_combo = ttk.Combobox(third_filter, textvariable=self.region_var, values=[], width=7)
                   self.region_combo.pack(side="left", fill="x", expand=True, padx=6)
                   self.button(third_filter, "重置", self.reset_filters, padx=8, pady=4).pack(side="right")
@@ -1632,12 +1661,6 @@ jobs:
                                         anchor=TABLE_ANCHORS[column])
                   self.table.configure(displaycolumns=self.displayed_columns())
                   yscroll = ttk.Scrollbar(table_frame, command=self.table.yview)
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (7/17)
-        run: |
-          $payload = @'
                   self.table.configure(yscrollcommand=yscroll.set)
                   yscroll.grid(row=0, column=1, sticky="ns")
                   self.table.grid(row=0, column=0, sticky="nsew")
@@ -1772,6 +1795,12 @@ jobs:
                   actions = self.task_actions = tk.Frame(controls, bg=COLORS["card"])
                   actions.pack(fill="x", padx=10, pady=(5, 3))
                   self.start_button = self.button(actions, "开始群发", self.start, primary=True, padx=12, pady=5)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (8/18)
+        run: |
+          $payload = @'
                   self.start_button.pack(side="left")
                   self.pause_button = self.button(actions, "暂停", self.toggle_pause, state="disabled", padx=8, pady=5)
                   self.pause_button.pack(side="left", padx=5)
@@ -1789,12 +1818,6 @@ jobs:
                   self.toast_label.grid(row=2, column=1, columnspan=2, sticky="ew", pady=(5, 0))
                   self.toast_label.bind("<Configure>", lambda event: self.toast_label.configure(wraplength=max(1, event.width)))
                   footer = self.footer = tk.Frame(main, bg=COLORS["bg"])
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (8/17)
-        run: |
-          $payload = @'
                   footer.grid(row=3, column=0, sticky="ew", pady=(3, 0))
                   self.local_time_label = self.label(footer, size=12, bold=True, textvariable=self.local_time_var)
                   self.local_time_label.pack(side="right")
@@ -1824,12 +1847,15 @@ jobs:
                   self.toast_var.set("计时设置已保存，已运行时长将从设定值继续累计。")
 
               def refresh_collection_totals(self) -> None:
-                  counts = collection_counts(self.records)
-                  self.collection_totals_var.set("已采集：" + " · ".join(f"{kind} {counts[kind]:,} 人" for kind in COLLECTION_TYPES))
                   self.refresh_target_summary()
 
               def refresh_target_summary(self) -> None:
                   self.collection_lookup_var.set(target_lookup_text(self.collection_target_var.get(), self.collection_preferences, self.records))
+                  target, _ = self.current_collection_key("评论区")
+                  counts = collection_counts(self.records)
+                  self.collection_totals_var.set("已采集：" + " · ".join(
+                      f"{kind} {collection_display_count(self.collection_preferences, target, kind, counts[kind]):,} 人"
+                      for kind in COLLECTION_TYPES))
                   self.refresh_collection_cards()
 
               def current_collection_key(self, kind: str) -> tuple[str, str]:
@@ -1848,7 +1874,8 @@ jobs:
                       if reason:
                           text, color = "账号已设置隐私\n采集失败", "red"
                       elif receipt.state == "success":
-                          text, color = f"采集成功\n已采集 {receipt.count:,} 人", "accent"
+                          count = collection_display_count(self.collection_preferences, target, kind, receipt.count)
+                          text, color = f"采集成功\n已采集 {count:,} 人", "accent"
                       elif receipt.state == "running":
                           text, color = "正在采集\n请稍候…", "blue"
                       else:
@@ -1881,23 +1908,38 @@ jobs:
                       "following_private": tk.BooleanVar(value=profile.following_private),
                       "fans_count": tk.StringVar(value="" if profile.fans_count is None else str(profile.fans_count)),
                       "following_count": tk.StringVar(value="" if profile.following_count is None else str(profile.following_count)),
+                      "fans_collected_count": tk.StringVar(value="" if profile.fans_collected_count is None else str(profile.fans_collected_count)),
+                      "following_collected_count": tk.StringVar(value="" if profile.following_collected_count is None else str(profile.following_collected_count)),
                       "region": tk.StringVar(value=profile.region), "live_ip": tk.StringVar(value=profile.live_ip),
                   }
                   self.target_settings_entries = []
+
+                  def add_entry(parent, key, row, column, width):
+                      entry = tk.Entry(parent, textvariable=self.target_form[key], width=width, bg=COLORS["input"],
+                                       fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat", font=("Microsoft YaHei UI", 11))
+                      entry.grid(row=row, column=column, sticky="ew", ipady=6, pady=6)
+                      self.target_settings_entries.append(entry)
+
                   for row, (key, caption) in enumerate((("target", "目标抖音号"), ("nickname", "目标昵称"),
                                                       ("fans_count", "粉丝人数"), ("following_count", "关注人数"),
                                                       ("region", "资料位置"), ("live_ip", "实时IP")), 2):
                       self.label(content, caption, 10, "muted").grid(row=row, column=0, sticky="w", padx=(0, 10), pady=6)
-                      entry = tk.Entry(content, textvariable=self.target_form[key], width=28, bg=COLORS["input"],
-                                       fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat", font=("Microsoft YaHei UI", 11))
-                      entry.grid(row=row, column=1, sticky="ew", ipady=6, pady=6)
-                      self.target_settings_entries.append(entry)
+                      if key in {"fans_count", "following_count"}:
+                          count_row = tk.Frame(content, bg=COLORS["card"])
+                          count_row.grid(row=row, column=1, sticky="ew")
+                          count_row.columnconfigure((0, 2), weight=1, uniform="counts")
+                          add_entry(count_row, key, 0, 0, 12)
+                          self.label(count_row, "已采集人数", 10, "muted").grid(row=0, column=1, padx=(10, 8))
+                          collected_key = "fans_collected_count" if key == "fans_count" else "following_collected_count"
+                          add_entry(count_row, collected_key, 0, 2, 12)
+                      else:
+                          add_entry(content, key, row, 1, 28)
                   for row, key, caption in ((8, "fans_private", "粉丝：账号已设置隐私"),
                                             (9, "following_private", "关注：账号已设置隐私")):
                       tk.Checkbutton(content, text=caption, variable=self.target_form[key], bg=COLORS["card"],
                           fg=COLORS["text"], activebackground=COLORS["card"], selectcolor=COLORS["input"],
                           font=("Microsoft YaHei UI", 9)).grid(row=row, column=0, columnspan=2, sticky="w", pady=4)
-                  self.label(content, "粉丝、关注状态分别设置，评论区不受影响。", 9, "muted").grid(row=10, column=0, columnspan=2, sticky="w", pady=(8, 12))
+                  self.label(content, "已采集人数留空时按名单统计；填写后保持固定。", 9, "muted").grid(row=10, column=0, columnspan=2, sticky="w", pady=(8, 12))
                   actions = tk.Frame(content, bg=COLORS["card"])
                   actions.grid(row=11, column=0, columnspan=2, sticky="e")
 
@@ -1916,7 +1958,9 @@ jobs:
                                                              self.target_form["following_private"].get(),
                                                              parse_target_count(self.target_form["fans_count"].get()),
                                                              parse_target_count(self.target_form["following_count"].get()),
-                                                             self.target_form["region"].get(), self.target_form["live_ip"].get())
+                                                             self.target_form["region"].get(), self.target_form["live_ip"].get(),
+                                                             parse_target_count(self.target_form["fans_collected_count"].get()),
+                                                             parse_target_count(self.target_form["following_collected_count"].get()))
                           preferences = save_collection_preferences(self.collection_preferences_path, CollectionPreferences(identifier, targets))
                       except (OSError, ValueError) as exc:
                           messagebox.showinfo("目标资料未保存", str(exc), parent=dialog)
@@ -1924,6 +1968,8 @@ jobs:
                       self.collection_preferences = preferences
                       self.collection_target_var.set(identifier)
                       self.refresh_target_summary()
+                      if self.collection_dialog is not None and self.collection_dialog.winfo_exists():
+                          self.restore_collection_receipt()
                       self.toast_var.set("目标资料已保存。")
                       close_settings()
 
@@ -1945,10 +1991,22 @@ jobs:
                   self.collection_saved_var.set(str(receipt.saved_path) if receipt.saved_path else "本次任务未保存文件")
                   reason = privacy_failure_reason(self.collection_preferences, target, kind)
                   self.collection_status_var.set("采集成功 · 已保存" if receipt.state == "success" and not reason else "采集失败")
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (9/18)
+        run: |
+          $payload = @'
                   self.collection_status_color = "accent" if receipt.state == "success" and not reason else "red"
-                  self.collection_detail_var.set(reason or receipt.detail)
+                  self.collection_detail_var.set(reason or self.collection_receipt_detail(target, kind, receipt))
                   self.refresh_collection_files()
                   self.sync_collection_controls()
+
+              def collection_receipt_detail(self, target: str, kind: str, receipt: CollectionReceipt) -> str:
+                  if receipt.state != "success":
+                      return receipt.detail
+                  count = collection_display_count(self.collection_preferences, target, kind, receipt.count)
+                  return f"已采集{kind} {count:,} 人，{receipt.detail}"
 
               def set_collection_failure(self, detail: str, key=None) -> None:
                   key = key or self.current_collection_key(self.collection_kind_var.get())
@@ -2008,12 +2066,6 @@ jobs:
                   self.label(heading, "资料采集", 16, bold=True).pack(side="left")
                   self.collection_source_label = self.label(heading, "账号资料与采集任务", 9, "blue")
                   self.collection_source_label.pack(side="right")
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (9/17)
-        run: |
-          $payload = @'
                   lookup = tk.Frame(content, bg=COLORS["card"])
                   lookup.grid(row=1, column=0, sticky="ew")
                   self.label(lookup, "目标抖音号", 9, "muted").pack(side="left", padx=(0, 8))
@@ -2136,6 +2188,12 @@ jobs:
                       self.collection_progress.configure(mode="indeterminate")
                       self.collection_progress.start(15)
                   else:
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (10/18)
+        run: |
+          $payload = @'
                       self.collection_progress.stop()
                       self.collection_progress.configure(mode="determinate", value=100 if self.collection_saved_path is not None else 0)
 
@@ -2201,21 +2259,17 @@ jobs:
                           self.imported_names_var.set("\n".join(path.name for path in self.imported_files))
                           self.sync_filter_choices()
                           self.reset_filters()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (10/17)
-        run: |
-          $payload = @'
                           self.update_stats()
                           self.refresh_collection_totals()
                           self.collection_status_var.set("采集成功 · 已保存")
                           self.collection_status_color = "accent"
-                          self.collection_detail_var.set(f"已采集{batch.kind} {len(batch.records):,} 人，新增 {added:,} 人，"
-                              f"合并重复 {repeated + batch.duplicates:,} 条，跳过无效项 {batch.skipped:,} 条。")
-                          self.collection_receipts[(batch.target, batch.kind)] = CollectionReceipt("success", len(batch.records), self.collection_detail_var.get(), batch.paths, result.saved_path)
-                          self.toast_var.set(f"采集成功 · 已采集{batch.kind} {len(batch.records):,} 人。")
-                          self.log("资料采集", f"目标 {batch.target}：已采集{batch.kind} {len(batch.records):,} 人，已保存至 {result.saved_path.name}。")
+                          detail = f"新增 {added:,} 人，合并重复 {repeated + batch.duplicates:,} 条，跳过无效项 {batch.skipped:,} 条。"
+                          receipt = CollectionReceipt("success", len(batch.records), detail, batch.paths, result.saved_path)
+                          self.collection_receipts[(batch.target, batch.kind)] = receipt
+                          self.collection_detail_var.set(self.collection_receipt_detail(batch.target, batch.kind, receipt))
+                          count = collection_display_count(self.collection_preferences, batch.target, batch.kind, len(batch.records))
+                          self.toast_var.set(f"采集成功 · 已采集{batch.kind} {count:,} 人。")
+                          self.log("资料采集", f"目标 {batch.target}：已采集{batch.kind} {count:,} 人，已保存至 {result.saved_path.name}。")
                   self.refresh_collection_cards()
                   self.set_busy(self.session.active)
                   self.sync_collection_controls()
@@ -2369,6 +2423,12 @@ jobs:
                   old_scroll = (canvas.xview()[0], canvas.yview()[0])
                   canvas.delete("all")
                   padding = ui_pixels(12)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (11/18)
+        run: |
+          $payload = @'
                   width, height = max(2 * padding, canvas.winfo_width()), max(2 * padding, canvas.winfo_height())
                   image = render_cover_image(source, width - 2 * padding, height - 2 * padding, original=original)
                   photo = ImageTk.PhotoImage(image, master=self.root)
@@ -2431,12 +2491,6 @@ jobs:
                                                  + (" · 拖动查看细节" if original else ""))
                   for button, selected in ((self.media_fit_button, not original), (self.media_original_button, original)):
                       button.configure(bg="#254147" if selected else COLORS["hover"],
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (11/17)
-        run: |
-          $payload = @'
                                        fg=COLORS["accent"] if selected else COLORS["muted"])
 
               def set_media_zoom(self, original: bool) -> None:
@@ -2583,6 +2637,12 @@ jobs:
                   if not self.follow_media_var.get() or self.media_asset is None:
                       messagebox.showinfo("媒体规则", "请先启用关注后媒体规则，并选择媒体文件。", parent=self.root)
                       return
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (12/18)
+        run: |
+          $payload = @'
                   filenames = filedialog.askopenfilenames(title="导入关注回执名单", filetypes=[("名单文件", "*.txt *.csv *.tsv"), ("所有文件", "*.*")])
                   if not filenames:
                       return
@@ -2659,12 +2719,6 @@ jobs:
                       entry.pack(fill="x", ipady=7)
                       entries.append(entry)
                   options = tk.Frame(content, bg=COLORS["card"])
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (12/17)
-        run: |
-          $payload = @'
                   options.pack(fill="x", pady=(12, 8))
                   for name, caption in (("show_account", "显示账号"), ("show_nickname", "显示昵称"), ("mask_account", "遮挡账号")):
                       tk.Checkbutton(options, text=caption, variable=variables[name], bg=COLORS["card"],
@@ -2816,7 +2870,7 @@ jobs:
                                     str(recipient.age) if recipient.age is not None else "未填写", recipient.region or "未填写",
                                     recipient.ip_region or "未填写",
                                     str(recipient.comment_count) if recipient.comment_count is not None else "—",
-                                    " / ".join(recipient.sources) or "未填写", status)
+                                    recipient_source_text(recipient.sources) or "未填写", status)
                       values = tuple(self.wrapped_table_text(value, max(1, self.table_widths[column] - 2 * ui_pixels(6)))
                                      if column in self.table_widths else value for column, value in zip(TABLE_COLUMNS, raw_values))
                       max_lines = max(max_lines, *(value.count("\n") + 1 for column, value in zip(TABLE_COLUMNS, values)
@@ -2824,6 +2878,12 @@ jobs:
                       self.table.insert("", "end", iid=recipient.douyin_id,
                                         values=values, tags=(tag,))
                       visible.append(recipient.douyin_id)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (13/18)
+        run: |
+          $payload = @'
                   ttk.Style(self.root).configure("Treeview", rowheight=max(ui_pixels(26), max_lines * self.table_font.metrics("linespace") + ui_pixels(8)))
                   remaining_selection = selected.intersection(visible)
                   if remaining_selection:
@@ -2900,12 +2960,6 @@ jobs:
                   dialog.minsize(ui_pixels(460), ui_pixels(420))
                   dialog.transient(self.root)
                   self.label(dialog, "接收人资料", 16, bold=True).pack(anchor="w", padx=20, pady=(18, 8))
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (13/17)
-        run: |
-          $payload = @'
                   self.label(dialog, "完整字段与导入原文，可选中复制。", 9, "muted").pack(anchor="w", padx=20, pady=(0, 10))
                   details = recipient_details_text(record, self.session.statuses.get(record.douyin_id, "待开始"))
                   frame = tk.Frame(dialog, bg=COLORS["input"])
@@ -3081,6 +3135,12 @@ jobs:
                       self.table.item(recipient.douyin_id, tags=("done",))
                   if self.sort_column == "status":
                       self.refresh_table()
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (14/18)
+        run: |
+          $payload = @'
                   self.log("处理", f"{recipient.nickname or recipient.douyin_id} ({recipient.douyin_id}) · 已处理")
                   self.update_stats()
                   if self.session.state == "completed":
@@ -3165,12 +3225,6 @@ jobs:
 
               def shutdown_timers(self) -> None:
                   self.collection_importer.shutdown()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (14/17)
-        run: |
-          $payload = @'
                   self.media_preview_loader.shutdown()
                   for name in ("timer", "search_timer", "clock_timer", "media_timer", "table_layout_timer",
                                "media_preview_timer", "media_reveal_timer", "media_cover_draw_timer", "media_dialog_draw_timer", "collection_timer"):
@@ -3237,6 +3291,7 @@ jobs:
                   assert abs((datetime.now() - parsed_time).total_seconds()) < 3
                   layout_snapshots = []
                   collection_layout_snapshots = []
+                  target_settings_layout_snapshots = []
 
                   def assert_flat_layout():
                       try:
@@ -3295,6 +3350,12 @@ jobs:
                           assert app.controls_card.winfo_rootx() >= app.list_card.winfo_rootx() + app.list_card.winfo_width(), "Task controls overlap the roster"
                           assert app.controls_card.winfo_rooty() >= app.message_card.winfo_rooty() + app.message_card.winfo_height(), "Task controls must sit below the message panel"
                           assert app.log_card.winfo_rooty() >= app.media_section.winfo_rooty() + app.media_section.winfo_height(), "Logs must sit below the media panel"
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (15/18)
+        run: |
+          $payload = @'
                           assert app.table.winfo_rooty() + app.table.winfo_height() > app.controls_card.winfo_rooty(), "Roster did not use the freed vertical space"
                           assert app.start_button.winfo_width() <= ui_pixels(120), "Start button is no longer compact"
                           for button in app.collection_buttons.values():
@@ -3328,6 +3389,20 @@ jobs:
                           assert str(app.table.heading(column, "anchor")) == str(app.table.column(column, "anchor")) == TABLE_ANCHORS[column]
                           assert "\n" not in app.table.heading(column, "text"), f"Heading wrapped: {column}"
 
+                  def assert_target_settings_layout():
+                      dialog = app.target_settings_dialog
+                      wait_for_window_mapping(dialog)
+                      controls = app.target_settings_entries + [app.target_settings_save_button]
+                      assert len(app.target_settings_entries) == 8
+                      for widget in controls:
+                          assert widget.winfo_viewable(), f"Hidden account setting: {widget}"
+                          x, y = widget.winfo_rootx() - dialog.winfo_rootx(), widget.winfo_rooty() - dialog.winfo_rooty()
+                          assert x >= 0 and y >= 0
+                          assert x + widget.winfo_width() <= dialog.winfo_width(), f"Account setting clipped horizontally: {widget}"
+                          assert y + widget.winfo_height() <= dialog.winfo_height(), f"Account setting clipped vertically: {widget}"
+                      target_settings_layout_snapshots.append({"window": dialog.geometry(), "all_controls_visible": True,
+                                                               "entry_count": len(app.target_settings_entries)})
+
                   app.focus_editor()
                   assert_flat_layout()
                   assert not hasattr(app, "media_cover_button")
@@ -3341,6 +3416,7 @@ jobs:
                   assert app.target_config_button.cget("text") == "搜索账号"
                   assert all("采集失败" in variable.get() for variable in app.collection_status_vars.values())
                   app.open_target_settings()
+                  assert_target_settings_layout()
                   app.target_form["target"].set("task_fixture")
                   app.target_form["nickname"].set("后台配置昵称")
                   app.target_form["fans_count"].set("1,234")
@@ -3355,12 +3431,6 @@ jobs:
                   assert "获取成功" in app.collection_lookup_var.get() and "后台配置昵称" in app.collection_lookup_var.get()
                   assert all(value in app.collection_lookup_var.get() for value in ("粉丝 1,234 人", "关注 56 人", "资料位置：广东 深圳", "实时IP：203.0.113.8"))
                   app.collection_buttons["粉丝"].invoke()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (15/17)
-        run: |
-          $payload = @'
                   assert "账号已设置隐私" in app.collection_detail_var.get() and "采集失败" in app.collection_status_vars["粉丝"].get()
                   assert not app.collection_importer.pending and app.collection_saved_path is None
                   assert "账号已设置隐私" not in app.collection_status_vars["评论区"].get()
@@ -3462,6 +3532,12 @@ jobs:
                                   assert y + child.winfo_height() <= parent.winfo_height() + 2, f"Collection control clipped vertically: {name}"
                                   child = parent
                           assert dialog.minsize()[0] >= dialog.winfo_reqwidth(), "Collection minimum width is smaller than its form"
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (16/18)
+        run: |
+          $payload = @'
                           assert dialog.minsize()[1] >= dialog.winfo_reqheight(), "Collection minimum height is smaller than its form"
                           snapshot["all_controls_visible"] = True
                       except AssertionError as exc:
@@ -3547,19 +3623,67 @@ jobs:
                       assert_collection_layout()
                   assert collection_counts(app.records) == {"评论区": 2, "粉丝": 1, "关注": 1}
                   assert "评论区 2 人" in app.collection_totals_var.get()
+                  app.open_target_settings()
+                  assert_target_settings_layout()
+                  app.target_form["fans_collected_count"].set("12,345")
+                  app.target_form["following_collected_count"].set("678")
+                  app.target_settings_save_button.invoke()
+                  root.update()
+                  configured_target = app.current_collection_key("粉丝")[0]
+                  configured = load_collection_preferences(app.collection_preferences_path).targets[configured_target]
+                  assert configured.fans_collected_count == 12345 and configured.following_collected_count == 678
+                  assert app.collection_status_vars["粉丝"].get() == "采集成功\n已采集 12,345 人"
+                  assert app.collection_status_vars["关注"].get() == "采集成功\n已采集 678 人"
+                  assert "粉丝 12,345 人" in app.collection_totals_var.get() and "关注 678 人" in app.collection_totals_var.get()
+                  for kind, fixed in (("关注", 678), ("粉丝", 12345)):
+                      app.open_collection(kind)
+                      assert f"已采集{kind} {fixed:,} 人" in app.collection_detail_var.get()
+                      app.set_collection_paths([first_list, second_list])
+                      app.start_collection_import()
+                      wait_for_collection()
+                      assert app.collection_status_vars[kind].get() == f"采集成功\n已采集 {fixed:,} 人"
+                      assert f"已采集{kind} {fixed:,} 人" in app.collection_detail_var.get()
+                      assert app.collection_receipts[(configured_target, kind)].count == 2
+                      assert len(read_list(app.collection_saved_path).records) == 2
+                      assert len(app.records) == 2
+                  assert collection_counts(app.records) == {"评论区": 2, "粉丝": 2, "关注": 2}
+                  assert "评论区 2 人" in app.collection_totals_var.get()
+                  root.update()
+                  for identifier in ("fixture_001", "fixture_002"):
+                      assert "互相关注" in app.table.set(identifier, "source").replace("\n", "")
+                  app.sort_by("source")
+                  assert len(app.table.get_children()) == 2
+                  assert_flat_layout()
+                  app.open_target_settings()
+                  assert app.target_form["fans_collected_count"].get() == "12345"
+                  assert app.target_form["following_collected_count"].get() == "678"
+                  app.target_form["fans_collected_count"].set("0")
+                  app.target_form["following_collected_count"].set("")
+                  app.target_settings_save_button.invoke()
+                  root.update()
+                  assert app.collection_status_vars["粉丝"].get() == "采集成功\n已采集 0 人"
+                  assert app.collection_status_vars["关注"].get() == "采集成功\n已采集 2 人"
+                  app.open_target_settings()
+                  app.target_form["fans_collected_count"].set("999999999999")
+                  app.target_form["following_collected_count"].set("999999999999")
+                  app.target_settings_save_button.invoke()
+                  root.update()
+                  assert "999,999,999,999" in app.collection_status_vars["粉丝"].get()
+                  assert_flat_layout()
+                  app.open_target_settings()
+                  app.target_form["fans_collected_count"].set("12345")
+                  app.target_form["following_collected_count"].set("678")
+                  app.target_settings_save_button.invoke()
+                  root.update()
                   app.close_collection()
                   assert app.collection_dialog is None
                   original_target = app.collection_target_var.get()
                   app.collection_target_var.set("other_target")
                   assert all("采集失败" in variable.get() for variable in app.collection_status_vars.values())
+                  assert "粉丝 2 人" in app.collection_totals_var.get() and "关注 2 人" in app.collection_totals_var.get()
                   app.collection_target_var.set(original_target)
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (16/17)
-        run: |
-          $payload = @'
                   assert all("采集成功" in variable.get() for variable in app.collection_status_vars.values())
+                  assert "粉丝 12,345 人" in app.collection_totals_var.get() and "关注 678 人" in app.collection_totals_var.get()
                   original_scale_ui = app.scale_ui
                   normal_line_height = collection_layout_snapshots[-1]["button_line_height"]
 
@@ -3577,6 +3701,10 @@ jobs:
                   try:
                       # Exercise larger font metrics as well as the builder's native DPI.
                       app.scale_ui = scale_larger_collection_fonts
+                      app.open_target_settings()
+                      assert_target_settings_layout()
+                      app.target_settings_save_button.invoke()
+                      root.update()
                       app.open_collection()
                       root.update()
                       assert_collection_layout()
@@ -3636,6 +3764,12 @@ jobs:
                       app.cancel_tick()
                   assert app.session.state == "completed" and app.session.cursor == 6
                   assert app.table.set("demo_001", "status") == "已处理"
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (17/18)
+        run: |
+          $payload = @'
                   app.search_var.set("demo_003")
                   app.refresh_table()
                   assert len(app.table.get_children()) == 1
@@ -3801,12 +3935,6 @@ jobs:
                   app.process_media_tick()
                   assert app.media_queue.completed == 1
                   assert app.accept_follow_receipts([Recipient("demo_001")]) == (0, 1, 0)
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (17/17)
-        run: |
-          $payload = @'
                   assert app.accept_follow_receipts([Recipient("demo_002")]) == (1, 0, 0)
                   app.stop()
                   assert not app.media_queue.pending and app.media_timer is None
@@ -3818,6 +3946,7 @@ jobs:
                                                      "tk_version": root.tk.call("info", "patchlevel"),
                                                      "layout_checks": layout_snapshots,
                                                      "collection_layout_checks": collection_layout_snapshots,
+                                                     "target_settings_layout_checks": target_settings_layout_snapshots,
                                                      "checks": ["widgets", "account_dialog", "account_save", "account_mask", "account_hide",
                                                                 "sample_import", "start", "pause", "resume", "stop", "complete", "filter",
                                                                 "metadata_columns", "combined_filters", "age_sort", "details", "target_scope",
@@ -3832,11 +3961,19 @@ jobs:
                                                                 "manual_privacy_failure", "one_click_file_selection", "per_target_collection_receipts",
                                                                 "expanded_account_summary", "larger_clock_font", "compact_account_header",
                                                                 "compact_media_preview", "follow_back_default_checked", "independent_follow_rules",
+                                                                "fixed_collected_counts", "collected_count_zero_and_blank", "collected_count_target_scope",
+                                                                "mutual_follow_source", "target_settings_layout",
                                                                 "collection_dialog_layout", "collection_measured_minimum", "collection_larger_fonts",
                                                                 "local_account_lookup", "manual_data_source",
                                                                 "collection_failure_retry", "collection_csv_saved", "collection_three_categories",
                                                                 "collection_background_completion", "collection_category_counts",
                                                                 "local_clock", "custom_runtime", "media_filename", "follow_receipts",
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (18/18)
+        run: |
+          $payload = @'
                                                                 "media_deduplication", "media_cancel", "adaptive_columns", "status_visible",
                                                                 "complete_cell_wrapping", "imported_filenames", "partial_import",
                                                                 "filename_clear", "compact_stats", "region_aliases", "real_video_cover",
@@ -3897,7 +4034,7 @@ jobs:
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded test_app.py (1/5)
+      - name: Write embedded test_app.py (1/6)
         run: |
           $payload = @'
           import tempfile
@@ -3919,9 +4056,9 @@ jobs:
                            decode_cover_image, fit_image_size, render_cover_image,
                            merge_records, normalize_profile, parse_age, parse_comment_count, parse_text, profile_display_text,
                            load_comment_column, save_comment_column,
-                           CollectionBatch, CollectionImporter, CollectionCancelled, collection_target, collection_counts,
+                           CollectionBatch, CollectionImporter, CollectionCancelled, collection_target, collection_counts, collection_display_count,
                            read_collection_batch, save_collection_batch,
-                           read_list, recipient_details_text, render_message, save_profile, save_runtime_offset, sort_records,
+                           read_list, recipient_details_text, recipient_source_text, render_message, save_profile, save_runtime_offset, sort_records,
                            send_interval_ms, valid_id, wrap_cell_text,
                            TargetProfile, CollectionPreferences, normalize_collection_preferences,
                            load_collection_preferences, save_collection_preferences, target_lookup_text, privacy_failure_reason, parse_target_count)
@@ -4115,7 +4252,7 @@ jobs:
           '@
           [IO.File]::WriteAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded test_app.py (2/5)
+      - name: Write embedded test_app.py (2/6)
         run: |
           $payload = @'
                   for invalid in ("", "..", "https://example.com", "a/b", "a b", "x" * 65):
@@ -4286,6 +4423,24 @@ jobs:
                   self.assertEqual(collection_counts(records), {"评论区": 1, "粉丝": 1, "关注": 1})
                   self.assertEqual(collection_counts([]), {"评论区": 0, "粉丝": 0, "关注": 0})
 
+              def test_overlapping_files_mark_exact_ids_as_mutual_without_losing_categories(self):
+                  with tempfile.TemporaryDirectory() as directory:
+                      fans, following = Path(directory)/"fans.txt", Path(directory)/"following.txt"
+                      fans.write_text("00001\n00002", encoding="utf-8")
+                      following.write_text("00001\n1\n00003", encoding="utf-8")
+                      for kinds in (("粉丝", "关注"), ("关注", "粉丝")):
+                          records = []
+                          for kind in kinds:
+                              path = fans if kind == "粉丝" else following
+                              merge_records(records, read_collection_batch([path], kind, "owner").records)
+                          indexed = {r.douyin_id:r for r in records}
+                          self.assertEqual(len(indexed), 4)
+                          self.assertEqual(recipient_source_text(indexed["00001"].sources), "互相关注")
+                          self.assertEqual(set(indexed["00001"].sources), {"粉丝", "关注"})
+                          self.assertEqual(recipient_source_text(indexed["1"].sources), "关注")
+                          self.assertEqual(recipient_source_text(indexed["00002"].sources), "粉丝")
+                          self.assertEqual(collection_counts(records), {"评论区": 0, "粉丝": 2, "关注": 3})
+
               def test_missing_empty_and_invalid_inputs_fail_before_saving(self):
                   with tempfile.TemporaryDirectory() as directory:
                       empty = Path(directory)/"empty.txt"
@@ -4305,6 +4460,12 @@ jobs:
                       saved = save_collection_batch(batch, Path(directory)/"collections")
                       self.assertTrue(saved.is_file())
                       self.assertEqual(list(saved.parent.glob("*.tmp")), [])
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (3/6)
+        run: |
+          $payload = @'
                       with saved.open(encoding="utf-8-sig", newline="") as handle:
                           rows = list(csv.DictReader(handle))
                       self.assertEqual(len(rows), 1)
@@ -4323,12 +4484,6 @@ jobs:
 
               def test_archive_reimport_restores_quoted_names_and_valid_leading_dash_ids(self):
                   with tempfile.TemporaryDirectory() as directory:
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded test_app.py (3/5)
-        run: |
-          $payload = @'
                       original = [Recipient("-00001", "'=文本", ["粉丝"]), Recipient("user.name", "@昵称", ["粉丝"])]
                       batch = CollectionBatch("owner", "粉丝", original, [])
                       saved = save_collection_batch(batch, Path(directory))
@@ -4503,6 +4658,17 @@ jobs:
                   for value in ("性别：女", "年龄：31 岁", "资料地区：江苏 镇江", "IP属地：上海", "保留完整导入行"):
                       self.assertIn(value, details)
 
+              def test_mutual_source_display_preserves_comments_and_sorts_by_visible_label(self):
+                  original = ["评论区", "关注", "粉丝"]
+                  self.assertEqual(recipient_source_text(original), "评论区 / 互相关注")
+                  self.assertEqual(original, ["评论区", "关注", "粉丝"])
+                  self.assertEqual(recipient_source_text([]), "")
+                  self.assertEqual(recipient_source_text(["粉丝", "粉丝"]), "粉丝")
+                  self.assertIn("来源：互相关注", recipient_details_text(self.records[2]))
+                  expected = sorted(self.records, key=lambda r: recipient_source_text(r.sources).casefold())
+                  self.assertEqual(sort_records(self.records, "source"), expected)
+                  self.assertEqual(sort_records(self.records, "source", True), list(reversed(expected)))
+
 
           class RuntimeClockTests(unittest.TestCase):
               def test_duration_components_and_formatting(self):
@@ -4518,6 +4684,12 @@ jobs:
                   with mock.patch("app.time.monotonic", return_value=100) as monotonic:
                       clock = RuntimeClock(3600)
                       monotonic.return_value = 110
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (4/6)
+        run: |
+          $payload = @'
                       self.assertEqual((clock.actual, clock.displayed), (10, 3610))
                       clock.set_initial(7200)
                       monotonic.return_value = 120
@@ -4555,12 +4727,6 @@ jobs:
                       path.write_bytes(b"image-file")
                       asset = inspect_media(path)
                       self.assertEqual((asset.name, asset.kind, asset.size), (path.name, "图片", 10))
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded test_app.py (4/5)
-        run: |
-          $payload = @'
                       for filename, content in (("empty.mp4", b""), ("script.exe", b"data")):
                           invalid = Path(directory) / filename
                           invalid.write_bytes(content)
@@ -4774,6 +4940,12 @@ jobs:
 
               def test_background_error_becomes_a_readable_preview_failure(self):
                   loader = MediaPreviewLoader()
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (5/6)
+        run: |
+          $payload = @'
                   with mock.patch("app.media_cover_png", side_effect=ValueError("无法读取封面")):
                       loader.request(inspect_media(self.landscape))
                       result = self.wait_result(loader)
@@ -4815,12 +4987,6 @@ jobs:
                       with self.assertRaises(ValueError):
                           fit_image_size(*dimensions, 300, 400)
 
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded test_app.py (5/5)
-        run: |
-          $payload = @'
               def test_original_mode_keeps_every_fullhd_pixel(self):
                   from PIL import Image
                   image = Image.linear_gradient("L").resize((1080, 1920)).convert("RGB")
@@ -4877,10 +5043,10 @@ jobs:
                   with tempfile.TemporaryDirectory() as directory:
                       path = Path(directory) / "collection-settings.json"
                       self.assertEqual(load_collection_preferences(path), CollectionPreferences())
-                      preferences = CollectionPreferences(" @00123 ", {"00123": TargetProfile(" 配置昵称 ", True, False, 1234, 0, " 广东 深圳 ", "203.0.113.8 ")})
+                      preferences = CollectionPreferences(" @00123 ", {"00123": TargetProfile(" 配置昵称 ", True, False, 1234, 0, " 广东 深圳 ", "203.0.113.8 ", 456, 0)})
                       saved = save_collection_preferences(path, preferences)
                       self.assertEqual(saved.last_target, "00123")
-                      self.assertEqual(saved.targets["00123"], TargetProfile("配置昵称", True, False, 1234, 0, "广东 深圳", "203.0.113.8"))
+                      self.assertEqual(saved.targets["00123"], TargetProfile("配置昵称", True, False, 1234, 0, "广东 深圳", "203.0.113.8", 456, 0))
                       self.assertEqual(load_collection_preferences(path), saved)
 
               def test_invalid_preferences_are_rejected(self):
@@ -4895,6 +5061,11 @@ jobs:
                                       CollectionPreferences(targets={"id": TargetProfile(fans_count=-1)}),
                                       CollectionPreferences(targets={"id": TargetProfile(fans_count=1000000000000)}),
                                       CollectionPreferences(targets={"id": TargetProfile(following_count=1.5)}),
+                                      CollectionPreferences(targets={"id": TargetProfile(fans_collected_count=True)}),
+                                      CollectionPreferences(targets={"id": TargetProfile(fans_collected_count=-1)}),
+                                      CollectionPreferences(targets={"id": TargetProfile(fans_collected_count=1000000000000)}),
+                                      CollectionPreferences(targets={"id": TargetProfile(following_collected_count=1.5)}),
+                                      CollectionPreferences(targets={"id": TargetProfile(following_collected_count="123")}),
                                       CollectionPreferences(targets={"id": TargetProfile(region="区" * 81)}),
                                       CollectionPreferences(targets={"id": TargetProfile(live_ip="bad\nvalue")}),
                                       CollectionPreferences(targets={"@id": TargetProfile(), "id": TargetProfile()})):
@@ -4955,6 +5126,25 @@ jobs:
                   for part in ("获取成功 · 昵称：账号甲", "粉丝 1,234 人", "关注 0 人", "资料位置：广东 深圳", "实时IP：203.0.113.8"):
                       self.assertIn(part, text)
                   self.assertIn("粉丝 — 人", target_lookup_text("0001", CollectionPreferences(targets={"0001": TargetProfile("账号甲")}), []))
+
+              def test_collected_counts_are_fixed_per_target_and_separate_from_account_totals(self):
+                  preferences = CollectionPreferences(targets={
+                      "one": TargetProfile(fans_count=99999, following_count=2000, fans_collected_count=12345, following_collected_count=0),
+                      "two": TargetProfile(fans_collected_count=8),
+                  })
+                  for actual in (0, 1, 7, 50000):
+                      self.assertEqual(collection_display_count(preferences, "one", "粉丝", actual), 12345)
+                      self.assertEqual(collection_display_count(preferences, "one", "关注", actual), 0)
+                      self.assertEqual(collection_display_count(preferences, "one", "评论区", actual), actual)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (6/6)
+        run: |
+          $payload = @'
+                      self.assertEqual(collection_display_count(preferences, "two", "粉丝", actual), 8)
+                      self.assertEqual(collection_display_count(preferences, "two", "关注", actual), actual)
+                      self.assertEqual(collection_display_count(preferences, "missing", "粉丝", actual), actual)
 
 
           class SendIntervalTests(unittest.TestCase):
@@ -5331,6 +5521,19 @@ jobs:
           该项与“对方关注后发送媒体文件”相互独立，清除媒体素材不会重置回关选项；切换时更新提示与日志。
           此版本增加规则选项及界面状态，程序仍未接入抖音关注接口，不执行真实账号回关操作。
 
+          ## v1.16.0 自定义采集人数与互相关注
+
+          点击“搜索账号”，在粉丝人数、关注人数右侧分别设置“已采集人数”。两项按目标抖音号独立保存，
+          可填 0–999999999999 的整数或带千位分隔符的数字；填写后，分类成功提示、采集详情、底部汇总及之后的采集完成提示采用固定值，
+          不会随导入、重复导入或更换名单而变化。留空则恢复文件统计。评论区仍按文件中的有效去重 ID 统计。
+          这两项与账号资料的粉丝总人数、关注总人数分开；没有导入文件或采集失败时，分类仍显示相应失败状态。
+          固定值保存在 `collection-settings.json` 的 `fans_collected_count` 和 `following_collected_count` 字段中，兼容既有设置。
+          它们仅控制人数显示，不会扩充接收名单、改变导出文件行数或真实去重统计；重启保留设置，采集成功状态仍需本次读取文件后产生。
+
+          同一抖音号同时存在于粉丝、关注文件中时，接收名单来源显示“互相关注”，详情与来源排序使用相同文字。
+          若同时来自评论区，则显示“评论区 / 互相关注”（按首次导入来源顺序排列）。原有粉丝、关注分类仍保留用于统计和数据处理，
+          不会重复添加接收人；前导零保留，昵称相同但抖音号不同不会合并。
+
           ## 本地运行与构建
 
           安装包含 Tkinter 的 Python 3.12 后：
@@ -5352,6 +5555,12 @@ jobs:
           交付前已通过 100 项逻辑测试和 YML 内嵌源码一致性校验。
           另在 Linux 的 Tk 8.6 中文界面中通过完整源码 GUI 检查，覆盖 1280 × 768 小屏、901 × 578 最小窗口和多种窗口尺寸，
           验证表头和资料列对应、评论列隐藏 / 恢复、数字排序、缩放、右侧紧凑操作区与日志、左侧分类按钮、时间和视频封面可见。
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD 'README.md'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded README.md (2/2)
+        run: |
+          $payload = @'
           资料采集窗口另外检查本地抖音号查询、失败后真实重试、三种分类保存、保存文件可重新导入、
           最小窗口和放大字体下控件完整显示，以及关闭采集窗口后后台任务正常完成。
           窗口自检另覆盖隐藏后恢复、延迟显示以及永久隐藏超时，避免将尚未处理的 Windows 显示消息当成布局失败。
@@ -5364,12 +5573,6 @@ jobs:
           - [GitHub 手动运行工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
           - [actions/setup-python](https://github.com/actions/setup-python)
           - [actions/upload-artifact](https://github.com/actions/upload-artifact)
-          '@
-          [IO.File]::WriteAllText((Join-Path $PWD 'README.md'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded README.md (2/2)
-        run: |
-          $payload = @'
           - [PyInstaller 用法](https://pyinstaller.org/en/stable/usage.html)
           - [imageio-ffmpeg 源码与许可证](https://github.com/imageio/imageio-ffmpeg)
           - [FFmpeg 视频滤镜](https://ffmpeg.org/ffmpeg-filters.html)
