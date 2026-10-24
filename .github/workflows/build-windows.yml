@@ -1,7 +1,7 @@
 # Upload this single file as .github/workflows/build-windows.yml
 # It embeds all source and uses no real recipient data, Secrets, or account logins.
 name: Build Windows App
-run-name: Windows v1.14.0 · ${{ github.ref_name }}
+run-name: Windows v1.15.0 · ${{ github.ref_name }}
 
 on:
   push:
@@ -62,7 +62,7 @@ jobs:
 
 
           APP_NAME = "抖音群发工作台"
-          VERSION = "1.14.0"
+          VERSION = "1.15.0"
           UI_SCALE = 0.85
           MAX_FILE_BYTES = 5 * 1024 * 1024
           MAX_RECIPIENTS = 20000
@@ -1347,11 +1347,12 @@ jobs:
                   self.media_asset: MediaAsset | None = None
                   self.media_queue = FollowMediaQueue()
                   self.follow_media_var = tk.BooleanVar(value=False)
+                  self.follow_back_var = tk.BooleanVar(value=True)
                   self.media_name_var = tk.StringVar(value="尚未选择媒体文件")
                   self.media_info_var = tk.StringVar(value="支持图片、视频、音频")
                   self.media_dimensions_var = tk.StringVar(value="适配 1080 × 1920 竖屏视频")
                   self.media_status_var = tk.StringVar(value="关注后媒体规则未启用")
-                  self.media_cover_state_var = tk.StringVar(value="支持视频封面与图片预览")
+                  self.media_cover_state_var = tk.StringVar(value="")
                   self.local_time_var = tk.StringVar()
                   self.runtime_var = tk.StringVar()
                   self.account_display_var = tk.StringVar()
@@ -1448,13 +1449,13 @@ jobs:
                   return tk.Label(parent, text=text, bg=parent.cget("bg"), fg=COLORS[color],
                                   font=("Microsoft YaHei UI", size, "bold" if bold else "normal"), **options)
 
-              def button(self, parent, text, command, primary=False, danger=False, **options):
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded app.py (6/17)
         run: |
           $payload = @'
+              def button(self, parent, text, command, primary=False, danger=False, **options):
                   bg = COLORS["accent"] if primary else COLORS["hover"]
                   fg = COLORS["bg"] if primary else COLORS["red"] if danger else COLORS["text"]
                   padding = {"padx": 14, "pady": 8}
@@ -1631,14 +1632,14 @@ jobs:
                                         anchor=TABLE_ANCHORS[column])
                   self.table.configure(displaycolumns=self.displayed_columns())
                   yscroll = ttk.Scrollbar(table_frame, command=self.table.yview)
-                  self.table.configure(yscrollcommand=yscroll.set)
-                  yscroll.grid(row=0, column=1, sticky="ns")
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded app.py (7/17)
         run: |
           $payload = @'
+                  self.table.configure(yscrollcommand=yscroll.set)
+                  yscroll.grid(row=0, column=1, sticky="ns")
                   self.table.grid(row=0, column=0, sticky="nsew")
                   self.table.bind("<Configure>", self.schedule_table_layout)
                   self.table.bind("<Button-1>", self.block_column_resize, add="+")
@@ -1720,9 +1721,6 @@ jobs:
                   media_info_row = tk.Frame(media_frame, bg=COLORS["card"])
                   media_info_row.grid(row=2, column=0, sticky="ew", padx=10)
                   self.label(media_info_row, size=8, color="muted", textvariable=self.media_info_var).pack(side="left")
-                  self.media_cover_button = self.button(media_info_row, "高清预览 ↗", self.open_media_preview, padx=6, pady=3, state="disabled")
-                  self.media_cover_button.pack(side="right")
-                  self.label(media_frame, size=8, color="blue", textvariable=self.media_dimensions_var).grid(row=3, column=0, sticky="w", padx=10, pady=(2, 5))
                   self.media_cover_canvas = tk.Canvas(media_frame, height=1, width=1, bg="#080F1D",
                                                       highlightthickness=1, highlightbackground="#34526B")
                   self.media_cover_canvas.grid(row=4, column=0, sticky="nsew", padx=10)
@@ -1734,11 +1732,16 @@ jobs:
                   self.media_cover_state_label.bind("<Configure>", lambda event: self.media_cover_state_label.configure(wraplength=max(1, event.width)))
                   rules = self.card(media_frame)
                   rules.grid(row=6, column=0, sticky="ew", padx=10, pady=(0, 8))
+                  self.follow_back_check = tk.Checkbutton(rules, text="对方关注后自动回关", variable=self.follow_back_var,
+                                 command=self.toggle_follow_back, bg=COLORS["card"], fg=COLORS["text"],
+                                 activebackground=COLORS["card"], activeforeground=COLORS["text"],
+                                 font=("Microsoft YaHei UI", 9), selectcolor=COLORS["input"])
+                  self.follow_back_check.pack(anchor="w", padx=5, pady=(4, 1))
                   self.media_rule_check = tk.Checkbutton(rules, text="对方关注后发送媒体文件", variable=self.follow_media_var,
                                  command=self.toggle_follow_media, bg=COLORS["card"], fg=COLORS["text"],
                                  activebackground=COLORS["card"], activeforeground=COLORS["text"],
                                  font=("Microsoft YaHei UI", 9), selectcolor=COLORS["input"])
-                  self.media_rule_check.pack(anchor="w", padx=5, pady=(4, 2))
+                  self.media_rule_check.pack(anchor="w", padx=5, pady=(1, 2))
                   rule_actions = tk.Frame(rules, bg=COLORS["card"])
                   rule_actions.pack(fill="x", padx=7)
                   self.button(rule_actions, "关注回执", self.import_follow_receipts, padx=8, pady=4).pack(side="left")
@@ -1786,18 +1789,19 @@ jobs:
                   self.toast_label.grid(row=2, column=1, columnspan=2, sticky="ew", pady=(5, 0))
                   self.toast_label.bind("<Configure>", lambda event: self.toast_label.configure(wraplength=max(1, event.width)))
                   footer = self.footer = tk.Frame(main, bg=COLORS["bg"])
-                  footer.grid(row=3, column=0, sticky="ew", pady=(3, 0))
-                  self.local_time_label = self.label(footer, size=12, bold=True, textvariable=self.local_time_var)
-                  self.local_time_label.pack(side="right")
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded app.py (8/17)
         run: |
           $payload = @'
+                  footer.grid(row=3, column=0, sticky="ew", pady=(3, 0))
+                  self.local_time_label = self.label(footer, size=12, bold=True, textvariable=self.local_time_var)
+                  self.local_time_label.pack(side="right")
                   self.runtime_label = self.label(footer, size=9, color="muted", textvariable=self.runtime_var)
                   self.runtime_label.pack(side="left")
                   self.scale_ui(main)
+                  self.media_cover_state_label.grid_remove()
                   self.update_preview()
 
               def focus_editor(self) -> None:
@@ -2004,15 +2008,15 @@ jobs:
                   self.label(heading, "资料采集", 16, bold=True).pack(side="left")
                   self.collection_source_label = self.label(heading, "账号资料与采集任务", 9, "blue")
                   self.collection_source_label.pack(side="right")
-                  lookup = tk.Frame(content, bg=COLORS["card"])
-                  lookup.grid(row=1, column=0, sticky="ew")
-                  self.label(lookup, "目标抖音号", 9, "muted").pack(side="left", padx=(0, 8))
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded app.py (9/17)
         run: |
           $payload = @'
+                  lookup = tk.Frame(content, bg=COLORS["card"])
+                  lookup.grid(row=1, column=0, sticky="ew")
+                  self.label(lookup, "目标抖音号", 9, "muted").pack(side="left", padx=(0, 8))
                   self.collection_target_entry = tk.Entry(lookup, textvariable=self.collection_target_var, width=12,
                       bg=COLORS["input"], fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat")
                   self.collection_target_entry.pack(side="left", fill="x", expand=True, ipady=7)
@@ -2197,15 +2201,15 @@ jobs:
                           self.imported_names_var.set("\n".join(path.name for path in self.imported_files))
                           self.sync_filter_choices()
                           self.reset_filters()
-                          self.update_stats()
-                          self.refresh_collection_totals()
-                          self.collection_status_var.set("采集成功 · 已保存")
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded app.py (10/17)
         run: |
           $payload = @'
+                          self.update_stats()
+                          self.refresh_collection_totals()
+                          self.collection_status_var.set("采集成功 · 已保存")
                           self.collection_status_color = "accent"
                           self.collection_detail_var.set(f"已采集{batch.kind} {len(batch.records):,} 人，新增 {added:,} 人，"
                               f"合并重复 {repeated + batch.duplicates:,} 条，跳过无效项 {batch.skipped:,} 条。")
@@ -2310,19 +2314,26 @@ jobs:
                   self.media_preview_source = None
                   self.media_preview_photo = None
                   self.media_preview_placeholder = placeholder
-                  self.media_cover_button.configure(state="disabled")
                   self.media_cover_canvas.configure(cursor="")
-                  self.media_cover_state_label.configure(fg=COLORS["muted"])
+                  self.set_media_cover_state("")
                   self.render_media_cover()
+
+              def set_media_cover_state(self, text: str, color: str = "muted") -> None:
+                  self.media_cover_state_var.set(text)
+                  self.media_cover_state_label.configure(fg=COLORS[color])
+                  if text:
+                      self.media_cover_state_label.grid()
+                  else:
+                      self.media_cover_state_label.grid_remove()
 
               def start_media_preview(self, asset: MediaAsset) -> None:
                   if asset.kind == "音频":
                       self.reset_media_preview("音频文件\n无视频画面")
-                      self.media_cover_state_var.set("已选择音频文件")
+                      self.set_media_cover_state("已选择音频文件")
                       return
                   caption = "视频封面" if asset.kind == "视频" else "图片预览"
                   self.reset_media_preview(f"正在读取{caption}…")
-                  self.media_cover_state_var.set(f"正在读取{caption}…")
+                  self.set_media_cover_state(f"正在读取{caption}…")
                   self.media_preview_loader.request(asset)
                   self.media_preview_timer = self.root.after(60, self.poll_media_preview)
 
@@ -2342,14 +2353,11 @@ jobs:
                           self.media_preview_source = None
                           self.media_preview_placeholder = "封面暂不可用"
                           self.media_dimensions_var.set("画面尺寸暂不可用")
-                          self.media_cover_state_var.set(error)
-                          self.media_cover_state_label.configure(fg=COLORS["red"])
+                          self.set_media_cover_state(error, "red")
                           self.log("媒体", f"{result.asset.name}：{error}")
                       else:
-                          caption = "视频封面" if result.asset.kind == "视频" else "图片预览"
-                          self.media_cover_state_var.set(f"{caption} · 高清预览支持 100% 原尺寸查看")
+                          self.set_media_cover_state("")
                           self.media_dimensions_var.set(cover_dimensions_text(*self.media_preview_source.size))
-                          self.media_cover_button.configure(state="normal")
                           self.media_cover_canvas.configure(cursor="hand2")
                       self.render_media_cover()
                   if self.media_preview_loader.pending:
@@ -2423,15 +2431,15 @@ jobs:
                                                  + (" · 拖动查看细节" if original else ""))
                   for button, selected in ((self.media_fit_button, not original), (self.media_original_button, original)):
                       button.configure(bg="#254147" if selected else COLORS["hover"],
-                                       fg=COLORS["accent"] if selected else COLORS["muted"])
-
-              def set_media_zoom(self, original: bool) -> None:
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded app.py (11/17)
         run: |
           $payload = @'
+                                       fg=COLORS["accent"] if selected else COLORS["muted"])
+
+              def set_media_zoom(self, original: bool) -> None:
                   if self.media_preview_dialog is None:
                       return
                   self.media_dialog_mode.set("original" if original else "fit")
@@ -2450,7 +2458,7 @@ jobs:
                           raise ValueError("文件已变更")
                   except (OSError, ValueError):
                       self.reset_media_preview("文件已变更，请重新导入")
-                      self.media_cover_state_var.set("媒体文件已变更或不可用，请重新导入。")
+                      self.set_media_cover_state("媒体文件已变更或不可用，请重新导入。", "red")
                       return
                   if self.media_preview_dialog is not None:
                       self.media_preview_dialog.lift()
@@ -2525,7 +2533,6 @@ jobs:
               def clear_media(self) -> None:
                   self.cancel_media_tasks()
                   self.reset_media_preview()
-                  self.media_cover_state_var.set("支持视频封面与图片预览")
                   if self.media_reveal_timer is not None:
                       self.root.after_cancel(self.media_reveal_timer)
                       self.media_reveal_timer = None
@@ -2541,6 +2548,11 @@ jobs:
                   if not self.follow_media_var.get():
                       self.cancel_media_tasks()
                   self.refresh_media_status()
+
+              def toggle_follow_back(self) -> None:
+                  text = "已启用对方关注后自动回关。" if self.follow_back_var.get() else "已关闭对方关注后自动回关。"
+                  self.toast_var.set(text)
+                  self.log("回关设置", text)
 
               def refresh_media_status(self) -> None:
                   if not self.follow_media_var.get():
@@ -2647,15 +2659,15 @@ jobs:
                       entry.pack(fill="x", ipady=7)
                       entries.append(entry)
                   options = tk.Frame(content, bg=COLORS["card"])
-                  options.pack(fill="x", pady=(12, 8))
-                  for name, caption in (("show_account", "显示账号"), ("show_nickname", "显示昵称"), ("mask_account", "遮挡账号")):
-                      tk.Checkbutton(options, text=caption, variable=variables[name], bg=COLORS["card"],
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded app.py (12/17)
         run: |
           $payload = @'
+                  options.pack(fill="x", pady=(12, 8))
+                  for name, caption in (("show_account", "显示账号"), ("show_nickname", "显示昵称"), ("mask_account", "遮挡账号")):
+                      tk.Checkbutton(options, text=caption, variable=variables[name], bg=COLORS["card"],
                                      fg=COLORS["muted"], activebackground=COLORS["card"], activeforeground=COLORS["text"],
                                      selectcolor=COLORS["input"], font=("Microsoft YaHei UI", 10)).pack(side="left", padx=(0, 10))
                   self.label(content, "显示预览", 9, "muted").pack(anchor="w")
@@ -2888,15 +2900,15 @@ jobs:
                   dialog.minsize(ui_pixels(460), ui_pixels(420))
                   dialog.transient(self.root)
                   self.label(dialog, "接收人资料", 16, bold=True).pack(anchor="w", padx=20, pady=(18, 8))
-                  self.label(dialog, "完整字段与导入原文，可选中复制。", 9, "muted").pack(anchor="w", padx=20, pady=(0, 10))
-                  details = recipient_details_text(record, self.session.statuses.get(record.douyin_id, "待开始"))
-                  frame = tk.Frame(dialog, bg=COLORS["input"])
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded app.py (13/17)
         run: |
           $payload = @'
+                  self.label(dialog, "完整字段与导入原文，可选中复制。", 9, "muted").pack(anchor="w", padx=20, pady=(0, 10))
+                  details = recipient_details_text(record, self.session.statuses.get(record.douyin_id, "待开始"))
+                  frame = tk.Frame(dialog, bg=COLORS["input"])
                   frame.pack(fill="both", expand=True, padx=20)
                   body = tk.Text(frame, wrap="word", bg=COLORS["input"], fg=COLORS["text"], relief="flat", padx=12, pady=12,
                                  font=("Microsoft YaHei UI", 10))
@@ -3153,15 +3165,15 @@ jobs:
 
               def shutdown_timers(self) -> None:
                   self.collection_importer.shutdown()
-                  self.media_preview_loader.shutdown()
-                  for name in ("timer", "search_timer", "clock_timer", "media_timer", "table_layout_timer",
-                               "media_preview_timer", "media_reveal_timer", "media_cover_draw_timer", "media_dialog_draw_timer", "collection_timer"):
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded app.py (14/17)
         run: |
           $payload = @'
+                  self.media_preview_loader.shutdown()
+                  for name in ("timer", "search_timer", "clock_timer", "media_timer", "table_layout_timer",
+                               "media_preview_timer", "media_reveal_timer", "media_cover_draw_timer", "media_dialog_draw_timer", "collection_timer"):
                       identifier = getattr(self, name, None)
                       if identifier is not None:
                           self.root.after_cancel(identifier)
@@ -3241,6 +3253,7 @@ jobs:
                           "media_panel": app.media_section, "message_editor": app.message,
                           "message_preview": app.preview, "recipient_table": app.table,
                           "video_cover": app.media_cover_canvas, "follow_media_rule": app.media_rule_check,
+                          "follow_back_rule": app.follow_back_check,
                           "media_status": app.media_status_label, "import_media": app.media_import_button,
                           "task_scope": app.scope_combo, "send_interval": app.interval_spin,
                           "action_bar": app.controls_card, "start_button": app.start_button,
@@ -3317,6 +3330,13 @@ jobs:
 
                   app.focus_editor()
                   assert_flat_layout()
+                  assert not hasattr(app, "media_cover_button")
+                  assert app.follow_back_var.get() is True
+                  app.follow_back_check.invoke()
+                  assert not app.follow_back_var.get() and not app.follow_media_var.get()
+                  app.follow_back_check.invoke()
+                  assert app.follow_back_var.get() and not app.follow_media_var.get()
+                  assert not app.media_cover_state_label.winfo_ismapped()
                   assert not hasattr(app, "source_combo") and not hasattr(app, "import_button") and not hasattr(app, "import_name_label")
                   assert app.target_config_button.cget("text") == "搜索账号"
                   assert all("采集失败" in variable.get() for variable in app.collection_status_vars.values())
@@ -3335,6 +3355,12 @@ jobs:
                   assert "获取成功" in app.collection_lookup_var.get() and "后台配置昵称" in app.collection_lookup_var.get()
                   assert all(value in app.collection_lookup_var.get() for value in ("粉丝 1,234 人", "关注 56 人", "资料位置：广东 深圳", "实时IP：203.0.113.8"))
                   app.collection_buttons["粉丝"].invoke()
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (15/17)
+        run: |
+          $payload = @'
                   assert "账号已设置隐私" in app.collection_detail_var.get() and "采集失败" in app.collection_status_vars["粉丝"].get()
                   assert not app.collection_importer.pending and app.collection_saved_path is None
                   assert "账号已设置隐私" not in app.collection_status_vars["评论区"].get()
@@ -3347,12 +3373,6 @@ jobs:
                   second_list = Path(profile_directory.name) / "接收人完整文件名称_第二批_表格资料.csv"
                   missing_list = Path(profile_directory.name) / "不存在的文件.txt"
                   first_list.write_text("昵称 完整昵称需要换行显示的联系人  女31岁  抖音号 fixture_001 资料位置：江苏 镇江 IP 属地：上海 评论次数 2 （江苏2次）", encoding="utf-8")
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (15/17)
-        run: |
-          $payload = @'
                   second_list.write_text("抖音 ID,昵称,资料 位置,IP归属地,评论次数\nfixture_002,联系人乙,西藏 阿里地区,江苏,10\n", encoding="utf-8-sig")
                   errors = app.import_paths([first_list, second_list, missing_list])
                   assert len(errors) == 1 and missing_list.name in errors[0]
@@ -3533,6 +3553,12 @@ jobs:
                   app.collection_target_var.set("other_target")
                   assert all("采集失败" in variable.get() for variable in app.collection_status_vars.values())
                   app.collection_target_var.set(original_target)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (16/17)
+        run: |
+          $payload = @'
                   assert all("采集成功" in variable.get() for variable in app.collection_status_vars.values())
                   original_scale_ui = app.scale_ui
                   normal_line_height = collection_layout_snapshots[-1]["button_line_height"]
@@ -3549,12 +3575,6 @@ jobs:
                               widget.configure(font=(actual["family"], size, actual["weight"], actual["slant"]))
 
                   try:
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (16/17)
-        run: |
-          $payload = @'
                       # Exercise larger font metrics as well as the builder's native DPI.
                       app.scale_ui = scale_larger_collection_fonts
                       app.open_collection()
@@ -3705,11 +3725,10 @@ jobs:
                   assert_flat_layout()
                   app.set_media_file(red_video)
                   assert app.media_preview_source is None
-                  assert str(app.media_cover_button.cget("state")) == "disabled"
                   wait_for_cover()
                   assert app.media_preview_source is not None
                   assert app.media_name_var.get() == red_video.name
-                  assert str(app.media_cover_button.cget("state")) == "normal"
+                  assert not app.media_cover_state_label.winfo_ismapped() and app.media_cover_state_var.get() == ""
                   assert_flat_layout()
                   picture = app.media_preview_source
                   assert picture.size == (1920, 1080)
@@ -3771,7 +3790,8 @@ jobs:
                   assert app.media_preview_source is None and "无法读取封面" in app.media_cover_state_var.get()
                   app.set_media_file(media_path)
                   wait_for_cover()
-                  assert app.media_preview_source is not None and "图片预览" in app.media_cover_state_var.get()
+                  assert app.media_preview_source is not None and app.media_asset.kind == "图片"
+                  assert not app.media_cover_state_label.winfo_ismapped()
                   app.follow_media_var.set(True)
                   app.toggle_follow_media()
                   assert app.media_name_var.get() == media_path.name
@@ -3781,23 +3801,24 @@ jobs:
                   app.process_media_tick()
                   assert app.media_queue.completed == 1
                   assert app.accept_follow_receipts([Recipient("demo_001")]) == (0, 1, 0)
-                  assert app.accept_follow_receipts([Recipient("demo_002")]) == (1, 0, 0)
-                  app.stop()
-                  assert not app.media_queue.pending and app.media_timer is None
-                  app.clear_media()
-                  assert app.media_asset is None and not app.follow_media_var.get()
-                  report_path.write_text(json.dumps({"ok": True, "mode": "local_queue", "version": VERSION,
-                                                     "ui_scale": UI_SCALE,
-                                                     "tk_version": root.tk.call("info", "patchlevel"),
-                                                     "layout_checks": layout_snapshots,
-                                                     "collection_layout_checks": collection_layout_snapshots,
-                                                     "checks": ["widgets", "account_dialog", "account_save", "account_mask", "account_hide",
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded app.py (17/17)
         run: |
           $payload = @'
+                  assert app.accept_follow_receipts([Recipient("demo_002")]) == (1, 0, 0)
+                  app.stop()
+                  assert not app.media_queue.pending and app.media_timer is None
+                  app.clear_media()
+                  assert app.media_asset is None and not app.follow_media_var.get()
+                  assert app.follow_back_var.get() is True
+                  report_path.write_text(json.dumps({"ok": True, "mode": "local_queue", "version": VERSION,
+                                                     "ui_scale": UI_SCALE,
+                                                     "tk_version": root.tk.call("info", "patchlevel"),
+                                                     "layout_checks": layout_snapshots,
+                                                     "collection_layout_checks": collection_layout_snapshots,
+                                                     "checks": ["widgets", "account_dialog", "account_save", "account_mask", "account_hide",
                                                                 "sample_import", "start", "pause", "resume", "stop", "complete", "filter",
                                                                 "metadata_columns", "combined_filters", "age_sort", "details", "target_scope",
                                                                 "invalid_age_range", "empty_filter_result", "flat_three_column_layout", "always_visible_logs",
@@ -3810,6 +3831,7 @@ jobs:
                                                                 "source_dropdown_removed", "target_profile_settings", "target_nickname_provenance",
                                                                 "manual_privacy_failure", "one_click_file_selection", "per_target_collection_receipts",
                                                                 "expanded_account_summary", "larger_clock_font", "compact_account_header",
+                                                                "compact_media_preview", "follow_back_default_checked", "independent_follow_rules",
                                                                 "collection_dialog_layout", "collection_measured_minimum", "collection_larger_fonts",
                                                                 "local_account_lookup", "manual_data_source",
                                                                 "collection_failure_retry", "collection_csv_saved", "collection_three_categories",
@@ -4969,7 +4991,7 @@ jobs:
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded README.md (1/1)
+      - name: Write embedded README.md (1/2)
         run: |
           $payload = @'
           # 抖音群发工作台
@@ -5299,6 +5321,16 @@ jobs:
           }
           ```
 
+          ## v1.15.0 媒体区域精简与回关选项
+
+          删除媒体区的“1080 × 1920 · 9:16 竖屏”尺寸提示、独立“高清预览”按钮，以及封面读取成功后的高清 / 100% 原尺寸说明。
+          视频封面和图片仍等比显示；点击画面可沿用现有的大图查看功能。读取中、文件变更或读取失败时保留对应提示，成功后自动收起提示行。
+          视频 / 图片的实际尺寸仍用于封面处理，删除尺寸文案不影响读取分辨率或画面质量。
+
+          媒体规则中新增“对方关注后自动回关”勾选项，每次启动默认勾选，可独立开关。
+          该项与“对方关注后发送媒体文件”相互独立，清除媒体素材不会重置回关选项；切换时更新提示与日志。
+          此版本增加规则选项及界面状态，程序仍未接入抖音关注接口，不执行真实账号回关操作。
+
           ## 本地运行与构建
 
           安装包含 Tkinter 的 Python 3.12 后：
@@ -5332,13 +5364,19 @@ jobs:
           - [GitHub 手动运行工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
           - [actions/setup-python](https://github.com/actions/setup-python)
           - [actions/upload-artifact](https://github.com/actions/upload-artifact)
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD 'README.md'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded README.md (2/2)
+        run: |
+          $payload = @'
           - [PyInstaller 用法](https://pyinstaller.org/en/stable/usage.html)
           - [imageio-ffmpeg 源码与许可证](https://github.com/imageio/imageio-ffmpeg)
           - [FFmpeg 视频滤镜](https://ffmpeg.org/ffmpeg-filters.html)
           - [FFmpeg 源码与许可证](https://ffmpeg.org/download.html)
           - [Pillow 缩放与 ImageTk](https://pillow.readthedocs.io/en/stable/reference/ImageTk.html)
           '@
-          [IO.File]::WriteAllText((Join-Path $PWD 'README.md'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+          [IO.File]::AppendAllText((Join-Path $PWD 'README.md'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
       - name: Write embedded requirements.txt (1/1)
         run: |
