@@ -1,5 +1,6 @@
 # 上传路径必须是 .github/workflows/自动复制.yml
 # 此文件已内嵌全部源码与测试，无需另外上传项目文件。
+# 源码分段写入，每个 run 步骤均低于 GitHub 的 21,000 字符上限。
 # 产物：Windows 10/11 x64 的 自动复制.exe；运行时无需安装 Python。
 name: 自动复制 · Windows 编译
 
@@ -34,13 +35,13 @@ jobs:
           python-version: '3.12'
           architecture: 'x64'
 
-      - name: 从本配置生成完整源码
+      - name: 写入 auto_copy.py（1/4）
         shell: python
         run: |
           from pathlib import Path
-          files = {
-              'auto_copy.py': r'''
-          from __future__ import annotations
+          destination = Path('auto_copy.py')
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          payload = r'''from __future__ import annotations
 
           import argparse
           import hashlib
@@ -356,7 +357,17 @@ jobs:
                               original_md5, original_signature = stable_md5(original, cancel)
                               existed = os.path.lexists(destination)
                               destination_signature = None
-                              if existed:
+          '''
+          with destination.open('wb') as output:
+              output.write(payload.encode('utf-8'))
+
+      - name: 写入 auto_copy.py（2/4）
+        shell: python
+        run: |
+          from pathlib import Path
+          destination = Path('auto_copy.py')
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          payload = r'''                    if existed:
                                   target_md5, destination_signature = stable_md5(destination, cancel)
                                   if original_md5 == target_md5:
                                       if file_signature(original) != original_signature or file_signature(destination) != destination_signature:
@@ -591,7 +602,17 @@ jobs:
                       unit_widget = ttk.Combobox(options, values=list(UNITS), textvariable=self.unit, width=5, state="readonly")
                       unit_widget.pack(side="left")
                       ttk.Label(options, text="检测一次").pack(side="left", padx=(8, 20))
-                      recursive_widget = ttk.Checkbutton(options, text="包含子文件夹", variable=self.recursive)
+          '''
+          with destination.open('ab') as output:
+              output.write(payload.encode('utf-8'))
+
+      - name: 写入 auto_copy.py（3/4）
+        shell: python
+        run: |
+          from pathlib import Path
+          destination = Path('auto_copy.py')
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          payload = r'''            recursive_widget = ttk.Checkbutton(options, text="包含子文件夹", variable=self.recursive)
                       recursive_widget.pack(side="left", padx=(0, 16))
                       launch_widget = ttk.Checkbutton(options, text="打开软件后启动定时", variable=self.auto_on_launch)
                       launch_widget.pack(side="left")
@@ -811,7 +832,17 @@ jobs:
                   (source / "忽略.png").write_bytes(b"image")
                   (source / "子文件夹").mkdir()
                   (source / "子文件夹" / "文档.rtf").write_bytes(b"{rtf}")
-                  settings = Settings(str(source), str(target), "txt,rtf")
+          '''
+          with destination.open('ab') as output:
+              output.write(payload.encode('utf-8'))
+
+      - name: 写入 auto_copy.py（4/4）
+        shell: python
+        run: |
+          from pathlib import Path
+          destination = Path('auto_copy.py')
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          payload = r'''        settings = Settings(str(source), str(target), "txt,rtf")
                   first = run_copy(settings)
                   if (first.copied, first.filtered, first.errors) != (2, 1, 0):
                       raise AssertionError(asdict(first))
@@ -925,9 +956,17 @@ jobs:
 
           if __name__ == "__main__":
               raise SystemExit(main())
-          '''.lstrip('\n'),
-              'tests/test_auto_copy.py': r'''
-          import hashlib
+          '''
+          with destination.open('ab') as output:
+              output.write(payload.encode('utf-8'))
+
+      - name: 写入 tests/test_auto_copy.py（1/2）
+        shell: python
+        run: |
+          from pathlib import Path
+          destination = Path('tests/test_auto_copy.py')
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          payload = r'''import hashlib
           import json
           import os
           from pathlib import Path
@@ -1199,7 +1238,17 @@ jobs:
                   protected = self.base / "protected.txt"
                   protected.write_bytes(b"protected")
                   self.target.mkdir()
-                  self.symlink(self.target / "a.txt", protected)
+          '''
+          with destination.open('wb') as output:
+              output.write(payload.encode('utf-8'))
+
+      - name: 写入 tests/test_auto_copy.py（2/2）
+        shell: python
+        run: |
+          from pathlib import Path
+          destination = Path('tests/test_auto_copy.py')
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          payload = r'''        self.symlink(self.target / "a.txt", protected)
                   result = app.run_copy(self.settings())
                   self.assertEqual(result.errors, 1)
                   self.assertTrue((self.target / "a.txt").is_symlink())
@@ -1293,12 +1342,28 @@ jobs:
 
           if __name__ == "__main__":
               unittest.main()
-          '''.lstrip('\n'),
-              'requirements-build.txt': r'''
-          pyinstaller==6.22.3
-          '''.lstrip('\n'),
-              'README.md': r'''
-          # 自动复制
+          '''
+          with destination.open('ab') as output:
+              output.write(payload.encode('utf-8'))
+
+      - name: 写入 requirements-build.txt（1/1）
+        shell: python
+        run: |
+          from pathlib import Path
+          destination = Path('requirements-build.txt')
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          payload = r'''pyinstaller==6.22.3
+          '''
+          with destination.open('wb') as output:
+              output.write(payload.encode('utf-8'))
+
+      - name: 写入 README.md（1/1）
+        shell: python
+        run: |
+          from pathlib import Path
+          destination = Path('README.md')
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          payload = r'''# 自动复制
 
           中文 Windows 桌面软件，将源文件夹 A 的文件单向复制到目标文件夹 B。
           采用 MD5 内容比对：同一路径下内容相同则跳过，不同则自动覆盖，B 中缺少的文件自动新增。
@@ -1312,6 +1377,7 @@ jobs:
           5. 解压下载的 ZIP，双击 **自动复制.exe**。无需自行安装 Python。
 
           此 YML 已内嵌完整程序、测试和使用说明，无需额外上传源码，也不需要设置 GitHub Token 或 Secret。
+          源码通过多个步骤分段写入，每个步骤低于 GitHub Actions 单个 `run` 最多 21,000 字符的限制。
           上传后触发 `push` 编译；文件需位于 `.github/workflows/`。手动运行入口需要工作流位于默认分支。
           适用于 GitHub.com 的 Windows 10/11 x64 编译产物。程序未进行付费数字签名。
 
@@ -1369,6 +1435,7 @@ jobs:
           ```powershell
           python auto_copy.py
           python -m unittest discover -s tests -v
+          python -m unittest discover -s tools -p "test_*.py" -v
           python auto_copy.py --self-test engine-report.json
           python auto_copy.py --smoke-test gui-report.json
           ```
@@ -1391,13 +1458,10 @@ jobs:
           - Python 设置动作：https://github.com/actions/setup-python
           - 构建产物上传与下载：https://github.com/actions/upload-artifact
           - Windows 单文件打包：https://pyinstaller.org/en/stable/usage.html
-          '''.lstrip('\n'),
-          }
-          for name, content in files.items():
-              destination = Path(name)
-              destination.parent.mkdir(parents=True, exist_ok=True)
-              destination.write_text(content, encoding='utf-8', newline='\n')
-          print('Created application, tests and documentation.')
+          '''
+          with destination.open('wb') as output:
+              output.write(payload.encode('utf-8'))
+
       - name: 运行复制逻辑和定时调度测试
         run: |
           python -m compileall -q auto_copy.py tests
