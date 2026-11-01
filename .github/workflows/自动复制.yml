@@ -1,0 +1,1476 @@
+# 上传路径必须是 .github/workflows/自动复制.yml
+# 此文件已内嵌全部源码与测试，无需另外上传项目文件。
+# 产物：Windows 10/11 x64 的 自动复制.exe；运行时无需安装 Python。
+name: 自动复制 · Windows 编译
+
+on:
+  push:
+    paths:
+      - '.github/workflows/自动复制.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: automatic-copy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 测试并打包 Windows 软件
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      PYTHONUTF8: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: 设置 Python 3.12 x64
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+
+      - name: 从本配置生成完整源码
+        shell: python
+        run: |
+          from pathlib import Path
+          files = {
+              'auto_copy.py': r'''
+          from __future__ import annotations
+
+          import argparse
+          import hashlib
+          import json
+          import logging
+          from logging.handlers import RotatingFileHandler
+          import math
+          import os
+          from pathlib import Path
+          import queue
+          import re
+          import stat
+          import subprocess
+          import sys
+          import tempfile
+          import threading
+          import time
+          import traceback
+          from dataclasses import asdict, dataclass
+          from typing import Callable
+
+
+          APP_NAME = "自动复制"
+          VERSION = "1.0.0"
+          CHUNK_SIZE = 1024 * 1024
+          PRESETS = {
+              "全部文件": "*",
+              "文本与文档": "txt,rtf,md,pdf,doc,docx,odt,wps",
+              "表格与演示": "xls,xlsx,xlsm,csv,tsv,ods,et,ppt,pptx,odp,dps",
+              "图片": "jpg,jpeg,png,gif,bmp,webp,tif,tiff,svg,heic,ico",
+              "音频与视频": "mp3,wav,flac,aac,m4a,ogg,mp4,mkv,mov,avi,wmv,webm",
+              "压缩文件": "zip,7z,rar,tar,gz,bz2,xz,tar.gz",
+              "代码与配置": "py,js,ts,tsx,jsx,html,css,cs,cpp,c,h,java,go,rs,json,yml,yaml,xml,ini,toml",
+              "仅 TXT / RTF": "txt,rtf",
+          }
+          UNITS = {"秒": 1, "分钟": 60, "小时": 3600}
+
+
+          class CopyCancelled(Exception):
+              pass
+
+
+          class FileChangedError(OSError):
+              pass
+
+
+          @dataclass(frozen=True)
+          class Settings:
+              source: str = ""
+              target: str = ""
+              extensions: str = "*"
+              recursive: bool = True
+              interval: float = 60
+              unit: str = "秒"
+              auto_on_launch: bool = False
+
+              @property
+              def seconds(self) -> float:
+                  value = float(self.interval)
+                  if not math.isfinite(value) or self.unit not in UNITS:
+                      raise ValueError("请输入有效的检测间隔。")
+                  seconds = value * UNITS[self.unit]
+                  if not 1 <= seconds <= 365 * 24 * 3600:
+                      raise ValueError("检测间隔应在 1 秒到 365 天之间。")
+                  return seconds
+
+
+          @dataclass
+          class CopyStats:
+              scanned: int = 0
+              copied: int = 0
+              updated: int = 0
+              skipped: int = 0
+              filtered: int = 0
+              links: int = 0
+              errors: int = 0
+              cancelled: bool = False
+
+
+          @dataclass
+          class RunSchedule:
+              enabled: bool = False
+              busy: bool = False
+              interval: float = 60
+              next_due: float | None = None
+
+              def begin(self, automatic: bool, interval: float) -> bool:
+                  if self.busy:
+                      return False
+                  self.enabled, self.busy = automatic, True
+                  self.interval, self.next_due = interval, None
+                  return True
+
+              def finish(self, now: float) -> None:
+                  self.busy = False
+                  self.next_due = now + self.interval if self.enabled else None
+
+              def stop(self) -> None:
+                  self.enabled, self.next_due = False, None
+
+              def due(self, now: float) -> bool:
+                  return self.enabled and not self.busy and self.next_due is not None and now >= self.next_due
+
+
+          def parse_extensions(text: str) -> tuple[str, ...]:
+              """An empty tuple means all files. Matching is case-insensitive."""
+              parts = [part for part in re.split(r"[\s,;，；、]+", text.strip().lower()) if part]
+              if not parts:
+                  return ()
+              result = set()
+              all_files = False
+              for part in parts:
+                  if part in ("*", "*.*"):
+                      all_files = True
+                      continue
+                  if part.startswith("*."):
+                      part = part[1:]
+                  elif not part.startswith("."):
+                      part = "." + part
+                  if not re.fullmatch(r"\.[a-z0-9_\-\u0080-\uffff]+(?:\.[a-z0-9_\-\u0080-\uffff]+)*", part):
+                      raise ValueError(f"无效的文件后缀：{part}。示例：txt,rtf,pdf 或 *。")
+                  result.add(part)
+              return () if all_files else tuple(sorted(result))
+
+
+          def matches_extension(path: Path, extensions: tuple[str, ...]) -> bool:
+              return not extensions or path.name.lower().endswith(extensions)
+
+
+          def is_linklike(path: Path) -> bool:
+              try:
+                  info = path.lstat()
+              except FileNotFoundError:
+                  return False
+              return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400)
+
+
+          def within(path: Path, parent: Path) -> bool:
+              try:
+                  path.relative_to(parent)
+                  return True
+              except ValueError:
+                  return False
+
+
+          def validate_settings(settings: Settings) -> tuple[Path, Path]:
+              if not settings.source.strip() or not settings.target.strip():
+                  raise ValueError("请先设置源文件夹 A 和目标文件夹 B。")
+              settings.seconds
+              parse_extensions(settings.extensions)
+              source = Path(os.path.expandvars(settings.source.strip())).expanduser().resolve()
+              target = Path(os.path.expandvars(settings.target.strip())).expanduser().resolve()
+              if not source.is_dir():
+                  raise ValueError("源文件夹 A 不存在或不是文件夹。")
+              if within(source, target) or within(target, source):
+                  raise ValueError("A、B 不能相同，也不能互相包含，请选择两个独立的文件夹。")
+              if target.exists() and not target.is_dir():
+                  raise ValueError("目标位置 B 已被同名文件占用。")
+              return source, target
+
+
+          def check_cancel(cancel: threading.Event) -> None:
+              if cancel.is_set():
+                  raise CopyCancelled()
+
+
+          def fingerprint(info: os.stat_result) -> tuple:
+              return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+          def file_signature(path: Path) -> tuple:
+              if is_linklike(path):
+                  raise OSError(f"跳过符号链接或目录联接：{path}")
+              info = path.stat()
+              if not stat.S_ISREG(info.st_mode):
+                  raise OSError(f"不是普通文件：{path}")
+              return fingerprint(info)
+
+
+          def stable_md5(path: Path, cancel: threading.Event) -> tuple[str, tuple]:
+              before = file_signature(path)
+              digest = hashlib.md5(usedforsecurity=False)
+              with path.open("rb") as stream:
+                  if fingerprint(os.fstat(stream.fileno())) != before:
+                      raise FileChangedError(f"读取时文件发生变化，留待下次检测：{path}")
+                  while True:
+                      check_cancel(cancel)
+                      chunk = stream.read(CHUNK_SIZE)
+                      if not chunk:
+                          break
+                      digest.update(chunk)
+                  after = fingerprint(os.fstat(stream.fileno()))
+              if before != after or before != file_signature(path):
+                  raise FileChangedError(f"文件正在写入，本轮跳过：{path}")
+              return digest.hexdigest(), before
+
+
+          def safe_parent(root: Path, destination: Path) -> None:
+              relative = destination.relative_to(root)
+              current = root
+              if is_linklike(root):
+                  raise OSError("目标根目录已变成链接，请重新选择目标文件夹。")
+              for part in relative.parts[:-1]:
+                  current /= part
+                  if is_linklike(current):
+                      raise OSError(f"目标子目录是链接，已跳过：{current}")
+                  current.mkdir(exist_ok=True)
+                  if not current.is_dir():
+                      raise OSError(f"目标子目录被文件占用：{current}")
+              if is_linklike(destination):
+                  raise OSError(f"目标文件是链接，已跳过：{destination}")
+
+
+          def atomic_copy(source: Path, destination: Path, root: Path, source_md5: str,
+                          source_signature: tuple, target_signature: tuple | None,
+                          cancel: threading.Event) -> None:
+              """Verify staged bytes before replacing the destination on the same volume."""
+              safe_parent(root, destination)
+              handle, temporary_name = tempfile.mkstemp(prefix=".autocopy-", suffix=".tmp", dir=destination.parent)
+              temporary = Path(temporary_name)
+              try:
+                  with os.fdopen(handle, "wb") as output:
+                      if file_signature(source) != source_signature:
+                          raise FileChangedError("源文件已经变化，本轮跳过，下次检测重试。")
+                      with source.open("rb") as input_file:
+                          if fingerprint(os.fstat(input_file.fileno())) != source_signature:
+                              raise FileChangedError("源文件已经变化，本轮跳过。")
+                          digest = hashlib.md5(usedforsecurity=False)
+                          while True:
+                              check_cancel(cancel)
+                              chunk = input_file.read(CHUNK_SIZE)
+                              if not chunk:
+                                  break
+                              output.write(chunk)
+                              digest.update(chunk)
+                          if fingerprint(os.fstat(input_file.fileno())) != source_signature:
+                              raise FileChangedError("复制时源文件发生变化，保留原目标文件。")
+                      output.flush()
+                      os.fsync(output.fileno())
+                  if digest.hexdigest() != source_md5 or file_signature(source) != source_signature:
+                      raise FileChangedError("源文件内容已经变化，保留原目标文件。")
+                  staged_md5, _ = stable_md5(temporary, cancel)
+                  if staged_md5 != source_md5:
+                      raise OSError("临时副本的 MD5 校验失败，保留原目标文件。")
+                  source_stat = source.stat()
+                  os.utime(temporary, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+                  safe_parent(root, destination)
+                  if target_signature is None:
+                      if os.path.lexists(destination):
+                          raise FileChangedError("目标位置刚刚被其他程序写入，留待下次检测。")
+                  elif file_signature(destination) != target_signature:
+                      raise FileChangedError("目标文件被其他程序修改，留待下次检测。")
+                  if file_signature(source) != source_signature:
+                      raise FileChangedError("源文件仍在变化，留待下次检测。")
+                  check_cancel(cancel)
+                  os.replace(temporary, destination)
+              finally:
+                  temporary.unlink(missing_ok=True)
+
+
+          def run_copy(settings: Settings, cancel: threading.Event | None = None,
+                       emit: Callable[[str, str], None] | None = None,
+                       progress: Callable[[CopyStats], None] | None = None) -> CopyStats:
+              cancel = cancel if cancel is not None else threading.Event()
+              emit = emit or (lambda level, text: None)
+              progress = progress or (lambda stats: None)
+              source, target = validate_settings(settings)
+              extensions = parse_extensions(settings.extensions)
+              stats = CopyStats()
+              last_progress = 0.0
+
+              def walk_error(error: OSError) -> None:
+                  stats.errors += 1
+                  emit("error", f"无法扫描：{error}")
+
+              try:
+                  check_cancel(cancel)
+                  target.mkdir(parents=True, exist_ok=True)
+                  for directory, directories, filenames in os.walk(source, topdown=True, onerror=walk_error, followlinks=False):
+                      check_cancel(cancel)
+                      directory_path = Path(directory)
+                      if is_linklike(directory_path):
+                          directories[:] = []
+                          stats.links += 1
+                          continue
+                      kept = []
+                      for name in directories:
+                          child = directory_path / name
+                          if is_linklike(child):
+                              stats.links += 1
+                              emit("warning", f"跳过链接文件夹：{child.relative_to(source)}")
+                          else:
+                              kept.append(name)
+                      directories[:] = kept if settings.recursive else []
+                      for name in filenames:
+                          check_cancel(cancel)
+                          original = directory_path / name
+                          relative = original.relative_to(source)
+                          stats.scanned += 1
+                          try:
+                              if is_linklike(original):
+                                  stats.links += 1
+                                  emit("warning", f"跳过链接文件：{relative}")
+                                  continue
+                              if not matches_extension(original, extensions):
+                                  stats.filtered += 1
+                                  continue
+                              # A subdirectory may have been replaced since os.walk visited it.
+                              if not within(original.resolve(), source):
+                                  raise OSError("源路径指向 A 文件夹之外，已跳过。")
+                              destination = target / relative
+                              safe_parent(target, destination)
+                              original_md5, original_signature = stable_md5(original, cancel)
+                              existed = os.path.lexists(destination)
+                              destination_signature = None
+                              if existed:
+                                  target_md5, destination_signature = stable_md5(destination, cancel)
+                                  if original_md5 == target_md5:
+                                      if file_signature(original) != original_signature or file_signature(destination) != destination_signature:
+                                          raise FileChangedError("比对时文件发生变化，留待下次检测。")
+                                      stats.skipped += 1
+                                      continue
+                              atomic_copy(original, destination, target, original_md5,
+                                          original_signature, destination_signature, cancel)
+                              if existed:
+                                  stats.updated += 1
+                                  emit("info", f"已覆盖：{relative}")
+                              else:
+                                  stats.copied += 1
+                                  emit("info", f"已新增：{relative}")
+                          except CopyCancelled:
+                              raise
+                          except OSError as error:
+                              stats.errors += 1
+                              emit("error", f"处理失败 [{relative}]：{error}")
+                          finally:
+                              now = time.monotonic()
+                              if now - last_progress >= 0.15:
+                                  progress(CopyStats(**asdict(stats)))
+                                  last_progress = now
+              except CopyCancelled:
+                  stats.cancelled = True
+                  emit("warning", "复制已停止，未完成的临时副本已清理。")
+              progress(CopyStats(**asdict(stats)))
+              return stats
+
+
+          def state_directory() -> Path:
+              if os.name == "nt":
+                  base = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+              else:
+                  base = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+              return base / "AutomaticCopy"
+
+
+          def load_settings(path: Path) -> Settings:
+              if not path.exists():
+                  return Settings()
+              data = json.loads(path.read_text(encoding="utf-8"))
+              if not isinstance(data, dict):
+                  raise ValueError("设置文件格式无效。")
+              defaults = asdict(Settings())
+              for key, default in defaults.items():
+                  if key not in data:
+                      continue
+                  value = data[key]
+                  if isinstance(default, bool):
+                      if not isinstance(value, bool):
+                          raise ValueError(f"设置项格式无效：{key}")
+                  elif key == "interval":
+                      if isinstance(value, bool) or not isinstance(value, (int, float)):
+                          raise ValueError("检测间隔格式无效。")
+                  elif not isinstance(value, str):
+                      raise ValueError(f"设置项格式无效：{key}")
+                  defaults[key] = value
+              result = Settings(**defaults)
+              result.seconds
+              parse_extensions(result.extensions)
+              return result
+
+
+          def save_settings(path: Path, settings: Settings) -> None:
+              path.parent.mkdir(parents=True, exist_ok=True)
+              handle, name = tempfile.mkstemp(prefix="settings-", suffix=".tmp", dir=path.parent)
+              try:
+                  with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                      json.dump(asdict(settings), stream, ensure_ascii=False, indent=2)
+                      stream.flush()
+                      os.fsync(stream.fileno())
+                  os.replace(name, path)
+              finally:
+                  Path(name).unlink(missing_ok=True)
+
+
+          class InstanceLock:
+              def __init__(self, directory: Path):
+                  directory.mkdir(parents=True, exist_ok=True)
+                  self.stream = (directory / "instance.lock").open("a+b")
+                  self.locked = False
+
+              def acquire(self) -> bool:
+                  self.stream.seek(0, os.SEEK_END)
+                  if self.stream.tell() == 0:
+                      self.stream.write(b"0")
+                      self.stream.flush()
+                  self.stream.seek(0)
+                  try:
+                      if os.name == "nt":
+                          import msvcrt
+                          msvcrt.locking(self.stream.fileno(), msvcrt.LK_NBLCK, 1)
+                      else:
+                          import fcntl
+                          fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                      self.locked = True
+                      return True
+                  except OSError:
+                      return False
+
+              def close(self) -> None:
+                  if self.locked:
+                      self.stream.seek(0)
+                      if os.name == "nt":
+                          import msvcrt
+                          msvcrt.locking(self.stream.fileno(), msvcrt.LK_UNLCK, 1)
+                      else:
+                          import fcntl
+                          fcntl.flock(self.stream.fileno(), fcntl.LOCK_UN)
+                  self.stream.close()
+
+
+          def open_folder(path: Path) -> None:
+              if os.name == "nt":
+                  os.startfile(str(path))
+              else:
+                  subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(path)])
+
+
+          def build_app(root, directory: Path, smoke: bool = False):
+              # Lazy imports keep engine tests usable on machines without a graphical desktop.
+              import tkinter as tk
+              from tkinter import filedialog, messagebox, scrolledtext, ttk
+              from tkinter import font as tkfont
+
+              class App:
+                  def __init__(self):
+                      self.root, self.directory = root, directory
+                      self.config_path = directory / "settings.json"
+                      directory.mkdir(parents=True, exist_ok=True)
+                      self.logger = logging.getLogger(f"AutomaticCopy.{id(self)}")
+                      self.logger.setLevel(logging.INFO)
+                      self.logger.propagate = False
+                      handler = RotatingFileHandler(directory / "自动复制.log", maxBytes=5_000_000, backupCount=2, encoding="utf-8")
+                      handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"))
+                      self.logger.addHandler(handler)
+                      self.events = queue.Queue(maxsize=1500)
+                      self.cancel = threading.Event()
+                      self.schedule = RunSchedule()
+                      self.active_settings = None
+                      self.stats = CopyStats()
+                      self.closing = False
+                      self.completed_runs = 0
+                      self.editables = []
+                      self.load_error = None
+                      try:
+                          settings = load_settings(self.config_path)
+                      except (OSError, ValueError, TypeError) as error:
+                          settings = Settings()
+                          self.load_error = str(error)
+                      self.source = tk.StringVar(value=settings.source)
+                      self.target = tk.StringVar(value=settings.target)
+                      self.extensions = tk.StringVar(value=settings.extensions)
+                      self.recursive = tk.BooleanVar(value=settings.recursive)
+                      self.interval = tk.StringVar(value=f"{settings.interval:g}")
+                      self.unit = tk.StringVar(value=settings.unit)
+                      self.auto_on_launch = tk.BooleanVar(value=settings.auto_on_launch)
+                      self.status = tk.StringVar(value="就绪 · 请设置源文件夹与目标文件夹")
+                      self.counts = {key: tk.StringVar(value="0") for key in ("scanned", "copied", "updated", "skipped", "errors")}
+                      self._layout()
+                      root.protocol("WM_DELETE_WINDOW", self.close)
+                      root.report_callback_exception = self.report_error
+                      self.log("info", f"自动复制 {VERSION} 已启动。MD5 相同跳过，不同则覆盖。")
+                      if self.load_error:
+                          self.log("warning", "原设置未能读取，已使用默认设置：" + self.load_error)
+                      root.after(100, self.poll)
+                      if settings.auto_on_launch and not smoke:
+                          root.after(500, lambda: self.start(True))
+
+                  def _layout(self):
+                      root.title(f"{APP_NAME} · {VERSION}")
+                      root.geometry("1000x800")
+                      root.minsize(860, 700)
+                      root.configure(bg="#F3F5FA")
+                      if os.name == "nt":
+                          family = "Microsoft YaHei UI"
+                      else:
+                          family = "DejaVu Sans"
+                      for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont"):
+                          tkfont.nametofont(name).configure(family=family, size=10)
+                      style = ttk.Style(root)
+                      style.theme_use("clam")
+                      style.configure("TFrame", background="#F3F5FA")
+                      style.configure("Card.TFrame", background="white")
+                      style.configure("TLabel", background="white", foreground="#243247", font=(family, 10))
+                      style.configure("Section.TLabel", font=(family, 11, "bold"))
+                      style.configure("Hint.TLabel", foreground="#63718A", font=(family, 9))
+                      style.configure("TButton", padding=(12, 7), font=(family, 10))
+                      style.configure("Primary.TButton", foreground="white", background="#2563EB", borderwidth=0)
+                      style.map("Primary.TButton", background=[("active", "#1D4ED8"), ("disabled", "#A8BDE9")])
+                      style.configure("TCheckbutton", background="white", font=(family, 10))
+                      style.configure("TEntry", padding=6)
+                      style.configure("TCombobox", padding=5)
+                      root.columnconfigure(0, weight=1)
+                      root.rowconfigure(5, weight=1)
+                      header = tk.Frame(root, bg="#F3F5FA")
+                      header.grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 14))
+                      tk.Label(header, text="自动复制", font=(family, 23, "bold"), fg="#172640", bg="#F3F5FA").pack(side="left")
+                      tk.Label(header, text="A → B   /   MD5 内容校验", font=(family, 11), fg="#63718A", bg="#F3F5FA").pack(side="left", padx=20, pady=(9, 0))
+
+                      folders = ttk.Frame(root, style="Card.TFrame", padding=16)
+                      folders.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 12))
+                      folders.columnconfigure(1, weight=1)
+                      ttk.Label(folders, text="01  复制位置", style="Section.TLabel").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+                      for row, caption, variable in ((1, "源文件夹 A", self.source), (2, "目标文件夹 B", self.target)):
+                          ttk.Label(folders, text=caption).grid(row=row, column=0, sticky="w", padx=(0, 14), pady=4)
+                          entry = ttk.Entry(folders, textvariable=variable)
+                          entry.grid(row=row, column=1, sticky="ew", pady=4)
+                          button = ttk.Button(folders, text="选择文件夹", command=lambda value=variable: self.browse(value))
+                          button.grid(row=row, column=2, padx=(10, 0), pady=4)
+                          self.editables.extend((entry, button))
+
+                      rules = ttk.Frame(root, style="Card.TFrame", padding=16)
+                      rules.grid(row=2, column=0, sticky="ew", padx=24, pady=(0, 12))
+                      rules.columnconfigure(1, weight=1)
+                      ttk.Label(rules, text="02  复制规则", style="Section.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+                      presets = ttk.Combobox(rules, values=list(PRESETS), state="readonly", width=16)
+                      presets.set(next((name for name, value in PRESETS.items() if value == self.extensions.get()), "自定义后缀"))
+                      presets.grid(row=1, column=0, sticky="w", padx=(0, 12))
+                      presets.bind("<<ComboboxSelected>>", lambda event: self.extensions.set(PRESETS[presets.get()]))
+                      suffixes = ttk.Entry(rules, textvariable=self.extensions)
+                      suffixes.grid(row=1, column=1, sticky="ew")
+                      self.editables.extend((presets, suffixes))
+                      ttk.Label(rules, text="填写 txt,rtf,pdf；支持 .txt、*.txt、中文逗号。留空或 * 表示全部文件。", style="Hint.TLabel").grid(row=2, column=0, columnspan=2, sticky="w", pady=(7, 12))
+                      options = ttk.Frame(rules, style="Card.TFrame")
+                      options.grid(row=3, column=0, columnspan=2, sticky="ew")
+                      ttk.Label(options, text="每隔").pack(side="left")
+                      interval_widget = ttk.Spinbox(options, from_=1, to=999999, textvariable=self.interval, width=8)
+                      interval_widget.pack(side="left", padx=8)
+                      unit_widget = ttk.Combobox(options, values=list(UNITS), textvariable=self.unit, width=5, state="readonly")
+                      unit_widget.pack(side="left")
+                      ttk.Label(options, text="检测一次").pack(side="left", padx=(8, 20))
+                      recursive_widget = ttk.Checkbutton(options, text="包含子文件夹", variable=self.recursive)
+                      recursive_widget.pack(side="left", padx=(0, 16))
+                      launch_widget = ttk.Checkbutton(options, text="打开软件后启动定时", variable=self.auto_on_launch)
+                      launch_widget.pack(side="left")
+                      self.editables.extend((interval_widget, unit_widget, recursive_widget, launch_widget))
+
+                      toolbar = ttk.Frame(root)
+                      toolbar.grid(row=3, column=0, sticky="ew", padx=24, pady=(0, 12))
+                      self.once_button = ttk.Button(toolbar, text="立即复制", style="Primary.TButton", command=lambda: self.start(False))
+                      self.auto_button = ttk.Button(toolbar, text="启动定时", command=lambda: self.start(True))
+                      self.stop_button = ttk.Button(toolbar, text="停止", command=self.stop, state="disabled")
+                      self.save_button = ttk.Button(toolbar, text="保存设置", command=self.save)
+                      for button in (self.once_button, self.auto_button, self.stop_button, self.save_button):
+                          button.pack(side="left", padx=(0, 8))
+                      self.editables.append(self.save_button)
+                      ttk.Button(toolbar, text="打开目标", command=self.open_target).pack(side="right")
+
+                      results = ttk.Frame(root, style="Card.TFrame", padding=(16, 10))
+                      results.grid(row=4, column=0, sticky="ew", padx=24, pady=(0, 12))
+                      for column, (key, caption, color) in enumerate((("scanned", "扫描文件", "#243247"), ("copied", "新增复制", "#2563EB"), ("updated", "覆盖更新", "#D97706"), ("skipped", "相同跳过", "#059669"), ("errors", "本轮失败", "#DC2626"))):
+                          results.columnconfigure(column, weight=1)
+                          box = ttk.Frame(results, style="Card.TFrame")
+                          box.grid(row=0, column=column, sticky="ew")
+                          tk.Label(box, textvariable=self.counts[key], font=(family, 22, "bold"), fg=color, bg="white").pack()
+                          ttk.Label(box, text=caption, style="Hint.TLabel").pack()
+
+                      log_card = ttk.Frame(root, style="Card.TFrame", padding=16)
+                      log_card.grid(row=5, column=0, sticky="nsew", padx=24)
+                      log_card.columnconfigure(0, weight=1)
+                      log_card.rowconfigure(2, weight=1)
+                      log_top = ttk.Frame(log_card, style="Card.TFrame")
+                      log_top.grid(row=0, column=0, sticky="ew")
+                      ttk.Label(log_top, text="运行日志", style="Section.TLabel").pack(side="left")
+                      ttk.Button(log_top, text="查看日志文件", command=lambda: open_folder(directory)).pack(side="right")
+                      self.progress_bar = ttk.Progressbar(log_card, mode="indeterminate")
+                      self.progress_bar.grid(row=1, column=0, sticky="ew", pady=(8, 10))
+                      self.log_text = scrolledtext.ScrolledText(log_card, height=5, wrap="word", font=(family, 9), relief="flat", bg="#F7F9FC", fg="#34435A", state="disabled")
+                      self.log_text.grid(row=2, column=0, sticky="nsew")
+                      self.log_text.tag_configure("error", foreground="#B91C1C")
+                      self.log_text.tag_configure("warning", foreground="#B45309")
+                      footer = tk.Frame(root, bg="#F3F5FA")
+                      footer.grid(row=6, column=0, sticky="ew", padx=24, pady=(10, 14))
+                      tk.Label(footer, textvariable=self.status, bg="#F3F5FA", fg="#475569", font=(family, 9), anchor="w").pack(side="left", fill="x", expand=True)
+                      tk.Label(footer, text="关闭软件后，定时复制停止", bg="#F3F5FA", fg="#7A869B", font=(family, 9)).pack(side="right")
+
+                  def browse(self, variable):
+                      selected = filedialog.askdirectory(parent=root, title="选择源文件夹 A" if variable is self.source else "选择目标文件夹 B", mustexist=variable is self.source)
+                      if selected:
+                          variable.set(selected)
+
+                  def form_settings(self):
+                      try:
+                          interval = float(self.interval.get().strip())
+                      except ValueError:
+                          raise ValueError("检测间隔必须是数字，例如 30 秒或 5 分钟。") from None
+                      settings = Settings(self.source.get(), self.target.get(), self.extensions.get(),
+                                          self.recursive.get(), interval, self.unit.get(), self.auto_on_launch.get())
+                      source, target = validate_settings(settings)
+                      return Settings(str(source), str(target), settings.extensions, settings.recursive,
+                                      settings.interval, settings.unit, settings.auto_on_launch)
+
+                  def save(self):
+                      try:
+                          save_settings(self.config_path, self.form_settings())
+                          self.status.set("设置已保存")
+                          self.log("info", "设置已保存，下次打开软件时自动恢复。")
+                      except (OSError, ValueError) as error:
+                          messagebox.showerror("无法保存设置", str(error), parent=root)
+
+                  def controls(self):
+                      locked = self.schedule.busy or self.schedule.enabled
+                      for widget in self.editables:
+                          if locked:
+                              widget.state(["disabled"])
+                          else:
+                              widget.state(["!disabled"])
+                      self.once_button.state(["disabled"] if locked else ["!disabled"])
+                      self.auto_button.state(["disabled"] if locked else ["!disabled"])
+                      self.stop_button.state(["!disabled"] if locked else ["disabled"])
+
+                  def start(self, automatic):
+                      if self.schedule.busy or self.closing:
+                          return
+                      try:
+                          settings = self.form_settings()
+                          save_settings(self.config_path, settings)
+                      except (OSError, ValueError) as error:
+                          messagebox.showerror("请检查设置", str(error), parent=root)
+                          return
+                      self.active_settings = settings
+                      self.schedule.begin(automatic, settings.seconds)
+                      self.launch_worker()
+
+                  def launch_worker(self):
+                      self.cancel = threading.Event()
+                      self.stats = CopyStats()
+                      self.show_stats(self.stats)
+                      self.status.set("正在检测 MD5 并复制文件…")
+                      self.controls()
+                      self.progress_bar.start(12)
+                      settings, cancel = self.active_settings, self.cancel
+                      self.log("info", f"开始检测：{settings.source} → {settings.target}；后缀：{settings.extensions or '*'}")
+
+                      def enqueue(kind, value):
+                          try:
+                              self.events.put_nowait((kind, value))
+                          except queue.Full:
+                              pass
+
+                      def emit(level, message):
+                          self.logger.log({"info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}[level], message)
+                          enqueue("log", (level, message))
+
+                      def work():
+                          try:
+                              result = run_copy(settings, cancel, emit, lambda value: enqueue("progress", value))
+                              self.events.put(("done", (result, None)))
+                          except Exception as error:
+                              self.logger.exception("本轮检测未能完成")
+                              self.events.put(("done", (None, str(error))))
+
+                      threading.Thread(target=work, name="AutomaticCopyWorker", daemon=False).start()
+
+                  def show_stats(self, stats):
+                      self.stats = stats
+                      for key, variable in self.counts.items():
+                          variable.set(str(getattr(stats, key)))
+
+                  def poll(self):
+                      for _ in range(300):
+                          try:
+                              kind, payload = self.events.get_nowait()
+                          except queue.Empty:
+                              break
+                          if kind == "log":
+                              self.log(*payload, persist=False)
+                          elif kind == "progress":
+                              self.show_stats(payload)
+                          elif kind == "done":
+                              stats, error = payload
+                              self.progress_bar.stop()
+                              self.schedule.finish(time.monotonic())
+                              self.completed_runs += 1
+                              if stats is not None:
+                                  self.show_stats(stats)
+                                  summary = f"{'已停止' if stats.cancelled else '本轮完成'}：新增 {stats.copied}，覆盖 {stats.updated}，相同跳过 {stats.skipped}，后缀过滤 {stats.filtered}，链接跳过 {stats.links}，失败 {stats.errors}。"
+                                  self.log("warning" if stats.errors or stats.cancelled else "info", summary)
+                                  self.status.set(summary)
+                              else:
+                                  self.log("error", "本轮失败：" + error)
+                                  self.status.set("本轮失败，请查看日志；定时模式会在下个间隔重试。" if self.schedule.enabled else "本轮失败，请查看日志。")
+                              self.controls()
+                      if self.closing and not self.schedule.busy:
+                          self.shutdown()
+                          return
+                      now = time.monotonic()
+                      if self.schedule.due(now):
+                          self.schedule.begin(True, self.schedule.interval)
+                          self.launch_worker()
+                      elif self.schedule.enabled and not self.schedule.busy:
+                          remaining = max(0, math.ceil(self.schedule.next_due - now))
+                          self.status.set(f"定时运行中 · 距下次检测 {remaining} 秒 · 上轮失败 {self.stats.errors}")
+                      root.after(100, self.poll)
+
+                  def stop(self):
+                      self.schedule.stop()
+                      self.cancel.set()
+                      self.status.set("正在停止并清理临时副本…" if self.schedule.busy else "定时任务已停止")
+                      self.controls()
+
+                  def log(self, level, message, persist=True):
+                      if persist:
+                          self.logger.log({"info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}[level], message)
+                      self.log_text.configure(state="normal")
+                      self.log_text.insert("end", f"{time.strftime('%H:%M:%S')}  {message}\n", level)
+                      lines = int(self.log_text.index("end-1c").split(".")[0])
+                      if lines > 1200:
+                          self.log_text.delete("1.0", f"{lines - 1000}.0")
+                      self.log_text.see("end")
+                      self.log_text.configure(state="disabled")
+
+                  def open_target(self):
+                      try:
+                          path = Path(self.target.get().strip()).expanduser()
+                          if not self.target.get().strip() or not path.is_dir():
+                              raise ValueError("目标文件夹尚不存在，首次复制时会自动创建。")
+                          open_folder(path)
+                      except (OSError, ValueError) as error:
+                          messagebox.showinfo("打开目标文件夹", str(error), parent=root)
+
+                  def report_error(self, kind, value, tb):
+                      self.logger.error("界面异常", exc_info=(kind, value, tb))
+                      messagebox.showerror("操作失败", str(value), parent=root)
+
+                  def close(self):
+                      self.closing = True
+                      self.stop()
+                      if self.schedule.busy:
+                          self.status.set("正在安全停止，清理完成后窗口会关闭…")
+                      else:
+                          self.shutdown()
+
+                  def shutdown(self):
+                      for handler in list(self.logger.handlers):
+                          handler.close()
+                          self.logger.removeHandler(handler)
+                      root.destroy()
+
+              return App()
+
+
+          def engine_self_test() -> dict:
+              with tempfile.TemporaryDirectory(prefix="automatic-copy-test-") as temporary:
+                  base = Path(temporary)
+                  source, target = base / "源文件夹 A", base / "目标文件夹 B"
+                  source.mkdir()
+                  (source / "测试.TXT").write_bytes(b"old-data")
+                  (source / "忽略.png").write_bytes(b"image")
+                  (source / "子文件夹").mkdir()
+                  (source / "子文件夹" / "文档.rtf").write_bytes(b"{rtf}")
+                  settings = Settings(str(source), str(target), "txt,rtf")
+                  first = run_copy(settings)
+                  if (first.copied, first.filtered, first.errors) != (2, 1, 0):
+                      raise AssertionError(asdict(first))
+                  second = run_copy(settings)
+                  if second.skipped != 2 or second.errors:
+                      raise AssertionError(asdict(second))
+                  original_time = (source / "测试.TXT").stat().st_mtime_ns
+                  (source / "测试.TXT").write_bytes(b"new-data")
+                  os.utime(source / "测试.TXT", ns=(original_time, original_time))
+                  third = run_copy(settings)
+                  if third.updated != 1 or (target / "测试.TXT").read_bytes() != b"new-data":
+                      raise AssertionError(asdict(third))
+                  (target / "B独有.txt").write_text("保留", encoding="utf-8")
+                  run_copy(settings)
+                  if not (target / "B独有.txt").exists():
+                      raise AssertionError("目标独有文件不应被删除")
+                  return {"ok": True, "version": VERSION, "checks": ["new-copy", "same-md5-skip", "same-size-same-time-overwrite", "extension-filter", "recursive-copy", "keep-target-only-files"]}
+
+
+          def gui_self_test() -> dict:
+              import tkinter as tk
+              with tempfile.TemporaryDirectory(prefix="automatic-copy-gui-") as temporary:
+                  base = Path(temporary)
+                  source, target = base / "A", base / "B"
+                  source.mkdir()
+                  (source / "example.txt").write_text("before", encoding="utf-8")
+                  settings = Settings(str(source), str(target), "txt", interval=1)
+                  save_settings(base / "state" / "settings.json", settings)
+                  root = tk.Tk()
+                  app = build_app(root, base / "state", smoke=True)
+                  result = {"ok": False, "version": VERSION}
+                  began = time.monotonic()
+                  changed = False
+
+                  def inspect():
+                      nonlocal changed
+                      try:
+                          if time.monotonic() - began > 20:
+                              raise AssertionError("界面定时复制测试超时")
+                          if app.completed_runs >= 1 and not changed:
+                              if (target / "example.txt").read_text(encoding="utf-8") != "before":
+                                  raise AssertionError("界面首次复制未完成")
+                              (source / "example.txt").write_text("after!", encoding="utf-8")
+                              changed = True
+                          if changed and app.completed_runs >= 2:
+                              if (target / "example.txt").read_text(encoding="utf-8") != "after!" or app.stats.updated != 1:
+                                  raise AssertionError("界面定时覆盖未完成")
+                              app.stop()
+                              if app.schedule.enabled or app.schedule.busy:
+                                  raise AssertionError("停止后仍有活动任务")
+                              result.update(ok=True, checks=["gui-launch", "gui-first-copy", "gui-timer-overwrite", "gui-stop"])
+                              app.close()
+                              return
+                          root.after(100, inspect)
+                      except Exception as error:
+                          result.update(error=str(error))
+                          app.close()
+
+                  root.after(150, lambda: app.start(True))
+                  root.after(250, inspect)
+                  root.mainloop()
+                  if not result["ok"]:
+                      raise AssertionError(result)
+                  return result
+
+
+          def main() -> int:
+              parser = argparse.ArgumentParser(description=APP_NAME)
+              group = parser.add_mutually_exclusive_group()
+              group.add_argument("--self-test", metavar="REPORT_JSON")
+              group.add_argument("--smoke-test", metavar="REPORT_JSON")
+              args = parser.parse_args()
+              report_path = args.self_test or args.smoke_test
+              if report_path:
+                  try:
+                      report = gui_self_test() if args.smoke_test else engine_self_test()
+                      code = 0
+                  except Exception as error:
+                      report = {"ok": False, "error": str(error), "traceback": traceback.format_exc()}
+                      code = 1
+                  Path(report_path).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                  return code
+
+              import tkinter as tk
+              from tkinter import messagebox
+              root = tk.Tk()
+              root.withdraw()
+              lock = None
+              try:
+                  directory = state_directory()
+                  lock = InstanceLock(directory)
+                  if not lock.acquire():
+                      messagebox.showinfo(APP_NAME, "自动复制已经在运行，请切换到已打开的窗口。", parent=root)
+                      root.destroy()
+                      return 0
+                  build_app(root, directory)
+                  root.deiconify()
+                  root.mainloop()
+                  return 0
+              except Exception as error:
+                  try:
+                      messagebox.showerror(APP_NAME, f"程序启动失败：{error}", parent=root)
+                      root.destroy()
+                  except Exception:
+                      pass
+                  return 1
+              finally:
+                  if lock:
+                      lock.close()
+
+
+          if __name__ == "__main__":
+              raise SystemExit(main())
+          '''.lstrip('\n'),
+              'tests/test_auto_copy.py': r'''
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import tempfile
+          import threading
+          import unittest
+          from unittest.mock import patch
+
+          import auto_copy as app
+
+
+          class CopyTests(unittest.TestCase):
+              def setUp(self):
+                  self.workspace = tempfile.TemporaryDirectory(prefix="automatic-copy-unit-")
+                  self.addCleanup(self.workspace.cleanup)
+                  self.base = Path(self.workspace.name)
+                  self.source = self.base / "源目录 A"
+                  self.target = self.base / "目标目录 B"
+                  self.source.mkdir()
+
+              def settings(self, **overrides):
+                  values = dict(source=str(self.source), target=str(self.target))
+                  values.update(overrides)
+                  return app.Settings(**values)
+
+              def write(self, name, contents=b"content"):
+                  path = self.source / name
+                  path.parent.mkdir(parents=True, exist_ok=True)
+                  path.write_bytes(contents)
+                  return path
+
+              def assert_no_temporary_files(self):
+                  self.assertEqual(list(self.target.rglob(".autocopy-*.tmp")), [])
+
+              def test_new_files_and_missing_target_are_created(self):
+                  self.target = self.base / "尚不存在" / "B"
+                  self.write("中文文件.txt", "你好".encode())
+                  result = app.run_copy(self.settings())
+                  self.assertEqual((result.copied, result.errors), (1, 0))
+                  self.assertEqual((self.target / "中文文件.txt").read_text(), "你好")
+
+              def test_equal_md5_does_not_touch_destination(self):
+                  self.write("a.txt")
+                  app.run_copy(self.settings())
+                  destination = self.target / "a.txt"
+                  os.utime(destination, ns=(1_600_000_000_000_000_000,) * 2)
+                  before = destination.stat()
+                  with patch("auto_copy.os.replace", side_effect=AssertionError("相同内容不应覆盖")):
+                      result = app.run_copy(self.settings())
+                  self.assertEqual((result.skipped, result.updated, result.errors), (1, 0, 0))
+                  self.assertEqual(destination.stat().st_mtime_ns, before.st_mtime_ns)
+                  self.assertEqual(destination.stat().st_ino, before.st_ino)
+
+              def test_different_content_same_size_and_timestamp_is_overwritten(self):
+                  original = self.write("a.txt", b"old")
+                  app.run_copy(self.settings())
+                  same_time = original.stat().st_mtime_ns
+                  original.write_bytes(b"new")
+                  os.utime(original, ns=(same_time, same_time))
+                  result = app.run_copy(self.settings())
+                  self.assertEqual((result.updated, result.skipped, result.errors), (1, 0, 0))
+                  self.assertEqual((self.target / "a.txt").read_bytes(), b"new")
+
+              def test_filter_supports_uppercase_fullwidth_separators_and_compound_suffix(self):
+                  for name in ("a.TXT", "b.rtf", "c.tar.gz", "d.jpg", "e.txt.bak", "README"):
+                      self.write(name)
+                  result = app.run_copy(self.settings(extensions="*.txt， .RTF；tar.gz"))
+                  self.assertEqual((result.copied, result.filtered, result.errors), (3, 3, 0))
+                  self.assertEqual(sorted(path.name for path in self.target.iterdir()), ["a.TXT", "b.rtf", "c.tar.gz"])
+
+              def test_all_filter_includes_files_without_extension_and_dotfiles(self):
+                  for filter_text in ("", "*", "*.*"):
+                      with self.subTest(filter=filter_text):
+                          self.write("README")
+                          self.write(".config")
+                          result = app.run_copy(self.settings(extensions=filter_text))
+                          self.assertEqual(result.copied + result.skipped, 2)
+                          self.assertEqual(result.errors, 0)
+
+              def test_recursion_keeps_relative_paths(self):
+                  self.write("one/same.txt", b"one")
+                  self.write("two/same.txt", b"two")
+                  result = app.run_copy(self.settings())
+                  self.assertEqual((result.copied, result.errors), (2, 0))
+                  self.assertEqual((self.target / "one/same.txt").read_bytes(), b"one")
+                  self.assertEqual((self.target / "two/same.txt").read_bytes(), b"two")
+
+              def test_recursion_can_be_disabled(self):
+                  self.write("root.txt")
+                  self.write("sub/child.txt")
+                  result = app.run_copy(self.settings(recursive=False))
+                  self.assertEqual((result.scanned, result.copied), (1, 1))
+                  self.assertFalse((self.target / "sub").exists())
+
+              def test_only_target_files_are_retained_and_source_not_deleted(self):
+                  self.target.mkdir()
+                  (self.target / "keep.txt").write_bytes(b"keep")
+                  original = self.write("a.txt")
+                  app.run_copy(self.settings())
+                  original.unlink()
+                  app.run_copy(self.settings())
+                  self.assertEqual((self.target / "keep.txt").read_bytes(), b"keep")
+                  self.assertEqual((self.target / "a.txt").read_bytes(), b"content")
+
+              def test_zero_length_and_large_binary_files(self):
+                  self.write("empty.txt", b"")
+                  content = bytes(range(256)) * (app.CHUNK_SIZE // 256 + 7)
+                  self.write("large.bin", content)
+                  first = app.run_copy(self.settings())
+                  self.assertEqual((first.copied, first.errors), (2, 0))
+                  self.assertEqual((self.target / "large.bin").read_bytes(), content)
+                  self.assertEqual(app.run_copy(self.settings()).skipped, 2)
+
+              def test_overlapping_paths_are_rejected_before_any_write(self):
+                  for source, target in ((self.source, self.source), (self.source, self.source / "B"), (self.source, self.base)):
+                      with self.subTest(target=target), self.assertRaises(ValueError):
+                          app.run_copy(app.Settings(str(source), str(target)))
+                  self.assertFalse((self.source / "B").exists())
+
+              def test_empty_or_missing_source_and_file_target_are_rejected(self):
+                  for source in ("", str(self.base / "missing")):
+                      with self.subTest(source=source), self.assertRaises(ValueError):
+                          app.run_copy(self.settings(source=source))
+                  self.target.write_bytes(b"not-a-directory")
+                  with self.assertRaises(ValueError):
+                      app.run_copy(self.settings())
+                  self.assertEqual(self.target.read_bytes(), b"not-a-directory")
+
+              def test_target_directory_conflict_is_logged_without_removal(self):
+                  self.write("a.txt")
+                  (self.target / "a.txt").mkdir(parents=True)
+                  result = app.run_copy(self.settings())
+                  self.assertEqual(result.errors, 1)
+                  self.assertTrue((self.target / "a.txt").is_dir())
+
+              def test_target_parent_file_conflict_does_not_stop_other_files(self):
+                  self.write("sub/a.txt")
+                  self.write("okay.txt")
+                  self.target.mkdir()
+                  (self.target / "sub").write_bytes(b"keep")
+                  result = app.run_copy(self.settings())
+                  self.assertEqual((result.copied, result.errors), (1, 1))
+                  self.assertEqual((self.target / "sub").read_bytes(), b"keep")
+
+              def test_cancel_before_start_does_not_create_target(self):
+                  self.write("a.txt")
+                  cancellation = threading.Event()
+                  cancellation.set()
+                  result = app.run_copy(self.settings(), cancellation)
+                  self.assertTrue(result.cancelled)
+                  self.assertFalse(self.target.exists())
+
+              def test_cancel_before_commit_preserves_existing_target_and_cleans_temp(self):
+                  original = self.write("a.txt", b"new")
+                  self.target.mkdir()
+                  destination = self.target / "a.txt"
+                  destination.write_bytes(b"old")
+                  cancellation = threading.Event()
+                  actual_md5 = app.stable_md5
+
+                  def cancel_after_staging(path, event):
+                      result = actual_md5(path, event)
+                      if path.name.startswith(".autocopy-"):
+                          cancellation.set()
+                      return result
+
+                  with patch("auto_copy.stable_md5", side_effect=cancel_after_staging):
+                      result = app.run_copy(self.settings(), cancellation)
+                  self.assertTrue(result.cancelled)
+                  self.assertEqual(destination.read_bytes(), b"old")
+                  self.assertEqual(original.read_bytes(), b"new")
+                  self.assert_no_temporary_files()
+
+              def test_source_changes_during_copy_preserve_existing_target(self):
+                  original = self.write("a.txt", b"new")
+                  self.target.mkdir()
+                  destination = self.target / "a.txt"
+                  destination.write_bytes(b"old")
+                  actual_md5 = app.stable_md5
+
+                  def modify_after_source_hash(path, event):
+                      result = actual_md5(path, event)
+                      if path == original:
+                          original.write_bytes(b"ongoing-write")
+                      return result
+
+                  with patch("auto_copy.stable_md5", side_effect=modify_after_source_hash):
+                      result = app.run_copy(self.settings())
+                  self.assertEqual(result.errors, 1)
+                  self.assertEqual(destination.read_bytes(), b"old")
+                  self.assert_no_temporary_files()
+
+              def test_bad_staged_md5_never_replaces_target(self):
+                  self.write("a.txt", b"new")
+                  self.target.mkdir()
+                  destination = self.target / "a.txt"
+                  destination.write_bytes(b"old")
+                  actual_md5 = app.stable_md5
+
+                  def corrupt_staged_result(path, event):
+                      digest, signature = actual_md5(path, event)
+                      if path.name.startswith(".autocopy-"):
+                          return "0" * 32, signature
+                      return digest, signature
+
+                  with patch("auto_copy.stable_md5", side_effect=corrupt_staged_result):
+                      result = app.run_copy(self.settings())
+                  self.assertEqual(result.errors, 1)
+                  self.assertEqual(destination.read_bytes(), b"old")
+                  self.assert_no_temporary_files()
+
+              def test_target_changes_during_copy_are_not_lost(self):
+                  self.write("a.txt", b"new")
+                  self.target.mkdir()
+                  destination = self.target / "a.txt"
+                  destination.write_bytes(b"old")
+                  actual_md5 = app.stable_md5
+
+                  def concurrent_edit(path, event):
+                      result = actual_md5(path, event)
+                      if path.name.startswith(".autocopy-"):
+                          destination.write_bytes(b"written-by-other-program")
+                      return result
+
+                  with patch("auto_copy.stable_md5", side_effect=concurrent_edit):
+                      result = app.run_copy(self.settings())
+                  self.assertEqual(result.errors, 1)
+                  self.assertEqual(destination.read_bytes(), b"written-by-other-program")
+                  self.assert_no_temporary_files()
+
+              def test_failed_atomic_replace_keeps_original_and_cleans_temp(self):
+                  self.write("a.txt", b"new")
+                  self.target.mkdir()
+                  destination = self.target / "a.txt"
+                  destination.write_bytes(b"old")
+                  with patch("auto_copy.os.replace", side_effect=PermissionError("文件被占用")):
+                      result = app.run_copy(self.settings())
+                  self.assertEqual(result.errors, 1)
+                  self.assertEqual(destination.read_bytes(), b"old")
+                  self.assert_no_temporary_files()
+
+              def symlink(self, link, target, directory=False):
+                  try:
+                      link.symlink_to(target, target_is_directory=directory)
+                  except (NotImplementedError, OSError):
+                      self.skipTest("当前系统不允许创建符号链接")
+
+              def test_source_symlinks_and_directory_loops_are_skipped(self):
+                  self.write("real.txt")
+                  self.symlink(self.source / "alias.txt", self.source / "real.txt")
+                  self.symlink(self.source / "loop", self.source, directory=True)
+                  result = app.run_copy(self.settings())
+                  self.assertEqual((result.copied, result.links, result.errors), (1, 2, 0))
+                  self.assertFalse((self.target / "alias.txt").exists())
+
+              def test_destination_symlink_cannot_write_outside_target(self):
+                  self.write("sub/a.txt", b"new")
+                  outside = self.base / "outside"
+                  outside.mkdir()
+                  (outside / "a.txt").write_bytes(b"protected")
+                  self.target.mkdir()
+                  self.symlink(self.target / "sub", outside, directory=True)
+                  result = app.run_copy(self.settings())
+                  self.assertEqual(result.errors, 1)
+                  self.assertEqual((outside / "a.txt").read_bytes(), b"protected")
+
+              def test_destination_file_symlink_is_not_overwritten(self):
+                  self.write("a.txt", b"new")
+                  protected = self.base / "protected.txt"
+                  protected.write_bytes(b"protected")
+                  self.target.mkdir()
+                  self.symlink(self.target / "a.txt", protected)
+                  result = app.run_copy(self.settings())
+                  self.assertEqual(result.errors, 1)
+                  self.assertTrue((self.target / "a.txt").is_symlink())
+                  self.assertEqual(protected.read_bytes(), b"protected")
+
+              @unittest.skipUnless(os.name == "nt", "Windows 目录联接测试")
+              def test_windows_junction_is_not_traversed(self):
+                  import subprocess
+                  outside = self.base / "outside"
+                  outside.mkdir()
+                  (outside / "protected.txt").write_bytes(b"protected")
+                  junction = self.source / "junction"
+                  process = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(outside)], capture_output=True)
+                  self.assertEqual(process.returncode, 0, process.stderr)
+                  self.addCleanup(lambda: os.rmdir(junction) if junction.exists() else None)
+                  result = app.run_copy(self.settings())
+                  self.assertEqual((result.copied, result.links), (0, 1))
+
+
+          class SettingsTests(unittest.TestCase):
+              def test_invalid_extensions_are_rejected(self):
+                  for text in ("txt/rtf", "../txt", "*.t?t", ".", "foo:bar"):
+                      with self.subTest(text=text), self.assertRaises(ValueError):
+                          app.parse_extensions(text)
+
+              def test_unit_conversion_and_interval_bounds(self):
+                  self.assertEqual(app.Settings(interval=2, unit="分钟").seconds, 120)
+                  self.assertEqual(app.Settings(interval=1.5, unit="小时").seconds, 5400)
+                  for interval, unit in ((0, "秒"), (-1, "秒"), (float("nan"), "秒"), (float("inf"), "秒"), (1, "天"), (366 * 24, "小时")):
+                      with self.subTest(interval=interval, unit=unit), self.assertRaises(ValueError):
+                          app.Settings(interval=interval, unit=unit).seconds
+
+              def test_settings_roundtrip_and_corruption_validation(self):
+                  with tempfile.TemporaryDirectory() as temporary:
+                      path = Path(temporary) / "state/settings.json"
+                      settings = app.Settings("D:/资料", "E:/备份", "txt,rtf", False, 2, "分钟", True)
+                      app.save_settings(path, settings)
+                      self.assertEqual(app.load_settings(path), settings)
+                      self.assertEqual(list(path.parent.glob("*.tmp")), [])
+                      for bad in ([], {"recursive": "false"}, {"interval": True}, {"unit": "days"}, {"extensions": "../txt"}):
+                          path.write_text(json.dumps(bad), encoding="utf-8")
+                          with self.subTest(bad=bad), self.assertRaises((ValueError, TypeError)):
+                              app.load_settings(path)
+
+              def test_packaged_self_test_uses_real_copy_engine(self):
+                  report = app.engine_self_test()
+                  self.assertTrue(report["ok"])
+
+              def test_only_one_instance_can_hold_the_state_lock(self):
+                  with tempfile.TemporaryDirectory() as temporary:
+                      first = app.InstanceLock(Path(temporary))
+                      second = app.InstanceLock(Path(temporary))
+                      try:
+                          self.assertTrue(first.acquire())
+                          self.assertFalse(second.acquire())
+                          first.close()
+                          self.assertTrue(second.acquire())
+                      finally:
+                          if not first.stream.closed:
+                              first.close()
+                          second.close()
+
+
+          class ScheduleTests(unittest.TestCase):
+              def test_long_running_copy_never_overlaps_and_wait_starts_at_completion(self):
+                  schedule = app.RunSchedule()
+                  self.assertTrue(schedule.begin(True, 10))
+                  self.assertFalse(schedule.due(1000))
+                  self.assertFalse(schedule.begin(True, 10))
+                  schedule.finish(1000)
+                  self.assertFalse(schedule.due(1009.9))
+                  self.assertTrue(schedule.due(1010))
+                  self.assertTrue(schedule.begin(True, 10))
+                  self.assertFalse(schedule.due(5000))
+
+              def test_stop_during_copy_prevents_another_run(self):
+                  schedule = app.RunSchedule()
+                  schedule.begin(True, 1)
+                  schedule.stop()
+                  self.assertTrue(schedule.busy)
+                  schedule.finish(100)
+                  self.assertFalse(schedule.due(1000))
+                  self.assertIsNone(schedule.next_due)
+
+              def test_manual_copy_never_schedules_a_followup(self):
+                  schedule = app.RunSchedule()
+                  schedule.begin(False, 1)
+                  schedule.finish(10)
+                  self.assertFalse(schedule.due(999))
+
+
+          if __name__ == "__main__":
+              unittest.main()
+          '''.lstrip('\n'),
+              'requirements-build.txt': r'''
+          pyinstaller==6.22.3
+          '''.lstrip('\n'),
+              'README.md': r'''
+          # 自动复制
+
+          中文 Windows 桌面软件，将源文件夹 A 的文件单向复制到目标文件夹 B。
+          采用 MD5 内容比对：同一路径下内容相同则跳过，不同则自动覆盖，B 中缺少的文件自动新增。
+
+          ## 最快使用方式：只上传一个 YML 文件
+
+          1. 下载随附的 **自动复制.yml**。
+          2. 在 GitHub 仓库中进入 **Add file → Create new file**，文件名填写 `.github/workflows/自动复制.yml`，粘贴下载文件的全部内容，再提交。也可以先进入 `.github/workflows/` 文件夹，使用 **Add file → Upload files** 上传该文件并提交。**只放在仓库根目录不会生效。**
+          3. 打开仓库的 **Actions**，选择“自动复制 · Windows 编译”，查看自动触发的运行。若仓库禁用了 Actions，先在仓库设置中启用；也可通过 **Run workflow** 手动编译。
+          4. 等所有步骤显示成功，在该次运行页面底部的 **Artifacts** 中下载 `AutomaticCopy-Windows-x64`。
+          5. 解压下载的 ZIP，双击 **自动复制.exe**。无需自行安装 Python。
+
+          此 YML 已内嵌完整程序、测试和使用说明，无需额外上传源码，也不需要设置 GitHub Token 或 Secret。
+          上传后触发 `push` 编译；文件需位于 `.github/workflows/`。手动运行入口需要工作流位于默认分支。
+          适用于 GitHub.com 的 Windows 10/11 x64 编译产物。程序未进行付费数字签名。
+
+          ## 软件使用
+
+          1. 选择源文件夹 **A** 和目标文件夹 **B**。B 不存在时首次运行会自动创建。A 与 B 必须独立，不能相同或互相包含。
+          2. 选择常用后缀预设，或者输入自定义后缀，例如 `txt,rtf`、`docx,pdf,xlsx`。后缀不区分大小写，支持英文逗号、中文逗号、分号和空格分隔，支持 `txt`、`.txt`、`*.txt` 写法。
+          3. 留空、`*` 或 `*.*` 表示全部文件，包括无后缀文件。`txt` 只匹配以 `.txt` 结尾的文件，不会复制 `a.txt.bak`。支持 `tar.gz` 等复合后缀。
+          4. 默认包含子文件夹，并在 B 内保持同样的相对目录结构。可取消勾选，只复制 A 顶层文件。
+          5. 点击 **立即复制** 执行一轮；或填写间隔并点击 **启动定时**。支持秒、分钟和小时，最小 1 秒。
+          6. 定时启动时立即执行第一轮，**每轮结束后等待指定间隔**再开始下一轮。大文件处理期间不会启动重叠任务。
+          7. 点击 **停止** 取消当前检测和后续定时任务；程序会清理本次未完成的临时副本。
+          8. **保存设置** 保存当前选项。开始复制或定时运行时也会自动保存。勾选“打开软件后启动定时”后，下次手动打开软件即可恢复定时任务。
+
+          **定时复制需要软件保持运行。**最小化窗口可以继续执行，关闭软件后停止；该选项不代表开机自启，也不依赖 GitHub 定时访问本机文件。
+          需要修改规则时先点击“停止”，修改后重新开始。
+
+          ## 常用文件预设
+
+          | 预设 | 常见后缀 |
+          | --- | --- |
+          | 文本与文档 | txt、rtf、md、pdf、doc、docx、odt、wps |
+          | 表格与演示 | xls、xlsx、xlsm、csv、tsv、ods、et、ppt、pptx、odp、dps |
+          | 图片 | jpg、jpeg、png、gif、bmp、webp、tif、tiff、svg、heic、ico |
+          | 音频与视频 | mp3、wav、flac、aac、m4a、ogg、mp4、mkv、mov、avi、wmv、webm |
+          | 压缩文件 | zip、7z、rar、tar、gz、bz2、xz、tar.gz |
+          | 代码与配置 | py、js、ts、tsx、jsx、html、css、cs、cpp、c、h、java、go、rs、json、yml、yaml、xml、ini、toml |
+
+          ## 复制行为
+
+          - 以相对路径定位文件：`A/子目录/a.txt` 对应 `B/子目录/a.txt`。
+          - 对存在的源文件和目标文件分别读取内容计算 MD5，不以文件大小或修改时间代替内容比较。
+          - 内容不同即以 A 为准覆盖 B，**不按新旧时间判断**，也不额外保留历史版本。被覆盖的旧内容不会进入回收站。
+          - 先在 B 对应目录内写入临时文件，校验临时副本的 MD5，再原子替换对应目标文件。复制失败或主动停止时保留原目标文件。
+          - 复制中检测到源文件或目标文件发生变化，会记录失败并留待下一轮检测；这能处理常见的持续写入场景，但不能提供数据库级别的并发快照。
+          - 正在占用、无权限或不可读取的文件会记录失败，继续处理其余文件。定时模式会在后续轮次重试。
+          - 不会删除 A 文件；A 中被删除的文件及 B 独有的文件都保留在 B。该工具是单向复制，不是删除镜像或双向同步。
+          - 跳过源目录下的符号链接、Windows 目录联接及其他重解析点，避免循环复制；拒绝通过目标子目录中的链接写入其他位置。直接选择的 A/B 根目录会先解析到真实路径。
+          - 不专门复制空文件夹，不复制 NTFS 权限、备用数据流或其他特殊元数据。保留普通文件的修改时间。
+          - 软件没有上传文件的功能，复制和 MD5 校验在本机进行。选择网络共享文件夹时，文件访问由系统处理。
+
+          ## 设置与日志
+
+          Windows 保存位置：`%LOCALAPPDATA%\AutomaticCopy\`。
+
+          - `settings.json`：文件夹、后缀、间隔等设置。
+          - `自动复制.log`：新增、覆盖、失败、每轮汇总；可点击“查看日志文件”打开目录。
+          - 日志单文件约 5 MB，最多另保留两份历史日志。界面只显示最近约 1000 行，避免长期运行耗尽内存。
+          - 同一用户只允许运行一个正常程序实例，避免多实例互相覆盖。
+
+          ## 源码运行与开发
+
+          使用 Python 3.12（标准 Windows 安装包含 Tkinter）：
+
+          ```powershell
+          python auto_copy.py
+          python -m unittest discover -s tests -v
+          python auto_copy.py --self-test engine-report.json
+          python auto_copy.py --smoke-test gui-report.json
+          ```
+
+          本地打包：
+
+          ```powershell
+          python -m pip install -r requirements-build.txt
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --name 自动复制 auto_copy.py
+          ```
+
+          GitHub Actions 会先运行单元测试，再打包 EXE，并实际启动打包后的程序执行引擎自检和界面定时复制测试；全部成功后才上传产物。
+          产物附带使用说明和 `SHA256SUMS.txt`。构建产物默认保留 30 天，可重新运行编译。
+
+          源码与工作流的内嵌副本由 `tools/generate_workflow.py` 统一生成；修改源码后，运行 `python tools/generate_workflow.py` 更新工作流。
+          因为采用单文件上传方式，工作流运行的是 YML 内的源码；仅修改独立 `.py` 文件不会改变构建结果。
+
+          ## 构建所依据的官方说明
+
+          - Python 设置动作：https://github.com/actions/setup-python
+          - 构建产物上传与下载：https://github.com/actions/upload-artifact
+          - Windows 单文件打包：https://pyinstaller.org/en/stable/usage.html
+          '''.lstrip('\n'),
+          }
+          for name, content in files.items():
+              destination = Path(name)
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              destination.write_text(content, encoding='utf-8', newline='\n')
+          print('Created application, tests and documentation.')
+      - name: 运行复制逻辑和定时调度测试
+        run: |
+          python -m compileall -q auto_copy.py tests
+          if ($LASTEXITCODE -ne 0) { throw 'Python syntax check failed.' }
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed.' }
+
+      - name: 安装打包工具
+        run: |
+          python -m pip install -r requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Build dependency installation failed.' }
+
+      - name: 生成单文件中文桌面程序
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --noupx --name 自动复制 auto_copy.py
+          if ($LASTEXITCODE -ne 0) { throw 'EXE packaging failed.' }
+
+      - name: 实际运行 EXE 自检与界面定时复制测试
+        run: |
+          New-Item -ItemType Directory -Path reports -Force | Out-Null
+          $exePath = Join-Path $PWD 'dist/自动复制.exe'
+          foreach ($mode in @('--self-test', '--smoke-test')) {
+            $reportName = if ($mode -eq '--self-test') { 'engine.json' } else { 'gui.json' }
+            $reportPath = Join-Path $PWD (Join-Path 'reports' $reportName)
+            $argumentText = $mode + ' "' + $reportPath + '"'
+            $process = Start-Process -FilePath $exePath -ArgumentList $argumentText -PassThru
+            if (-not $process.WaitForExit(90000)) {
+              taskkill /PID $process.Id /T /F
+              throw ('Packaged application timed out: ' + $mode)
+            }
+            $process.Refresh()
+            if (-not (Test-Path -LiteralPath $reportPath)) {
+              throw ('Application did not produce a test report: ' + $mode)
+            }
+            $reportText = Get-Content -LiteralPath $reportPath -Raw -Encoding utf8
+            Write-Output $reportText
+            $report = $reportText | ConvertFrom-Json
+            if ($process.ExitCode -ne 0 -or -not $report.ok) {
+              throw ('Packaged application test failed: ' + $mode)
+            }
+          }
+
+      - name: 添加使用说明与文件校验值
+        shell: python
+        run: |
+          import hashlib
+          import os
+          import shutil
+          from pathlib import Path
+          shutil.copyfile('README.md', 'dist/使用说明.md')
+          lines = []
+          for name in ('自动复制.exe', '使用说明.md'):
+              item = Path('dist') / name
+              lines.append(hashlib.sha256(item.read_bytes()).hexdigest() + '  ' + name)
+          Path('dist/SHA256SUMS.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write('## 自动复制：编译与测试成功\n\n')
+              summary.write('在页面下方 **Artifacts** 下载 **AutomaticCopy-Windows-x64**，解压后运行 **自动复制.exe**。\n\n')
+              summary.write('包含 MD5 跳过/覆盖、后缀筛选、子目录和定时复制。定时任务需要软件保持运行。\n')
+
+      - name: 上传 Windows 程序
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: AutomaticCopy-Windows-x64
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 保存 EXE 测试报告
+        if: always()
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: AutomaticCopy-TestReports
+          path: reports/*.json
+          if-no-files-found: ignore
+          retention-days: 7
