@@ -1,5 +1,5 @@
 # 上传路径必须是 .github/workflows/自动复制.yml
-# 修正版 1.0.1：统一 Windows 文件时间字段，避免正常文件被误判为变化。
+# 修正版 1.0.2：修复 Actions 临时脚本导入路径及 Windows 时间字段比较。
 # 此文件已内嵌全部源码与测试，无需另外上传项目文件。
 # 源码分段写入，每个 run 步骤均低于 GitHub 的 21,000 字符上限。
 # 产物：Windows 10/11 x64 的 自动复制.exe；运行时无需安装 Python。
@@ -66,7 +66,7 @@ jobs:
 
 
           APP_NAME = "自动复制"
-          VERSION = "1.0.1"
+          VERSION = "1.0.2"
           WINDOWS = os.name == "nt"
           CHUNK_SIZE = 1024 * 1024
           PRESETS = {
@@ -1400,7 +1400,8 @@ jobs:
           中文 Windows 桌面软件，将源文件夹 A 的文件单向复制到目标文件夹 B。
           采用 MD5 内容比对：同一路径下内容相同则跳过，不同则自动覆盖，B 中缺少的文件自动新增。
 
-          版本 1.0.1 修复 Windows 上 `stat()` 与 `fstat()` 的 `ctime` 含义不同、导致正常文件被误判为变化的问题。
+          版本 1.0.2 修复 GitHub Actions 临时脚本导入程序的路径问题，并包含 1.0.1 的 Windows 时间字段修复。
+          Windows 上 `stat()` 与 `fstat()` 的 `ctime` 含义不同，旧版会把正常文件误判为变化。
           Windows 改为统一比较创建时间，同时保留文件身份、大小、修改时间与 MD5 校验。
 
           ## 最快使用方式：只上传一个 YML 文件
@@ -1503,8 +1504,12 @@ jobs:
         run: |
           import json
           import os
+          import sys
           import tempfile
           from pathlib import Path
+          # GitHub's python shell runs a script in RUNNER_TEMP. Include the
+          # workspace explicitly before importing the generated application.
+          sys.path.insert(0, str(Path.cwd()))
           import auto_copy as app
           Path('reports').mkdir(exist_ok=True)
           fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns', 'st_birthtime_ns')
