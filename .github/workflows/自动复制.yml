@@ -1,4 +1,5 @@
 # 上传路径必须是 .github/workflows/自动复制.yml
+# 修正版 1.0.1：统一 Windows 文件时间字段，避免正常文件被误判为变化。
 # 此文件已内嵌全部源码与测试，无需另外上传项目文件。
 # 源码分段写入，每个 run 步骤均低于 GitHub 的 21,000 字符上限。
 # 产物：Windows 10/11 x64 的 自动复制.exe；运行时无需安装 Python。
@@ -65,7 +66,8 @@ jobs:
 
 
           APP_NAME = "自动复制"
-          VERSION = "1.0.0"
+          VERSION = "1.0.1"
+          WINDOWS = os.name == "nt"
           CHUNK_SIZE = 1024 * 1024
           PRESETS = {
               "全部文件": "*",
@@ -209,7 +211,12 @@ jobs:
 
 
           def fingerprint(info: os.stat_result) -> tuple:
-              return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+              # CPython 3.12+ on Windows can expose creation time through stat().ctime
+              # and metadata change time through fstat().ctime for the same file.
+              # Birth time has the same meaning for both calls. Keep identity, size,
+              # mtime and the MD5 checks; avoid rejecting unchanged Windows files.
+              timestamp = getattr(info, "st_birthtime_ns", info.st_ctime_ns) if WINDOWS else info.st_ctime_ns
+              return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, timestamp)
 
 
           def file_signature(path: Path) -> tuple:
@@ -350,13 +357,6 @@ jobs:
                                   stats.filtered += 1
                                   continue
                               # A subdirectory may have been replaced since os.walk visited it.
-                              if not within(original.resolve(), source):
-                                  raise OSError("源路径指向 A 文件夹之外，已跳过。")
-                              destination = target / relative
-                              safe_parent(target, destination)
-                              original_md5, original_signature = stable_md5(original, cancel)
-                              existed = os.path.lexists(destination)
-                              destination_signature = None
           '''
           with destination.open('wb') as output:
               output.write(payload.encode('utf-8'))
@@ -367,7 +367,14 @@ jobs:
           from pathlib import Path
           destination = Path('auto_copy.py')
           destination.parent.mkdir(parents=True, exist_ok=True)
-          payload = r'''                    if existed:
+          payload = r'''                    if not within(original.resolve(), source):
+                                  raise OSError("源路径指向 A 文件夹之外，已跳过。")
+                              destination = target / relative
+                              safe_parent(target, destination)
+                              original_md5, original_signature = stable_md5(original, cancel)
+                              existed = os.path.lexists(destination)
+                              destination_signature = None
+                              if existed:
                                   target_md5, destination_signature = stable_md5(destination, cancel)
                                   if original_md5 == target_md5:
                                       if file_signature(original) != original_signature or file_signature(destination) != destination_signature:
@@ -596,12 +603,6 @@ jobs:
                       ttk.Label(rules, text="填写 txt,rtf,pdf；支持 .txt、*.txt、中文逗号。留空或 * 表示全部文件。", style="Hint.TLabel").grid(row=2, column=0, columnspan=2, sticky="w", pady=(7, 12))
                       options = ttk.Frame(rules, style="Card.TFrame")
                       options.grid(row=3, column=0, columnspan=2, sticky="ew")
-                      ttk.Label(options, text="每隔").pack(side="left")
-                      interval_widget = ttk.Spinbox(options, from_=1, to=999999, textvariable=self.interval, width=8)
-                      interval_widget.pack(side="left", padx=8)
-                      unit_widget = ttk.Combobox(options, values=list(UNITS), textvariable=self.unit, width=5, state="readonly")
-                      unit_widget.pack(side="left")
-                      ttk.Label(options, text="检测一次").pack(side="left", padx=(8, 20))
           '''
           with destination.open('ab') as output:
               output.write(payload.encode('utf-8'))
@@ -612,7 +613,13 @@ jobs:
           from pathlib import Path
           destination = Path('auto_copy.py')
           destination.parent.mkdir(parents=True, exist_ok=True)
-          payload = r'''            recursive_widget = ttk.Checkbutton(options, text="包含子文件夹", variable=self.recursive)
+          payload = r'''            ttk.Label(options, text="每隔").pack(side="left")
+                      interval_widget = ttk.Spinbox(options, from_=1, to=999999, textvariable=self.interval, width=8)
+                      interval_widget.pack(side="left", padx=8)
+                      unit_widget = ttk.Combobox(options, values=list(UNITS), textvariable=self.unit, width=5, state="readonly")
+                      unit_widget.pack(side="left")
+                      ttk.Label(options, text="检测一次").pack(side="left", padx=(8, 20))
+                      recursive_widget = ttk.Checkbutton(options, text="包含子文件夹", variable=self.recursive)
                       recursive_widget.pack(side="left", padx=(0, 16))
                       launch_widget = ttk.Checkbutton(options, text="打开软件后启动定时", variable=self.auto_on_launch)
                       launch_widget.pack(side="left")
@@ -823,15 +830,6 @@ jobs:
               return App()
 
 
-          def engine_self_test() -> dict:
-              with tempfile.TemporaryDirectory(prefix="automatic-copy-test-") as temporary:
-                  base = Path(temporary)
-                  source, target = base / "源文件夹 A", base / "目标文件夹 B"
-                  source.mkdir()
-                  (source / "测试.TXT").write_bytes(b"old-data")
-                  (source / "忽略.png").write_bytes(b"image")
-                  (source / "子文件夹").mkdir()
-                  (source / "子文件夹" / "文档.rtf").write_bytes(b"{rtf}")
           '''
           with destination.open('ab') as output:
               output.write(payload.encode('utf-8'))
@@ -842,7 +840,16 @@ jobs:
           from pathlib import Path
           destination = Path('auto_copy.py')
           destination.parent.mkdir(parents=True, exist_ok=True)
-          payload = r'''        settings = Settings(str(source), str(target), "txt,rtf")
+          payload = r'''def engine_self_test() -> dict:
+              with tempfile.TemporaryDirectory(prefix="automatic-copy-test-") as temporary:
+                  base = Path(temporary)
+                  source, target = base / "源文件夹 A", base / "目标文件夹 B"
+                  source.mkdir()
+                  (source / "测试.TXT").write_bytes(b"old-data")
+                  (source / "忽略.png").write_bytes(b"image")
+                  (source / "子文件夹").mkdir()
+                  (source / "子文件夹" / "文档.rtf").write_bytes(b"{rtf}")
+                  settings = Settings(str(source), str(target), "txt,rtf")
                   first = run_copy(settings)
                   if (first.copied, first.filtered, first.errors) != (2, 1, 0):
                       raise AssertionError(asdict(first))
@@ -972,6 +979,7 @@ jobs:
           from pathlib import Path
           import tempfile
           import threading
+          from types import SimpleNamespace
           import unittest
           from unittest.mock import patch
 
@@ -1007,6 +1015,30 @@ jobs:
                   result = app.run_copy(self.settings())
                   self.assertEqual((result.copied, result.errors), (1, 0))
                   self.assertEqual((self.target / "中文文件.txt").read_text(), "你好")
+
+              def test_windows_stat_and_fstat_ctime_difference_does_not_reject_stable_files(self):
+                  self.write("stable.txt", b"stable-data")
+                  actual_fstat = os.fstat
+
+                  def windows_handle_metadata(fd):
+                      info = actual_fstat(fd)
+                      birthtime = getattr(info, "st_birthtime_ns", info.st_ctime_ns)
+                      return SimpleNamespace(
+                          st_dev=info.st_dev,
+                          st_ino=info.st_ino,
+                          st_size=info.st_size,
+                          st_mtime_ns=info.st_mtime_ns,
+                          st_ctime_ns=birthtime + 7_000_000_000,
+                          st_birthtime_ns=birthtime,
+                      )
+
+                  messages = []
+                  with patch("auto_copy.WINDOWS", True, create=True), patch("auto_copy.os.fstat", side_effect=windows_handle_metadata):
+                      first = app.run_copy(self.settings(), emit=lambda level, text: messages.append(text))
+                      self.assertEqual((first.copied, first.errors), (1, 0), messages)
+                      second = app.run_copy(self.settings())
+                      self.assertEqual((second.skipped, second.errors), (1, 0))
+                  self.assertEqual((self.target / "stable.txt").read_bytes(), b"stable-data")
 
               def test_equal_md5_does_not_touch_destination(self):
                   self.write("a.txt")
@@ -1212,7 +1244,17 @@ jobs:
                   try:
                       link.symlink_to(target, target_is_directory=directory)
                   except (NotImplementedError, OSError):
-                      self.skipTest("当前系统不允许创建符号链接")
+          '''
+          with destination.open('wb') as output:
+              output.write(payload.encode('utf-8'))
+
+      - name: 写入 tests/test_auto_copy.py（2/2）
+        shell: python
+        run: |
+          from pathlib import Path
+          destination = Path('tests/test_auto_copy.py')
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          payload = r'''            self.skipTest("当前系统不允许创建符号链接")
 
               def test_source_symlinks_and_directory_loops_are_skipped(self):
                   self.write("real.txt")
@@ -1238,17 +1280,7 @@ jobs:
                   protected = self.base / "protected.txt"
                   protected.write_bytes(b"protected")
                   self.target.mkdir()
-          '''
-          with destination.open('wb') as output:
-              output.write(payload.encode('utf-8'))
-
-      - name: 写入 tests/test_auto_copy.py（2/2）
-        shell: python
-        run: |
-          from pathlib import Path
-          destination = Path('tests/test_auto_copy.py')
-          destination.parent.mkdir(parents=True, exist_ok=True)
-          payload = r'''        self.symlink(self.target / "a.txt", protected)
+                  self.symlink(self.target / "a.txt", protected)
                   result = app.run_copy(self.settings())
                   self.assertEqual(result.errors, 1)
                   self.assertTrue((self.target / "a.txt").is_symlink())
@@ -1368,6 +1400,9 @@ jobs:
           中文 Windows 桌面软件，将源文件夹 A 的文件单向复制到目标文件夹 B。
           采用 MD5 内容比对：同一路径下内容相同则跳过，不同则自动覆盖，B 中缺少的文件自动新增。
 
+          版本 1.0.1 修复 Windows 上 `stat()` 与 `fstat()` 的 `ctime` 含义不同、导致正常文件被误判为变化的问题。
+          Windows 改为统一比较创建时间，同时保留文件身份、大小、修改时间与 MD5 校验。
+
           ## 最快使用方式：只上传一个 YML 文件
 
           1. 下载随附的 **自动复制.yml**。
@@ -1458,15 +1493,42 @@ jobs:
           - Python 设置动作：https://github.com/actions/setup-python
           - 构建产物上传与下载：https://github.com/actions/upload-artifact
           - Windows 单文件打包：https://pyinstaller.org/en/stable/usage.html
+          - Windows stat/fstat 时间字段差异：https://github.com/python/cpython/issues/157671
           '''
           with destination.open('wb') as output:
               output.write(payload.encode('utf-8'))
+
+      - name: 记录 Windows 文件时间字段
+        shell: python
+        run: |
+          import json
+          import os
+          import tempfile
+          from pathlib import Path
+          import auto_copy as app
+          Path('reports').mkdir(exist_ok=True)
+          fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns', 'st_birthtime_ns')
+          with tempfile.TemporaryDirectory() as temporary:
+              sample = Path(temporary) / 'sample.txt'
+              sample.write_text('automatic-copy-metadata-check', encoding='utf-8')
+              with sample.open('rb') as stream:
+                  by_path, by_handle = sample.stat(), os.fstat(stream.fileno())
+              report = {
+                  'version': app.VERSION,
+                  'path': {field: getattr(by_path, field, None) for field in fields},
+                  'handle': {field: getattr(by_handle, field, None) for field in fields},
+                  'normalized_signatures_equal': app.fingerprint(by_path) == app.fingerprint(by_handle),
+              }
+          Path('reports/windows-metadata.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+          print(json.dumps(report, indent=2))
+          assert report['normalized_signatures_equal'], 'Path/handle metadata still differs after normalization.'
 
       - name: 运行复制逻辑和定时调度测试
         run: |
           python -m compileall -q auto_copy.py tests
           if ($LASTEXITCODE -ne 0) { throw 'Python syntax check failed.' }
-          python -m unittest discover -s tests -v
+          New-Item -ItemType Directory -Path reports -Force | Out-Null
+          python -m unittest discover -s tests -v 2>&1 | Tee-Object -FilePath reports/unit-tests.log
           if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed.' }
 
       - name: 安装打包工具
@@ -1535,6 +1597,6 @@ jobs:
         uses: actions/upload-artifact@v7.0.0
         with:
           name: AutomaticCopy-TestReports
-          path: reports/*.json
+          path: reports/*
           if-no-files-found: ignore
           retention-days: 7
