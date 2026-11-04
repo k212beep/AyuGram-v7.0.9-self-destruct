@@ -1,7 +1,7 @@
 # Upload this single file as .github/workflows/build-douyin-windows.yml
 # It embeds all source and uses no real recipient data, Secrets, or account logins.
 name: Build Douyin Windows App
-run-name: Douyin Windows v1.19.0 · ${{ github.ref_name }}
+run-name: Douyin Windows v1.20.0 · ${{ github.ref_name }}
 
 on:
   push:
@@ -34,7 +34,7 @@ jobs:
           architecture: x64
 
 
-      - name: Write embedded app.py (1/20)
+      - name: Write embedded app.py (1/22)
         run: |
           $payload = @'
           """Desktop messaging workbench with a local task queue."""
@@ -62,9 +62,11 @@ jobs:
           from pathlib import Path
           from queue import Empty, SimpleQueue
 
+          from nickname_icons import emoji_picture, has_nickname_emoji, nickname_clusters
+
 
           APP_NAME = "抖音群发工作台"
-          VERSION = "1.19.0"
+          VERSION = "1.20.0"
           UI_SCALE = 0.85
           MAX_FILE_BYTES = 5 * 1024 * 1024
           MAX_RECIPIENTS = 20000
@@ -362,7 +364,7 @@ jobs:
           '@
           [IO.File]::WriteAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded app.py (2/20)
+      - name: Write embedded app.py (2/22)
         run: |
           $payload = @'
                   process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -554,6 +556,18 @@ jobs:
                       self.seen.discard(self.key(task.recipient, task.asset))
                   return count
 
+              def remove_pending_recipients(self, identifiers: set[str]) -> int:
+                  remaining = deque()
+                  removed = 0
+                  for task in self.pending:
+                      if task.recipient.douyin_id in identifiers:
+                          self.seen.discard(self.key(task.recipient, task.asset))
+                          removed += 1
+                      else:
+                          remaining.append(task)
+                  self.pending = remaining
+                  return removed
+
 
           def valid_id(value: str) -> bool:
               return bool(ID_RE.fullmatch(value))
@@ -671,6 +685,12 @@ jobs:
                       output.append(remaining[:low])
                       remaining = remaining[low:]
                   output.append(remaining)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (3/22)
+        run: |
+          $payload = @'
               return "\n".join(output)
 
 
@@ -687,12 +707,6 @@ jobs:
                   if measure(value[:middle] + "…") <= max_width:
                       low = middle
                   else:
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (3/20)
-        run: |
-          $payload = @'
                       high = middle - 1
               return value[:low] + "…"
 
@@ -920,6 +934,12 @@ jobs:
               by_id = {r.douyin_id: r for r in existing}
               added = repeated = 0
               new_ids = {r.douyin_id for r in incoming if r.douyin_id not in by_id}
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (4/22)
+        run: |
+          $payload = @'
               if len(existing) + len(new_ids) > MAX_RECIPIENTS:
                   raise ValueError(f"名单最多支持 {MAX_RECIPIENTS:,} 人，请拆分文件。")
               for record in incoming:
@@ -929,12 +949,6 @@ jobs:
                       merge_recipient_details(current, record)
                   else:
                       clone = Recipient(record.douyin_id, record.nickname, list(record.sources), record.gender, record.age,
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (4/20)
-        run: |
-          $payload = @'
                                         record.region, record.ip_region, list(record.raw_details), comment_count=record.comment_count)
                       existing.append(clone)
                       by_id[clone.douyin_id] = clone
@@ -1124,6 +1138,7 @@ jobs:
               detail: str = "未选择数据"
               paths: list[Path] = field(default_factory=list)
               saved_path: Path | None = None
+              member_ids: frozenset[str] = frozenset()
 
 
           def collection_counts(records: list[Recipient]) -> dict[str, int]:
@@ -1191,6 +1206,12 @@ jobs:
           def save_collection_batch(batch: CollectionBatch, directory: Path,
                                     cancel: threading.Event | None = None) -> Path:
               target = collection_target(batch.target)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (5/22)
+        run: |
+          $payload = @'
               if batch.kind not in COLLECTION_TYPES or not batch.records:
                   raise ValueError("采集名单类型不正确，或没有可保存的资料。")
               if cancel is not None and cancel.is_set():
@@ -1200,12 +1221,6 @@ jobs:
               try:
                   prefix = f"{batch.kind}_{target}_{datetime.now():%Y%m%d_%H%M%S}_"
                   with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8-sig", newline="", dir=directory,
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (5/20)
-        run: |
-          $payload = @'
                                                    prefix=prefix, suffix=".tmp", delete=False) as handle:
                       temporary = Path(handle.name)
                       writer = csv.writer(handle)
@@ -1475,6 +1490,12 @@ jobs:
                   self.target_result_layout_timer = None
                   self.target_result_data = TargetLookupResult()
                   self.table_widths: dict[str, int] = {}
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (6/22)
+        run: |
+          $payload = @'
                   self.session = Session()
                   self.logs: list[tuple[str, str, str]] = []
                   self.import_duplicates = 0
@@ -1485,12 +1506,6 @@ jobs:
                   self.age_mode_var = tk.StringVar(value="全部年龄")
                   self.min_age_var = tk.StringVar()
                   self.max_age_var = tk.StringVar()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (6/20)
-        run: |
-          $payload = @'
                   self.region_var = tk.StringVar()
                   self.region_field_var = tk.StringVar(value="任一地区")
                   self.scope_var = tk.StringVar(value="当前筛选结果")
@@ -1680,18 +1695,18 @@ jobs:
                   target_row.grid(row=0, column=0, sticky="ew")
                   self.label(target_row, "目标抖音号", 10, "muted").pack(side="left", padx=(0, 7))
                   self.main_target_entry = tk.Entry(target_row, textvariable=self.collection_target_var, width=10,
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (7/22)
+        run: |
+          $payload = @'
                       bg=COLORS["input"], fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat", font=("Microsoft YaHei UI", 11))
                   self.main_target_entry.pack(side="left", fill="x", expand=True, ipady=5)
                   self.main_target_entry.bind("<Return>", lambda _event: self.lookup_collection_target())
                   self.target_config_button = self.button(target_row, "搜索账号", self.open_target_settings, padx=8, pady=5)
                   self.target_config_button.pack(side="right", padx=(6, 0))
                   self.build_target_result_card(list_header)
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (7/20)
-        run: |
-          $payload = @'
                   filters = tk.Frame(list_card, bg=COLORS["card"])
                   filters.grid(row=1, column=0, sticky="ew", padx=10)
                   collection_nav = self.collection_nav = tk.Frame(filters, bg=COLORS["card"])
@@ -1789,8 +1804,12 @@ jobs:
                   self.table.tag_configure("row_odd", background="#111E31")
                   self.table.bind("<<TreeviewSelect>>", lambda _event: self.update_preview())
                   self.table.bind("<Double-1>", self.show_clicked_recipient)
+                  self.table.bind("<Button-3>", self.show_recipient_menu)
                   self.table.bind("<Return>", lambda _event: self.open_recipient_details())
                   self.table.bind("<Control-a>", lambda _event: self.select_visible())
+                  self.recipient_menu = tk.Menu(self.table, tearoff=False, bg=COLORS["card"], fg=COLORS["text"],
+                                                activebackground=COLORS["hover"], activeforeground=COLORS["text"],
+                                                disabledforeground=COLORS["muted"], font=("Microsoft YaHei UI", 10))
                   bottom = tk.Frame(list_card, bg=COLORS["card"])
                   bottom.grid(row=4, column=0, sticky="ew", padx=10, pady=7)
                   self.visible_var = tk.StringVar(value="共 0 人")
@@ -1837,6 +1856,12 @@ jobs:
                   settings.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 6))
                   self.label(settings, "发送间隔", 9, "muted").pack(side="left")
                   self.interval_spin = tk.Spinbox(settings, from_=MIN_SEND_INTERVAL, to=MAX_SEND_INTERVAL, increment=0.1, width=5,
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (8/22)
+        run: |
+          $payload = @'
                                                   textvariable=self.interval_var, bg=COLORS["input"], fg=COLORS["text"],
                                                   buttonbackground=COLORS["line"], insertbackground=COLORS["text"], relief="flat")
                   self.interval_spin.pack(side="left", padx=(8, 4), ipady=3)
@@ -1851,12 +1876,6 @@ jobs:
                   media_frame = self.media_section = self.card(body)
                   media_frame.grid(row=0, column=2, sticky="nsew")
                   media_frame.columnconfigure(0, weight=1)
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (8/20)
-        run: |
-          $payload = @'
                   media_frame.rowconfigure(4, weight=1, minsize=80)
                   media_actions = tk.Frame(media_frame, bg=COLORS["card"])
                   media_actions.grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 5))
@@ -1966,6 +1985,46 @@ jobs:
                   self.log("计时", f"初始已运行时长已设为 {format_duration(seconds)}。")
                   self.toast_var.set("计时设置已保存，已运行时长将从设定值继续累计。")
 
+              def paint_nickname(self, canvas, value: str, font_spec, width: int, height: int) -> str:
+                  from PIL import ImageTk
+                  from tkinter import font as tkfont
+
+                  signature = (value, str(font_spec), width, height)
+                  if getattr(canvas, "nickname_signature", None) == signature:
+                      return canvas.nickname_text
+                  canvas.nickname_signature = signature
+                  canvas.delete("all")
+                  canvas.nickname_photos = []
+                  font = tkfont.Font(root=self.root, font=font_spec)
+                  limit = max(0, width - 4)
+                  pixels = max(1, min(height - 2, font.metrics("linespace") - 2))
+                  parts = []
+                  used = 0
+                  for cluster in nickname_clusters(value):
+                      bitmap = emoji_picture(cluster, pixels)
+                      advance = bitmap.width + 2 if bitmap is not None else font.measure(cluster)
+                      if used + advance > limit:
+                          dots = font.measure("…")
+                          while parts and used + dots > limit:
+                              used -= parts.pop()[2]
+                          if used + dots <= limit:
+                              parts.append(("…", None, dots))
+                          break
+                      parts.append((cluster, bitmap, advance))
+                      used += advance
+                  x = 2
+                  for cluster, bitmap, advance in parts:
+                      if bitmap is None:
+                          canvas.create_text(x, height / 2, text=cluster, font=font_spec, fill=COLORS["text"], anchor="w")
+                      else:
+                          photo = ImageTk.PhotoImage(bitmap, master=canvas)
+                          canvas.nickname_photos.append(photo)
+                          canvas.create_image(x + 1, height / 2, image=photo, anchor="w", tags=("emoji",))
+                      x += advance
+                  canvas.nickname_text = "".join(cluster for cluster, _, _ in parts)
+                  canvas.nickname_width = x - 2
+                  return canvas.nickname_text
+
               def build_target_result_card(self, parent) -> None:
                   background = "#0F1E31"
                   card = self.target_result_card = tk.Frame(parent, bg=background, highlightbackground="#294156", highlightthickness=1)
@@ -1985,11 +2044,19 @@ jobs:
                   def value(parent, key, size, color="text", bold=False):
                       label = self.label(parent, size=size, color=color, bold=bold, width=1, height=1,
                                          anchor="w", textvariable=self.target_result_vars[key])
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (9/22)
+        run: |
+          $payload = @'
                       label.bind("<Configure>", lambda _event: self.schedule_target_result_layout())
                       self.target_result_widgets[key] = label
                       return label
 
-                  value(identity, "nickname", 12, bold=True).grid(row=0, column=0, sticky="ew", padx=(0, 5))
+                  nickname_label = value(identity, "nickname", 12, bold=True)
+                  nickname_label.grid(row=0, column=0, sticky="ew", padx=(0, 5))
+                  self.target_nickname_canvas = tk.Canvas(nickname_label, width=1, height=1, bg=background, bd=0, highlightthickness=0)
                   value(identity, "target", 8, "muted").grid(row=0, column=1, sticky="ew")
                   self.target_result_badge = self.label(content, "待搜索", 9, "muted", bold=True, padx=6, pady=2)
                   self.target_result_badge.configure(bg="#1B2C40")
@@ -2025,12 +2092,6 @@ jobs:
                   }
                   color = "accent" if success else "muted" if result.state == "idle" else "red"
                   self.target_result_badge.configure(text="✓ 获取成功" if success else "待搜索" if result.state == "idle" else "获取失败",
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (9/20)
-        run: |
-          $payload = @'
                                                     fg=COLORS[color], bg="#133A36" if success else "#1B2C40" if result.state == "idle" else "#3A2330")
                   self.target_result_card.configure(highlightbackground="#2E615E" if success else "#294156" if result.state == "idle" else "#684050")
                   self.schedule_target_result_layout()
@@ -2044,13 +2105,21 @@ jobs:
                   from tkinter import font as tkfont
                   for key, label in self.target_result_widgets.items():
                       font = tkfont.Font(root=self.root, font=label.cget("font"))
-                      text = ellipsize_text(self.target_result_full_values.get(key, ""), max(1, label.winfo_width() - 4), font.measure)
+                      value = self.target_result_full_values.get(key, "")
+                      if key == "nickname" and has_nickname_emoji(value):
+                          self.target_nickname_canvas.place(x=0, y=0, relwidth=1, relheight=1)
+                          text = self.paint_nickname(self.target_nickname_canvas, value, label.cget("font"),
+                                                     label.winfo_width(), label.winfo_height())
+                      else:
+                          if key == "nickname":
+                              self.target_nickname_canvas.place_forget()
+                          text = ellipsize_text(value, max(1, label.winfo_width() - 4), font.measure)
                       if self.target_result_vars[key].get() != text:
                           self.target_result_vars[key].set(text)
                   canvas = self.target_result_avatar
                   width, height = canvas.winfo_width(), canvas.winfo_height()
                   result = self.target_result_data
-                  initial = result.nickname[:1].upper()[:1] if result.state == "success" else "⌕" if result.state == "idle" else "!"
+                  initial = nickname_clusters(result.nickname)[0].upper() if result.state == "success" else "⌕" if result.state == "idle" else "!"
                   signature = (width, height, initial, result.state)
                   if signature == self.target_result_avatar_signature or min(width, height) < 8:
                       return
@@ -2062,7 +2131,14 @@ jobs:
                                      fill="#18374B", outline="#326379", width=1)
                   canvas.create_oval(center_x-radius+4, center_y-radius+4, center_x+radius-4, center_y+radius-4,
                                      fill="#1B4054", outline="")
-                  canvas.create_text(center_x, center_y-1, text=initial, fill="#E4FFFC", font=("Microsoft YaHei UI", ui_font_size(21), "bold"))
+                  bitmap = emoji_picture(initial, max(1, round(radius * 1.4)))
+                  self.target_avatar_photo = None
+                  if bitmap is None:
+                      canvas.create_text(center_x, center_y-1, text=initial, fill="#E4FFFC", font=("Microsoft YaHei UI", ui_font_size(21), "bold"))
+                  else:
+                      from PIL import ImageTk
+                      self.target_avatar_photo = ImageTk.PhotoImage(bitmap, master=canvas)
+                      canvas.create_image(center_x, center_y-1, image=self.target_avatar_photo, tags=("emoji",))
                   x, y, dot = center_x + radius * .7, center_y + radius * .7, ui_pixels(4)
                   canvas.create_oval(x-dot, y-dot, x+dot, y+dot, fill=COLORS["accent"] if result.state == "success" else COLORS["muted"],
                                      outline=canvas.cget("bg"), width=2)
@@ -2159,13 +2235,21 @@ jobs:
                   self.target_settings_entries = []
 
                   def add_entry(parent, key, row, column, width):
+                      family = "Segoe UI Emoji" if sys.platform == "win32" and key == "nickname" else "Microsoft YaHei UI"
                       entry = tk.Entry(parent, textvariable=self.target_form[key], width=width, bg=COLORS["input"],
-                                       fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat", font=("Microsoft YaHei UI", 11))
+                                       fg=COLORS["text"], insertbackground=COLORS["accent"], relief="flat", font=(family, 11))
                       entry.grid(row=row, column=column, sticky="ew", ipady=6, pady=6)
                       self.target_settings_entries.append(entry)
+                      return entry
 
                   for row, (key, caption) in enumerate((("target", "目标抖音号"), ("nickname", "目标昵称"),
                                                       ("fans_count", "粉丝人数"), ("following_count", "关注人数"),
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (10/22)
+        run: |
+          $payload = @'
                                                       ("region", "资料位置"), ("live_ip", "实时IP")), 2):
                       self.label(content, caption, 10, "muted").grid(row=row, column=0, sticky="w", padx=(0, 10), pady=6)
                       if key in {"fans_count", "following_count"}:
@@ -2176,6 +2260,13 @@ jobs:
                           self.label(count_row, "已采集人数", 10, "muted").grid(row=0, column=1, padx=(10, 8))
                           collected_key = "fans_collected_count" if key == "fans_count" else "following_collected_count"
                           add_entry(count_row, collected_key, 0, 2, 12)
+                      elif key == "nickname":
+                          nickname_row = tk.Frame(content, bg=COLORS["card"])
+                          nickname_row.grid(row=row, column=1, sticky="ew")
+                          nickname_row.columnconfigure(0, weight=1)
+                          nickname_entry = add_entry(nickname_row, key, 0, 0, 28)
+                          nickname_preview = self.target_settings_nickname_preview = tk.Canvas(
+                              nickname_row, width=1, height=24, bg=COLORS["input"], bd=0, highlightthickness=0, cursor="xterm")
                       else:
                           add_entry(content, key, row, 1, 28)
                   for row, key, caption in ((8, "fans_private", "粉丝：账号已设置隐私"),
@@ -2186,6 +2277,42 @@ jobs:
                   self.label(content, "已采集人数留空时按名单统计；填写后保持固定。", 9, "muted").grid(row=10, column=0, columnspan=2, sticky="w", pady=(8, 12))
                   actions = tk.Frame(content, bg=COLORS["card"])
                   actions.grid(row=11, column=0, columnspan=2, sticky="e")
+                  nickname_var = self.target_form["nickname"]
+
+                  def refresh_nickname_preview(*_args):
+                      nickname = nickname_var.get()
+                      previous = nickname_preview.winfo_manager()
+                      editing = dialog.focus_get() is nickname_entry
+                      mode = ("grid" if editing else "place") if has_nickname_emoji(nickname) else ""
+                      if previous != mode:
+                          if previous == "grid":
+                              nickname_preview.grid_remove()
+                          elif previous == "place":
+                              nickname_preview.place_forget()
+                          if mode == "grid":
+                              nickname_preview.grid(row=1, column=0, sticky="ew", pady=(0, ui_pixels(4)))
+                          elif mode == "place":
+                              nickname_preview.place(in_=nickname_entry, x=3, y=2, relwidth=1, width=-6, relheight=1, height=-4)
+                              nickname_preview.tk.call("raise", str(nickname_preview))
+                          dialog.update_idletasks()
+                          dialog.minsize(dialog.winfo_reqwidth(), dialog.winfo_reqheight())
+                      if not mode:
+                          return
+                      self.paint_nickname(nickname_preview, nickname, ("Microsoft YaHei UI", ui_font_size(11)),
+                                          nickname_preview.winfo_width(), nickname_preview.winfo_height())
+
+                  def edit_nickname(event):
+                      if nickname_preview.winfo_manager() == "place":
+                          nickname_entry.icursor(f"@{event.x + 3}")
+                          nickname_entry.focus_set()
+                      return "break"
+
+                  nickname_trace = nickname_var.trace_add("write", refresh_nickname_preview)
+                  nickname_preview.bind("<Configure>", refresh_nickname_preview)
+                  nickname_preview.bind("<Button-1>", edit_nickname)
+                  nickname_entry.bind("<FocusIn>", refresh_nickname_preview)
+                  nickname_entry.bind("<FocusOut>", refresh_nickname_preview)
+                  dialog.bind("<Destroy>", lambda event: nickname_var.trace_remove("write", nickname_trace) if event.widget is dialog else None)
 
                   def close_settings():
                       dialog.destroy()
@@ -2223,13 +2350,8 @@ jobs:
                   dialog.protocol("WM_DELETE_WINDOW", close_settings)
                   dialog.bind("<Escape>", lambda _event: close_settings())
                   self.scale_ui(dialog)
+                  refresh_nickname_preview()
                   dialog.update_idletasks()
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (10/20)
-        run: |
-          $payload = @'
                   dialog.minsize(dialog.winfo_reqwidth(), dialog.winfo_reqheight())
                   self.target_settings_entries[0].focus_set()
 
@@ -2324,6 +2446,12 @@ jobs:
                   self.collection_lookup_label.grid(row=2, column=0, sticky="ew", pady=(5, 8))
                   self.collection_lookup_label.bind("<Configure>", lambda e: self.collection_lookup_label.configure(wraplength=max(1, e.width)))
                   kinds = tk.Frame(content, bg=COLORS["card"])
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (11/22)
+        run: |
+          $payload = @'
                   kinds.grid(row=3, column=0, sticky="ew", pady=(0, 10))
                   self.collection_type_buttons = []
                   for index, kind in enumerate(COLLECTION_TYPES):
@@ -2422,12 +2550,6 @@ jobs:
                       return
                   running = self.collection_importer.pending
                   enabled = not running and not self.session.active
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (11/20)
-        run: |
-          $payload = @'
                   for widget in [self.collection_target_entry, self.collection_lookup_button,
                                  self.collection_import_button, *self.collection_type_buttons]:
                       widget.configure(state="normal" if enabled else "disabled")
@@ -2496,9 +2618,10 @@ jobs:
                           self.collection_receipts[(batch.target, batch.kind)] = CollectionReceipt("failed", detail=str(exc), paths=batch.paths, saved_path=result.saved_path)
                           self.toast_var.set("文件已保存，加入名单失败，请在“资料采集”查看原因。")
                       else:
+                          member_ids = frozenset(record.douyin_id for record in batch.records)
                           if batch.kind in {"粉丝", "关注"}:
                               members = self.collection_members.setdefault((batch.target, batch.kind), set())
-                              members.update(record.douyin_id for record in batch.records)
+                              members.update(member_ids)
                           self.import_duplicates += repeated + batch.duplicates
                           for path in batch.paths:
                               if path not in self.imported_files:
@@ -2511,13 +2634,19 @@ jobs:
                           self.collection_status_var.set("采集成功 · 已保存至本地")
                           self.collection_status_color = "accent"
                           detail = f"新增 {added:,} 人，合并重复 {repeated + batch.duplicates:,} 条，跳过无效项 {batch.skipped:,} 条。"
-                          receipt = CollectionReceipt("success", len(batch.records), detail, batch.paths, result.saved_path)
+                          receipt = CollectionReceipt("success", len(member_ids), detail, batch.paths, result.saved_path, member_ids)
                           self.collection_receipts[(batch.target, batch.kind)] = receipt
                           self.collection_detail_var.set(self.collection_receipt_detail(batch.target, batch.kind, receipt))
                           count = collection_display_count(self.collection_preferences, batch.target, batch.kind, len(batch.records))
                           self.toast_var.set(f"采集成功 · 已采集{batch.kind} {count:,} 人 · 已保存至本地。")
                           self.log("资料采集", f"目标 {batch.target}：已采集{batch.kind} {count:,} 人，已保存至 {result.saved_path.name}。")
                   self.refresh_collection_cards()
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (12/22)
+        run: |
+          $payload = @'
                   self.set_busy(self.session.active)
                   self.sync_collection_controls()
 
@@ -2651,12 +2780,6 @@ jobs:
                           except (tk.TclError, OSError, ValueError):
                               error = "封面无法显示或文件已变更，请重新导入。"
                       if error:
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (12/20)
-        run: |
-          $payload = @'
                           self.media_preview_source = None
                           self.media_preview_placeholder = "封面暂不可用"
                           self.media_dimensions_var.set("画面尺寸暂不可用")
@@ -2756,6 +2879,12 @@ jobs:
                       return
                   try:
                       if inspect_media(self.media_asset.path) != self.media_asset:
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (13/22)
+        run: |
+          $payload = @'
                           raise ValueError("文件已变更")
                   except (OSError, ValueError):
                       self.reset_media_preview("文件已变更，请重新导入")
@@ -2870,12 +2999,6 @@ jobs:
                       raise ValueError("请先启用“对方关注后发送媒体文件”。")
                   if self.media_asset is None:
                       raise ValueError("请先导入媒体文件。")
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (13/20)
-        run: |
-          $payload = @'
                   targets = {record.douyin_id: record for record in self.target_records()}
                   matched = [targets[receipt.douyin_id] for receipt in receipts if receipt.douyin_id in targets]
                   skipped = len(receipts) - len(matched)
@@ -2979,6 +3102,12 @@ jobs:
                       return AccountProfile(**{name: variable.get() for name, variable in variables.items()})
 
                   def update_preview(*_args):
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (14/22)
+        run: |
+          $payload = @'
                       try:
                           candidate = normalize_profile(get_profile())
                           text = profile_display_text(candidate)
@@ -3064,9 +3193,12 @@ jobs:
               def forward_table_grid_event(self, event, sequence):
                   x, y = event.x_root - self.table.winfo_rootx(), event.y_root - self.table.winfo_rooty()
                   self.table.focus_set()
-                  if sequence == "<Double-Button-1>":
+                  if sequence in {"<Double-Button-1>", "<Button-3>"}:
                       event.x, event.y, event.widget = x, y, self.table
-                      self.show_clicked_recipient(event)
+                      if sequence == "<Button-3>":
+                          self.show_recipient_menu(event)
+                      else:
+                          self.show_clicked_recipient(event)
                   else:
                       options = {"x": x, "y": y, "state": event.state}
                       if sequence == "<MouseWheel>":
@@ -3102,7 +3234,7 @@ jobs:
                       return
                   while len(self.table_grid_lines) < len(segments):
                       line = tk.Frame(self.table, bg="#30435B", bd=0, highlightthickness=0)
-                      for sequence in ("<Button-1>", "<ButtonRelease-1>", "<Double-Button-1>",
+                      for sequence in ("<Button-1>", "<ButtonRelease-1>", "<Double-Button-1>", "<Button-3>",
                                        "<B1-Motion>", "<MouseWheel>", "<Button-4>", "<Button-5>"):
                           line.bind(sequence, lambda event, seq=sequence: self.forward_table_grid_event(event, seq))
                       self.table_grid_lines.append(line)
@@ -3121,12 +3253,6 @@ jobs:
               def toggle_comment_column(self) -> None:
                   visible = self.show_comment_count_var.get()
                   try:
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (14/20)
-        run: |
-          $payload = @'
                       save_comment_column(self.view_path, visible)
                   except (OSError, ValueError) as exc:
                       self.show_comment_count_var.set("comment_count" in self.table["displaycolumns"])
@@ -3215,6 +3341,12 @@ jobs:
                   self.table_row_height = max(ui_pixels(30), max_lines * self.table_font.metrics("linespace") + ui_pixels(10))
                   ttk.Style(self.root).configure("Treeview", rowheight=self.table_row_height)
                   remaining_selection = selected.intersection(visible)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (15/22)
+        run: |
+          $payload = @'
                   if remaining_selection:
                       self.table.selection_set(*remaining_selection)
                   self.table.yview_moveto(scroll_position)
@@ -3276,6 +3408,69 @@ jobs:
                   if row and self.table.identify_region(event.x, event.y) in {"cell", "tree"}:
                       self.open_recipient_details(row)
 
+              def show_recipient_menu(self, event):
+                  row = self.table.identify_row(event.y)
+                  if not row or self.table.identify_region(event.x, event.y) not in {"cell", "tree"}:
+                      return "break"
+                  selection = self.table.selection()
+                  if row not in selection:
+                      self.table.selection_set(row)
+                      selection = (row,)
+                  self.table.focus(row)
+                  return self.post_recipient_delete_menu(event, selection)
+
+              def post_recipient_delete_menu(self, event, selection: tuple[str, ...], after_delete=None):
+                  menu = self.recipient_menu
+                  menu.delete(0, "end")
+                  locked = self.session.active or self.collection_importer.pending
+                  caption = "删除此人" if len(selection) == 1 else f"删除选中的 {len(selection):,} 人"
+
+                  def remove():
+                      if self.remove_recipients(selection) and after_delete is not None:
+                          after_delete()
+
+                  menu.add_command(label=caption, command=remove, state="disabled" if locked else "normal")
+                  try:
+                      menu.tk_popup(event.x_root, event.y_root)
+                  finally:
+                      menu.grab_release()
+                  return "break"
+
+              def remove_recipients(self, identifiers: tuple[str, ...]) -> int:
+                  if self.session.active or self.collection_importer.pending:
+                      return 0
+                  removed = set(identifiers).intersection(record.douyin_id for record in self.records)
+                  if not removed:
+                      return 0
+                  self.records[:] = [record for record in self.records if record.douyin_id not in removed]
+                  self.visible_records = [record for record in self.visible_records if record.douyin_id not in removed]
+                  visible_ids = tuple(identifier for identifier in removed if self.table.exists(identifier))
+                  if visible_ids:
+                      self.table.delete(*visible_ids)
+                  for identifier in removed:
+                      self.session.statuses.pop(identifier, None)
+                  for members in self.collection_members.values():
+                      members.difference_update(removed)
+                  for receipt in self.collection_receipts.values():
+                      if receipt.member_ids & removed:
+                          receipt.member_ids = receipt.member_ids - removed
+                          receipt.count = len(receipt.member_ids)
+                  cancelled = self.media_queue.remove_pending_recipients(removed)
+                  if not self.media_queue.pending and self.media_timer is not None:
+                      self.root.after_cancel(self.media_timer)
+                      self.media_timer = None
+                  self.refresh_media_status()
+                  self.sync_filter_choices()
+                  self.refresh_collection_totals()
+                  self.refresh_table()
+                  self.update_preview()
+                  self.update_stats()
+                  if self.collection_dialog is not None and self.collection_dialog.winfo_exists():
+                      self.restore_collection_receipt()
+                  self.toast_var.set(f"已从名单删除 {len(removed):,} 人。")
+                  self.log("名单", f"已删除 {len(removed):,} 人。" + (f"取消对应媒体任务 {cancelled:,} 条。" if cancelled else ""))
+                  return len(removed)
+
               def open_recipient_details(self, identifier: str | None = None):
                   if identifier is None:
                       selection = self.table.selection()
@@ -3302,6 +3497,7 @@ jobs:
                   body.pack(side="left", fill="both", expand=True)
                   body.insert("1.0", details)
                   body.configure(state="disabled")
+                  body.bind("<Button-3>", lambda event: self.post_recipient_delete_menu(event, (record.douyin_id,), dialog.destroy))
                   self.details_text = body
                   actions = tk.Frame(dialog, bg=COLORS["card"])
                   actions.pack(fill="x", padx=20, pady=12)
@@ -3353,12 +3549,6 @@ jobs:
                   self.update_stats()
                   self.refresh_collection_totals()
                   summary = f"导入完成：新增 {added} 人，合并重复 {repeated} 条，跳过无效项 {skipped} 条。"
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (15/20)
-        run: |
-          $payload = @'
                   self.toast_var.set(summary)
                   self.log("导入", summary)
                   return errors
@@ -3411,6 +3601,12 @@ jobs:
                   selection = self.table.selection()
                   record = next((r for r in self.records if selection and r.douyin_id == selection[0]), None)
                   if record is None and self.visible_records:
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (16/22)
+        run: |
+          $payload = @'
                       record = self.visible_records[0]
                   if record is None:
                       self.preview_target.set("尚未选择接收人")
@@ -3619,12 +3815,6 @@ jobs:
                   actual_anchor = app.runtime_clock.started
                   app.runtime_save_button.invoke()
                   assert app.runtime_dialog is None
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (16/20)
-        run: |
-          $payload = @'
                   assert load_runtime_offset(app.runtime_path) == 3723
                   assert app.runtime_clock.started == actual_anchor
                   assert 3723 <= app.runtime_clock.displayed < 3733
@@ -3659,6 +3849,12 @@ jobs:
                           "follow_back_rule": app.follow_back_check,
                           "media_status": app.media_status_label, "import_media": app.media_import_button,
                           "task_scope": app.scope_combo, "send_interval": app.interval_spin,
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (17/22)
+        run: |
+          $payload = @'
                           "action_bar": app.controls_card, "start_button": app.start_button,
                           "pause_button": app.pause_button, "stop_button": app.stop_button,
                           "logs": app.log_text, "log_panel": app.log_card, "export_logs": app.export_log_button,
@@ -3670,6 +3866,8 @@ jobs:
                           "target_input": app.main_target_entry, "target_settings": app.target_config_button,
                           "target_result": app.target_result_card, "list_filter": app.search_entry,
                           "account_avatar": app.target_result_avatar, "account_status": app.target_result_badge,
+                          **({"account_nickname_icons": app.target_nickname_canvas}
+                             if app.target_nickname_canvas.winfo_manager() == "place" else {}),
                           **{f"account_{key}": label for key, label in app.target_result_widgets.items()},
                           **{f"collection_{kind}": button for kind, button in app.collection_buttons.items()},
                           **{f"collection_status_{kind}": label for kind, label in app.collection_card_labels.items()},
@@ -3757,6 +3955,8 @@ jobs:
                       dialog = app.target_settings_dialog
                       wait_for_window_mapping(dialog)
                       controls = app.target_settings_entries + [app.target_settings_save_button]
+                      if app.target_settings_nickname_preview.winfo_manager() in {"grid", "place"}:
+                          controls.append(app.target_settings_nickname_preview)
                       assert len(app.target_settings_entries) == 8
                       for widget in controls:
                           assert widget.winfo_viewable(), f"Hidden account setting: {widget}"
@@ -3783,15 +3983,11 @@ jobs:
                       for key, label in app.target_result_widgets.items():
                           text = app.target_result_vars[key].get()
                           font = tkfont.Font(root=root, font=label.cget("font"))
-                          assert "\n" not in text and font.measure(text) <= max(1, label.winfo_width() - 4)
+                          width = (app.target_nickname_canvas.nickname_width if key == "nickname" and app.target_nickname_canvas.winfo_ismapped()
+                                   else font.measure(text))
+                          assert "\n" not in text and width <= max(1, label.winfo_width() - 4)
                           assert text, f"Empty account card field: {key}"
                       account_card_layout_snapshots.append({"window": root.geometry(), "state": app.target_result_data.state,
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (17/20)
-        run: |
-          $payload = @'
                           "card_width": card.winfo_width(), "card_height": card.winfo_height(), "all_controls_visible": True})
 
                   def assert_mutual_card(expected):
@@ -3818,6 +4014,12 @@ jobs:
                       expected = f"{total:,}"
                       assert app.collection_display_total == total
                       assert app.stat_vars[0].get() == expected
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (18/22)
+        run: |
+          $payload = @'
                       assert app.visible_var.get() == f"共 {expected} 人"
                       app.update_stats()
                       app.relayout_table()
@@ -3864,6 +4066,36 @@ jobs:
                   assert app.target_result_vars["fans"].get() == "1,234 人"
                   assert app.target_result_vars["following"].get() == "56 人"
                   assert app.target_result_badge.cget("text") == "✓ 获取成功"
+                  for nickname, icons in (("🐟", 1), ("🐟 小鱼❤️👩‍💻", 3)):
+                      app.open_target_settings()
+                      app.target_settings_entries[1].focus_force()
+                      app.target_form["nickname"].set(nickname)
+                      root.update()
+                      assert_target_settings_layout()
+                      preview = app.target_settings_nickname_preview
+                      assert preview.winfo_viewable() and preview.winfo_manager() == "grid"
+                      assert len(preview.find_withtag("emoji")) == icons
+                      assert preview.nickname_text == nickname
+                      app.target_settings_entries[0].focus_force()
+                      root.update()
+                      assert preview.winfo_viewable() and preview.winfo_manager() == "place"
+                      assert len(preview.find_withtag("emoji")) == icons
+                      assert_target_settings_layout()
+                      app.target_settings_save_button.invoke()
+                      root.update()
+                      assert load_collection_preferences(app.collection_preferences_path).targets["task_fixture"].nickname == nickname
+                      assert app.target_result_vars["nickname"].get() == nickname
+                      assert len(app.target_nickname_canvas.find_withtag("emoji")) == icons
+                      assert len(app.target_result_avatar.find_withtag("emoji")) == 1
+                      assert_account_card_layout()
+                      assert_flat_layout()
+                  app.open_target_settings()
+                  app.target_form["nickname"].set("后台配置昵称")
+                  root.update()
+                  assert not app.target_settings_nickname_preview.winfo_ismapped()
+                  app.target_settings_save_button.invoke()
+                  root.update()
+                  assert not app.target_nickname_canvas.winfo_ismapped()
                   app.collection_buttons["粉丝"].invoke()
                   assert "账号已设置隐私" in app.collection_detail_var.get() and "采集失败" in app.collection_status_vars["粉丝"].get()
                   assert not app.collection_importer.pending and app.collection_saved_path is None
@@ -3992,7 +4224,7 @@ jobs:
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded app.py (18/20)
+      - name: Write embedded app.py (19/22)
         run: |
           $payload = @'
                           scope_layout_snapshots.append({"window": root.geometry(), "message_panel_height": app.message_card.winfo_height(),
@@ -4199,7 +4431,7 @@ jobs:
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
-      - name: Write embedded app.py (19/20)
+      - name: Write embedded app.py (20/22)
         run: |
           $payload = @'
                       for size in ("901x578", "1054x650", "1540x940"):
@@ -4282,6 +4514,45 @@ jobs:
                       app.close_collection()
                       app.scale_ui = original_scale_ui
                   assert_flat_layout()
+
+                  def open_test_recipient_menu(identifier, *, through_grid=False):
+                      app.table.see(identifier)
+                      root.update()
+                      x, y, width, height = app.table.bbox(identifier)
+                      column_x = x + app.table_widths["name"] // 2
+                      widget = app.table
+                      event_x, event_y = column_x, y + height // 2
+                      if through_grid:
+                          segment = next(index for index, box in enumerate(app.table_grid_segments)
+                                         if box[3] == 1 and box[1] == y + height - 1)
+                          widget = app.table_grid_lines[segment]
+                          event_x, event_y = column_x - app.table_grid_segments[segment][0], 0
+                      popup = app.recipient_menu.tk_popup
+                      posted = []
+                      try:
+                          app.recipient_menu.tk_popup = lambda *position: posted.append(position)
+                          widget.event_generate("<Button-3>", x=event_x, y=event_y,
+                              rootx=widget.winfo_rootx() + event_x, rooty=widget.winfo_rooty() + event_y)
+                      finally:
+                          app.recipient_menu.tk_popup = popup
+                      assert len(posted) == 1
+
+                  saved_files = {receipt.saved_path: receipt.saved_path.read_bytes()
+                                 for receipt in app.collection_receipts.values() if receipt.saved_path is not None}
+                  app.table.selection_set("fixture_002")
+                  open_test_recipient_menu("fixture_001", through_grid=True)
+                  assert app.table.selection() == ("fixture_001",)
+                  assert app.recipient_menu.entrycget(0, "label") == "删除此人"
+                  app.recipient_menu.invoke(0)
+                  root.update()
+                  assert [record.douyin_id for record in app.records] == ["fixture_002"]
+                  assert app.table.get_children() == ("fixture_002",)
+                  assert "fixture_001" not in app.preview_target.get()
+                  assert_mutual_card(1)
+                  assert_roster_counts(13024)
+                  assert all(path.read_bytes() == data for path, data in saved_files.items())
+                  for kind in COLLECTION_TYPES:
+                      assert app.collection_receipts[(configured_target, kind)].count == 1
                   original_confirm = messagebox.askyesno
                   try:
                       messagebox.askyesno = lambda *_args, **_kwargs: True
@@ -4311,6 +4582,9 @@ jobs:
                   app.start()
                   assert app.session.state == "running" and app.interval_ms == 120000 and app.timer is not None
                   assert all(str(button.cget("state")) == "disabled" for button in app.collection_buttons.values())
+                  open_test_recipient_menu("demo_001")
+                  assert str(app.recipient_menu.entrycget(0, "state")) == "disabled"
+                  assert app.remove_recipients(("demo_001",)) == 0
                   app.cancel_tick()
                   app.stop()
                   app.interval_var.set("0.8")
@@ -4402,6 +4676,12 @@ jobs:
                   app.focus_editor()
                   assert_flat_layout()
                   # Reproduce the builder's restore race: idletasks sees an unmapped
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (21/22)
+        run: |
+          $payload = @'
                   # window, while the full event loop must wait for the delayed show.
                   for delay_ms in (25, 75):
                       root.withdraw()
@@ -4447,12 +4727,6 @@ jobs:
                   picture = app.media_preview_source
                   assert picture is not None and picture.size == (1080, 1920)
                   assert app.media_dimensions_var.get() == "1080 × 1920 · 9:16 竖屏"
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded app.py (20/20)
-        run: |
-          $payload = @'
                   pixel = picture.getpixel((picture.width // 2, picture.height // 2))
                   assert pixel[2] > 180 and pixel[0] < 80 and pixel[1] < 80
                   portrait_dialog = app.open_media_preview()
@@ -4506,6 +4780,16 @@ jobs:
                   assert app.media_queue.completed == 1
                   assert app.accept_follow_receipts([Recipient("demo_001")]) == (0, 1, 0)
                   assert app.accept_follow_receipts([Recipient("demo_002")]) == (1, 0, 0)
+                  assert app.accept_follow_receipts([Recipient("demo_003"), Recipient("demo_004")]) == (2, 0, 0)
+                  app.root.after_cancel(app.media_timer)
+                  app.media_timer = None
+                  app.reset_filters()
+                  app.table.selection_set("demo_002", "demo_003")
+                  open_test_recipient_menu("demo_003")
+                  assert app.recipient_menu.entrycget(0, "label") == "删除选中的 2 人"
+                  app.recipient_menu.invoke(0)
+                  assert {record.douyin_id for record in app.records}.isdisjoint({"demo_002", "demo_003"})
+                  assert [task.recipient.douyin_id for task in app.media_queue.pending] == ["demo_004"]
                   app.stop()
                   assert not app.media_queue.pending and app.media_timer is None
                   app.clear_media()
@@ -4548,6 +4832,9 @@ jobs:
                                                                 "account_result_card", "account_avatar_and_badge", "account_card_state_reset",
                                                                 "account_card_single_line_fields", "account_card_compact_layout",
                                                                 "account_card_extreme_values",
+                                                                "recipient_context_menu", "delete_single_and_selected", "delete_updates_mutual_count",
+                                                                "delete_preserves_saved_files", "delete_locked_during_session", "delete_cancels_selected_media_tasks",
+                                                                "nickname_unicode_roundtrip", "nickname_emoji_preview", "nickname_emoji_card_and_avatar",
                                                                 "collection_dialog_layout", "collection_measured_minimum", "collection_larger_fonts",
                                                                 "local_account_lookup", "manual_data_source",
                                                                 "collection_failure_retry", "collection_csv_saved", "collection_three_categories",
@@ -4557,6 +4844,12 @@ jobs:
                                                                 "complete_cell_wrapping", "imported_filenames", "partial_import",
                                                                 "filename_clear", "compact_stats", "region_aliases", "real_video_cover",
                                                                 "portrait_video_cover", "cover_enlargement", "cover_switch",
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded app.py (22/22)
+        run: |
+          $payload = @'
                                                                 "cover_clear", "audio_placeholder", "corrupt_cover_error", "image_cover",
                                                                 "fullhd_frame", "always_visible_video", "original_zoom", "original_scroll",
                                                                 "smooth_preview", "fit_zoom"]},
@@ -4613,6 +4906,745 @@ jobs:
           '@
           [IO.File]::AppendAllText((Join-Path $PWD 'app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 
+      - name: Write embedded nickname_icons.py (1/6)
+        run: |
+          $payload = @'
+          """Render nickname emoji without relying on Tk's emoji font fallback."""
+          from __future__ import annotations
+
+          import base64
+          from functools import lru_cache
+          from io import BytesIO
+          import os
+          from pathlib import Path
+          import sys
+          import unicodedata
+
+          from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+
+          EMOJI_NOTICE = (
+              "Twemoji graphics by Twitter, Inc. and other contributors. "
+              "Source: https://github.com/jdecked/twemoji/tree/b6b55fef1e8636b540a6d016a4729ca8cdf2e60b/assets/svg. "
+              "Licensed under CC BY 4.0: https://creativecommons.org/licenses/by/4.0/. "
+              "Selected graphics were converted to PNG and scaled for nickname display."
+          )
+
+
+          def nickname_clusters(value: str) -> list[str]:
+              """Keep common emoji sequences and combining marks together when fitting text."""
+              clusters: list[str] = []
+              for char in value:
+                  code = ord(char)
+                  previous = clusters[-1] if clusters else ""
+                  flag_pair = (0x1F1E6 <= code <= 0x1F1FF and len(previous) == 1
+                               and 0x1F1E6 <= ord(previous) <= 0x1F1FF)
+                  if previous and (unicodedata.category(char).startswith("M") or char == "\u200d"
+                                   or previous.endswith("\u200d") or 0x1F3FB <= code <= 0x1F3FF
+                                   or 0xE0020 <= code <= 0xE007F or flag_pair):
+                      clusters[-1] += char
+                  else:
+                      clusters.append(char)
+              return clusters
+
+
+          def is_emoji_cluster(cluster: str) -> bool:
+              if not cluster or "\ufe0e" in cluster:
+                  return False
+              code = ord(cluster[0])
+              return ("\ufe0f" in cluster or "\u20e3" in cluster or 0x1F000 <= code <= 0x1FAFF
+                      or 0x2600 <= code <= 0x27BF or 0x2B00 <= code <= 0x2BFF)
+
+
+          def has_nickname_emoji(value: str) -> bool:
+              return any(is_emoji_cluster(cluster) for cluster in nickname_clusters(value))
+
+
+          @lru_cache(maxsize=16)
+          def native_emoji_fonts(pixels: int):
+              if sys.platform == "win32":
+                  directory = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+                  paths = (directory / "seguiemj.ttf", directory / "seguisym.ttf")
+              else:
+                  paths = (Path("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"),
+                           Path("/usr/share/fonts/noto/NotoColorEmoji.ttf"),
+                           Path("/System/Library/Fonts/Apple Color Emoji.ttc"))
+              fonts = []
+              for path in paths:
+                  if not path.is_file():
+                      continue
+                  for size in (pixels * 2, 109, 128, 160):
+                      try:
+                          fonts.append(ImageFont.truetype(str(path), size))
+                          break
+                      except OSError:
+                          continue
+              return tuple(fonts)
+
+
+          def draw_font_emoji(cluster: str, font) -> Image.Image | None:
+              try:
+                  mask = font.getmask(cluster)
+                  missing = font.getmask("\U0010ffff")
+                  if mask.size == missing.size and bytes(mask) == bytes(missing):
+                      return None
+                  left, top, right, bottom = font.getbbox(cluster, mode="RGBA")
+                  if not (0 < right - left <= 1024 and 0 < bottom - top <= 512):
+                      return None
+                  image = Image.new("RGBA", (right - left, bottom - top))
+                  ImageDraw.Draw(image).text((-left, -top), cluster, font=font, fill="#E4FFFC", embedded_color=True)
+                  box = image.getbbox()
+                  return image.crop(box) if box else None
+              except (OSError, ValueError):
+                  return None
+
+
+          @lru_cache(maxsize=256)
+          def emoji_picture(cluster: str, pixels: int) -> Image.Image | None:
+              if not is_emoji_cluster(cluster):
+                  return None
+              encoded = BUNDLED_EMOJI.get(cluster.replace("\ufe0f", ""))
+              if encoded:
+                  with Image.open(BytesIO(base64.b64decode(encoded))) as source:
+                      image = source.convert("RGBA")
+              else:
+                  image = None
+                  for font in native_emoji_fonts(pixels):
+                      image = draw_font_emoji(cluster, font)
+                      if image is not None:
+                          break
+              if image is None:
+                  return None
+              return ImageOps.contain(image, (pixels, pixels), Image.Resampling.LANCZOS)
+
+
+          # PNG sprites from the Twemoji graphics credited above.
+          BUNDLED_EMOJI = {
+              '🇨🇳': (
+                  'iVBORw0KGgoAAAANSUhEUgAAAEgAAAA0CAYAAAApDX79AAADiElEQVR42u2by29bRRSHvzP3Xl/HdmhepIFCXaQUBZyKDaKr'
+                  '8CoRIv8C7FKpQiwqqlaIbTZsQDxEpS6aHX8CApGUiC0LJEC4IEWFqEkrgiLHjdP4cX1nunAJdWRj48oivp7faqQzmqv57nnM'
+                  'HGmEA7oxNXxKMGdFOGPgBJAk2rorsKbhmkGuTv66/cuDRvl7sDqJ73pHPjbIOUDRnwqBK0WVv5DJUtkHtDqJr2JDX4vhFawQ'
+                  'w8qek38jk6WiAJR35BML5x8Z4dUBM/QRgNyYGj4lYn7s47BqGm6hqOeUYM5aOA3luEbPKyO8Zlk0CTWYVQLHu/obRnQvM0q7'
+                  'QKobK6fOBHhHNbHJkM2FRK8CGuxa7gk2FENvlolnQh6Zq/RslnO7E1fgnwzZXfYI7wq7Kx5oC6juPLrzZQzxDbHjGl2Snk1C'
+                  'HTm+/3SIfzJsXQXKQnnV6elK1hGg5EsByZeDjr/oHavFmzhRBKQgNVMlNVPtDK+G8feKPHqpSHw6jB6g+HQVZ1TjjGri09X/'
+                  'dgl0YWS+hPdUSHImoLodwSSdejGoG5d+bn8JU4XcYhyVMFTWHbzHDcHNQ36z//2ZIdOQ3Jhm+K0yMmCQOIhbm+ZPaVS8NtYl'
+                  'ofybur95wZTAFIXtL3yqW82dM3YipLLWG8m7KSAA78mQ8fdLxNLt5YpgQ/HXBwM9s/mHzkHBusPtdxMUlryWC+1+53H7fDJS'
+                  'cFp6UN2lZK7C2Dulhraty3EKX8UieaNvu4pV/lAd2Rrmt6M6eoASL4Qd2ercVYFKGUbPlfAmNOKbCAE6XTvzhHeEzYUEmwsJ'
+                  'wjtSZ2sJKGUYv1QkcbrKYx/u4U8dfk9q6xDjTmhi6ZC97122Ph3YB3Pr7RRj52sbdic01T//nbfeEQorHmrQEOaF0k+HP6G3'
+                  'laQHZwNQUPimcTUbfD0ADYXl1tXOe0IT3FJ4xzTBhooGIHHAhA8/J7JVrJ2NN5vT4z3pLjXMiExPGtuT/l88yPakW6jfe9Jt'
+                  '93/6tSfdT7KALCALyAKygCwgC8gCsoCsLKBOARUshqbaUQbWLYemuqmAZcuhiYQlZZCr1F65WNUrdEQtqvvvo65YHgdkuJzO'
+                  '5q4rgKLKXwC+tVT2dS2XzF/cL/OZLJWiys8hfN7n4RZi+CyXyM89/wNBLQ0d0OqzIxnX6HkDs9SeZKYiDmUXWENYckQtprO5'
+                  '6w8a7wHAcEK7q44fSgAAAABJRU5ErkJggg=='
+              ),
+              '🌟': (
+                  'iVBORw0KGgoAAAANSUhEUgAAAEgAAABICAYAAABV7bNHAAAJSklEQVR42u2ce3BU5RXAf+feJASC2lagBQUJrw3EYsIGtYra'
+                  '2uooo/LYTVqtMNNRRCv1AUqrZNPlNcViseKIjpY601akSVCxr6m1dYpQQHZJcITmAVhFoS1iLTEhkL339I+kMY993d3EXUjO'
+                  'f7v323O+73fPPd/5vu/cFdJEdNOUb2LLGgRFuV+KgxXp0C9JaDCH1gyksWk26BAM468yYUl1knAuRWUrYLZ9ZQGXize4Mym9'
+                  '9csKsYyrgKMMCG2SXH9zrwPSWv8QMLcAEztoqUSs22S8/3hCA6l0bwcu7dK1AJ7AxSKoY30HVp1Dy6n1iHg6fLsPO+NKmfjw'
+                  'MSe6DOejMRd3ggOgeLHNP+ue1TnO4RR5usMB0CI2TSl2rG/P6hxCLa91hgMgkzBCDzjV5xyQyJQIV4rIbl7naDDlxSbosijG'
+                  'Vml5fpaj/mU3PwkUhTcYse89CUj/E+XqHK1dMS1+XQe/A0yK0iIXY+Ad8T/+K6YBc6MElI96H5DyavSYpmtVy82Yap77ajZC'
+                  'WRwGy/RXl5wds5WWm6Bro8ZV1T/1PqCzrOeBI1FaFFJb44mpZ3DDAmBkHBaHkh1aFLNVXZ0XKIzS4jA5g1/odUAywt8EcjdE'
+                  'mV1EFkS925svPwvhQQdmF+km9/AYPrQgqt/D3TJy4Yne9yBAXKUvAUuiNLlC61dGDoinmhcDwxyYzEHxRRx93coCYFoUPA+J'
+                  'y/dyImNNCFArJN+PEJ6K3Cn79vAzV+FQhHsTMDlPX5wyMewV274zSk/XSZ7vkUTHmTAgAMaX3g0sjXDXZqv6u+s3pAw4KwFr'
+                  'Gdgs7x53/QbCjAhBeS0TQt9LZohJARIRFZfPj3IfYHe5/EX2Z+V16u9LBaNB5iVh0aMVUy/r9FVt5oXAl7r6FMp9kld2r4jf'
+                  'Thmg9m7n+R5HmQV0TuMtO7/zZ+NRYEByxqzV6u/Qb7G65lHHUGZJnu/xnhhbjwBqg/QKak0GNn46w+nJdu+pcN8O4ukBS5eR'
+                  '7+4wAxonO8xUG1FrsuT5Xknpaj5m0rbfP46QWcAR62X5mj+kLxZdg60vA4N6yIQNLBBv8Cl93Z/BcHMmGVa1jPPvT4vtDmdb'
+                  'GUVzUF0PZPbCZs0jWGOWSEmFlVb7QXGB2Vw4ghZZBTKnl+9BNar3SPHuN9IeUOvq/B03ht4C3A7k8NmIAq+isgE13pCSN99J'
+                  'OSAtzx8MA1yIkY+oG3ADBZ8hlGjSgFCH6j6QIGLs5aRdLbcEP+wVQLq5cAShjEmonQ/qBnEDeT05C35GcgR0L8g+VIKovZfB'
+                  'x9+W6ftPOgKkm9zDUeaBXoFIAcoQzlxpBnahsk6KAxtjAtLKgvFg7gC+QJ8TuU28gZ/HSBTNW/smHED0utiZtMh79FWxeTM2'
+                  'ICtzA/B2H8SzB816Ms4gXXgBamwBRvUROAfItK+UGVWH41qsiqfqXWz9OsrhPgDnA2zzmnBwoq7mpWT3flSuRvnXmRuU+RDb'
+                  'vjZa5h010ZOSQC2i14Lz86TTQI5j6XVSUrUvqf0g8e5+C5gONJxBcJoQ+0Yp2R2M1TCupYJ4gzsRuR5oPAPgnELFK56qLfE0'
+                  'jnstJZ7ANsSY2Zaan65iodwqxYE/xPsDR4tN8ex6DZVvAS2nIRxFZL7TwiznJ6vFgc0gNwOh02zKWiSewHqnv0rsZNUb2IRy'
+                  '1+njO7JUvIHHEssEkrFb6X4GmJfmD9Zf8Aa/kUilWsIe9OnC31oMHE/vJ0seSBRO0oBkVvXHwHNpnClvFW+gKhkVPbBlaj2Z'
+                  'vtsX8mzyjMM9tvX+87HMS4ECDBmObQ9FZChCJooFHAa20pz9tFz0YKNWuv8BXJB+HmSPJm/GMTLNu1C9HGQEgoESAo6iHG0d'
+                  'i+zBDG2X8f73u6rIaIdywD+KkHkf4MVmZDs6VRD5f8DrKDMZ2JwNrAT+loaAjoin6l2tm70EZUW7L2g491CwTbRm+XuIVmIa'
+                  'P5VxpYfaHzGtW3YHIbMGuJ/4yuIAPsEyK9oM7U/DB6y1TNCmMu4lkjAKZCGW1mrN8tsADK1ZVoLK08BAB8b/CzpdJj5c13YH'
+                  'rHQNQ5LnqwW9vrXPcctAhGe1ZrnXQFjqMB+qwrSKxFXW4ahXzDRk014oIa6yN7CYClQ7is+iSw2Q3Dh/0IDIgzQMu6RbFYWm'
+                  '5dbs6I51RDLJV0/DsIsRFgOfxMko10DZEWuyBF4AmSgTSh+VovnhFqpj0hBQNgVTz+s03KL5LTLBtxokj9Y6phjVZ7LDwOAu'
+                  '4FBYj1Fdi8EEcfluEVfpB1E05aZlAGrRsWGH7Sr9QFy+mzEtF/AE4TYDlffA+K4A6GH/II4bN4DkIpwCaglZWyTfH9MV9ffj'
+                  'BtB0ThPpeE6vzJPi4M9iNtvrH0yGeSXgQskCOUjOoN/KyIUnki5/0fIiF4bWpOkktkq8wYdSu9TIsHNJVxHGJqsieUCWjElb'
+                  'QMq41AMS0teDSN6DMnrgNuX2QCXfQdCDwBFETqIMpbU4fLLDDL+rnK0vTh4ms9/6dwoBSaIedLz1XQ/jGfHsOhhxhmw85yYM'
+                  'uR/VryRkJWSOBVIJyHGS2ICwDivrx1KyvduJrdauOI9Bgz6SkQtPtJXGVQAVWu6ehsH3gRucBREZC2xPSQzS57/8eeBzccaq'
+                  'D1FZimmNEk/wB+HhLLsItJ6mxm1av7bTKwtSEtwq3uCN2EYh6C9pfXW812ey5IJ0Ztb5cbT6J8IDNLaMluKAv22bNtJo1rTF'
+                  'nELsj8MeBkjJrmrx7p6LIQXAhpigVM5LHSDDiLaWeR/hHuysMeIJ/kTmvhV1T0b3rbwQuPpTEnJPVMeYHXhbvMFvY+ICeQaI'
+                  'VKl6InWAzs2pbZ2BOsk7qNyJ3TxWPMEnpGR7fB3MsEu65DDj9e/L3DGfoFnBA+INzMcOjQV9rMvmmIUav04ui0l6qTFlHIYs'
+                  'As0C/sgxeUnmBx0fTWvt8h3AJV2695C4Slc5jovZA2ajOgqRV8UT2JZSQD2S8B5aM5Cmxo+Bzn8ioPobySu7KZV9S48V+Imm'
+                  'qd3gtMahy1RV+gFphL+SgHOpXTG6HxAaOV0QPb8fUPeXcjt61/B+QMiQKNPIsH5AoieieFBTPyClPjI8o64fkNq/i3DlKA1D'
+                  'd/Z5QJL3w9eB18JcWhrhHK7PzWKQZRUDv6D11PN9YKG4fCmvPfofl6olb4Nz2lMAAAAASUVORK5CYII='
+              ),
+              '🌸': (
+                  'iVBORw0KGgoAAAANSUhEUgAAAEgAAABGCAYAAABv59I3AAAPNUlEQVR42t2ceXRc1X3HP7/33sxIGu2yZQx4w7slMNhgis2B'
+                  'Y7AsMJAWYyvE5qRNS0qzFA6lBZKTgks5hISUJiQ5B05LocQEZyzKwYCDFjBlsVMWGxvvYGy8L9o1M5Jm5r1f/xhL1mhmLM1o'
+                  'xhz7/qf3nu793e/93e9vub87wtfYunwNY8Mw1sIO5dXc8GH/d0Hfm3MimG4X7M+tqdr/dclonekB/bWNl6B6D+hCG73QAByM'
+                  't4Hr+3/nYD5uiM63AX9t/QGgXg39ZcHi6q1nUl45UwPpunWWvyn8G4G/jR9XOkPKmNKaqnaAFl9DkUf0oEL+gG4cEX0mr8x9'
+                  't8yfHzkTchtnBBxV8TeFfQJ3JV4ULXCLPtD7l9twHkwADoChKt8LNoX/oKpyzmhQoLbur1Xl2cFwBP03RAyUeweVTflOfs3C'
+                  '5896gHTFCiNQOXcfypgMd73fu6RqvIjoWb3F/BXzrskCOABjO1c3zjv7OUicBVnrWnTh2Q+QUplF4SvOeoAEmZo97Jl2Lpj5'
+                  'kiz2XXwOaBDeLPZecNYDpJCbxd7zzoFYTIKgqa10JEJk736c5hbUNLHOK8ccc0FCL+IcAEjbgSEDpN3ddL+7AfUH+p7ZBw5h'
+                  'Hj2O54rLBn7edi6Y+SOpfB76dFsMOP1BiuyLy3oc+9o1qPvlxovCqpeJo3mIiKHyecRid+HiBc1D22G6A+SKIWFp29hHks85'
+                  'sv8g1vix/R/tGOpEO31rR6qYkw2MSaiqGhK0HGdjbk313rQACtTW3aIqj0ccZ4b0RW2KI4phg7+2frdAPap1eV67QRYt6kk8'
+                  'a2MHQw2XwmFQ5zTbLzTw0fak365d6wkGzYWoVAPVCpOk12wIiCq2CP7V9dtE5QFvTdUbQ95i/tX1v1CVNcCM02ydKar8UJHX'
+                  'AgHroH91w5PttfWT4z4znfVDpvOcHCTHk5wPimKpzMHZMPCbjlWNU/y19b8MBKxDqrJG4QcKk04zbIWKvu5fXf/4kKJ5v6/h'
+                  'QUR/muaWjQC/M1X/tVd19WfPFrSL0+y0tLnENDBGlWOOHpW8g68OEPpkc7yglonnmrkYxUW9j4JebSuRmppQLxVEHOch4A7A'
+                  'TDNxdX9+TfUTSQHq9DXOEHE2Ap5hclu3wGPOu+ue7moKrgW9vP9Ls3wE7qvmIGZiGyGmElzTgPZEt5Tke/HMmokxorT/bN7M'
+                  'X1p9o65d6wkGXA8q+qMMyN3jiF5auKR6Z0KA/L76NxAWZcoChDZtaY7s3V+W6J1rxhRc06bEg5PrIe+ma9DuHiL7DoLlIrRp'
+                  'J4gM4H69E/hURVaS0ZhMXs9fWnVLHAd1/k9dJcKNmTSR9qGjZUm30oHDCZ+bZcUn+ciDa9pEjOLCOHCAsIpRoCLvkfGAVW/q'
+                  'rH2zIhlJ/29GhwqHk6+TndhaGaVFsUTc0p5QAUH/neyEMW8nNPMFi6u3qup1/trGRwT9SUaUNd+LdiaOBmQAEAM1qA+g5rbk'
+                  'PtOXX2EfbwKJ8po1fhxYZvoLKjxSsGThw0nNvIhowdKqfwYaMgGQe9rkJMgJ3j9PkAw0DIziWFNuJ9KgSISedz8g9Nl27GPH'
+                  'sY8eJ7RlO11vv9dH7GnA8+ZAcJKHGsqbmQDIHHMB7pkViNvdT6vyKPz+HXjmzcIaOzpWmOIC6GfZNNiNdsX7n+HPv8Rp7YgX'
+                  '2+8nvHV7ulFXXVJPum3VWxOLjOZ9gUjpCCznRkT/KVMHHtbECZjjx6IdnbgrJ+GeXYm4XVENmzkV+1hz36oP3F52ku1l7z+Y'
+                  '3I86fAz37LQ06H5/bV2rOvbafPwt7U7Z+OLbr99jdb30x/G2aX8RoBhcTjL/cdD0RBQNK4lfYyIlxTjtQcQ8xRHiceG+ZDI9'
+                  'H23F8JzAzHegrRXcIyB3QkKCNstLUU0euojjpLuWo1F5XsQiQDGWadP18lvjrYhlXpGurjhNLYQ+247T2gYiGKXFuGdW9vd2'
+                  'Y7/3Bwnt+BJ35UnP3w5gWY2Y4/+ISCCavOhVGqsII1CBGBejjhtxu3DPnIo1bjQ96z8ktGVnYoBKijJmziKOM9sQuCgtH6e5'
+                  'le73N0TBibrpOM2tdL//p6SWCyC8ax9OWyd07YXtd8PR2ig4cdK1Y3nWk3vBi7jGOeRWz8UaF+WsvMU3gJnYWrmmTs6cy6jO'
+                  'REOhMJ1/Dm/bAU4CVQ+FiRw6hJGflyzeIbTpPdj1YwidGFxIy4/b9Ryip9IgrikTKLrvTsxRI2MCXc+cWTHPhu3HiRRYBhJS'
+                  'Uj+9TeafRJNbh8n9yQ/RnhBOSzt2cztOcxt2awfYNu6cWrADKahrEPY+CdOfBASn3Y/d4scz70qcYBegGLm5iTzu4WYTw5aD'
+                  's0vSsFhiCGonM13WSRJ2Y44eiTl6ZJ/26KFG5FhT6tIG90DzB4SPnU9o5144ScZGXvbOBByRXYaG3Y1AV8ronlee3EG8bEZS'
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD 'nickname_icons.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded nickname_icons.py (2/6)
+        run: |
+          $payload = @'
+                  'B1F6Pk4/ttu1htD2PX3gZLkFHcduNAqXzW8S4dlU/9s9swLDG88z5shScq6bh4aT1DcFdqev8uYhzmD7z6KaG1osgDwn//6A'
+                  '+P8MuDyV7J/n2rmEd3yB3dQECNYF52FNmkBo405Cm3ZhFHoxyooxS4swyoowCrwQ6UjfqlhdmCNLolwWsfu2rX3oKJEjRyES'
+                  'wSgrwTVhHLhcw2BnPvIGXA/EeIQdv183wnCFXwSyVjEhbhe55z+T2KwPpblK4JL/jroU7X7sEy0EfG8Q3rZrQJCcT861VyEe'
+                  'Tzrg1DmWsbz3UKIv8ClcNr/Ju239jSj3Ac3ZAEhDYTRSmn4HORf2cZlRXIB94FAcOL0xWWhTyrWezYj+g3f7+kX9T2wSmq8W'
+                  'X0ORB71HDe7MWPGTCK7JY3GP3AaHn0uvjzHfhfK+ZB/tj/2W0NbdycwseTdXDWWr7Rf0P7p77KfK7ljUkTBYHdhOVps+oitW'
+                  'PBqomLsAWAZUAecPzYsME9l/EKcjgHhzcVdOJefqWdFkmDMWTrwC4bYUNd+LHajA6AxEuQxwOk+zVdXBCUcwEgN0GGhA9UXv'
+                  '9g1vyYoVSc1iSg5QR23dNMMxZqkwXdCJQDkqJSpafLKzLqetvaJn/Udod/epQVwWBX+3HM9Vs6IP2jbAnsdhqA6qQvfxm7GD'
+                  'E/q4zCgtoueDDwltTpzeMFwuO2dR9RZMWoDjiuwR0e0Ouql/Un5Qxc8Uv3T56iY46AvBxnevThSLicui5IkfY5aXoaEw9paV'
+                  'WPIqMIhPIya2eyndO+NDCO300/XOB9EDx/iQ5p7yVb9+KgPe9PCbf3Xdckdki93UenWyQFXDEXo2bCRy4Chd9evp2Xch3Udv'
+                  'g7zTBJfeKTD1p5gV34om7wdiV5CPZ+6cWG/a5cJz8fSevMXfaMoIdQ7LKqmKv7b+YUEeAiTy1UFCn3ya3LmcdXE0b9y7OqVF'
+                  '5F43JxpGdHwKwWOEvzqMOkW4Lr0ZKZt+yu1v66Trrf+DJLkgp7UDnAhSUoQYfZH+U95t6+89HcdkTYPU5zMDL9evFOThXqCl'
+                  'IH/QrHiM192bQcybCOfdRsS1mFDztYRbL6VnR3dcOtY1aWzyiZQUYpSV9gcH4O5AxbwX1OczzyhA6vOZASl+HpVlMRMuLR5w'
+                  '+tlPVT0ezLGxRVBGWfIjHvtoE5EDR2M1sHIi4k01ONXlASn+va5bZ50xgIJG0a+JnoHHNc+VszHLYwnVyMvDM/fKmHRrVIOK'
+                  'BiThYlOsoc270FA/AjZNPJdNT0fkmmBT5FdnhIP8qxu+A/pfg6YK2juihVAuC3PECDBih9KebiTHglAE1/SJuCunEljzTlyk'
+                  'bk24AM/s2OxAz4dbiew/kvpkhe95lyx8OmsA+X0NFyP6MeAeDrmHNm6JqxZzXzINa+JFIPFKnXPNbMzy6Na1T7TQ8/EWIlu/'
+                  'QIpLMEpSSoiGULk8v6bqs4wDpOvWWYGm8IZUIv5ELfLlV4Q+TSyfa9pkXDPi686N/Dxyq66iq+E9/C++CvapTJ05ehTuObPi'
+                  'tu9p2iZvS+mVctfl4YxyUOBE6N7hggPR+p+k7/YdSGjGHX+QYP37+H/3Sgw4APaRY4Q3b0tFhMsCpS13Z5Skm1euLUTkwYxE'
+                  '9F3dyd91d8cB0Nu63/lTUh8osv8AatupiPGjE6++WpAxgDwe8wdAaSYAMoqSc4Z43Irl6kwI3mmOknAUwind0CzLDeV+P4Nb'
+                  'zPjLTMVs1sTxSU8frLFjNguasC7AyMs5TacWuFJ2c76dEYDaVr01ETRjN3bM88pxzayMLb8zBNfUybgumf5zRV9N+H8XTUgO'
+                  '7LgxqZB0b5vR5aubMOiCDprltOypmuFLj66LxmGdPwrnRDPqKOaoEUhObmfQsV4zQ11GjsfyD7zUa5aPwF05g/D2HWi/4itz'
+                  '1EhclekVmdmGMQXYOyyAHMWbjYutkpMTc/9ChZfKl873A3SurntJkO/GCTt5AubY87GPHIdIGKOoCGNkWfoGI/HN6tQAMlS/'
+                  'VMn+5WgD+jxcw9Cn1YkHqDems8ZnKAvs6J5hc1Bea9kWoCW78Mjr3iVVm/rSQLfdsBFlbZbX5ISXts+GDVDU49RfZBUeQx6J'
+                  'd/H1ISCLV77l51JTYw8bIABvTuhXKJuzJOlz3tsWfBQ3Zk31J8ALWRlRZaNXvb/NmB8kt9wSNG37L4i9fnRckUcRlgGb0hT1'
+                  'mK3OPyY1EKZxH+leeVLZiLBMkUeBfnU2etSEW6Vm7pDqEVI71VjVOMUwnXrQHWHL/a2SW+e3AXT66r4pIqtSnIIjKt9Idsum'
+                  'Lwb0NdykomtSzV0p1BQsXbgaoPWVdcWucHgVBlNtWFi0ZOHnWUmYFd6+YLcYzlVeLVjcC07U6khnygyg8tBg4ES3WtUbAitS'
+                  '79/ok6nk1vltXvJvFXHmpgLOkMx8nMC33XAkwXJdmmI3L+UtXfDYUD/OW1L1aODlxgpUv5mCDl0Kp8qZT26p1Mt8hs13z3zs'
+                  'cuBvUkjr/cE7wvXtVH6URETU67QuB1YOfWZ6l/p87uHOb9gAnSjp9BjoG8BgCSgb0ce9TuvydH4cSWpqbK+2/RUiTzDoaSNh'
+                  'UX3tBCOHDVDGXOSOVY1TTMv5e1WWE/trCw7Q6KD/Uri0en1GxvI1XG3gPIzIdQMWuVXQlbZt/qbw9gW7MzFWxmMIfeZjV6Ck'
+                  'dZqBTrJNp820Xbvzaq7PSmlY8OW1F9oYkw2VInWMPd7Wkp1DTaUOtf0/vtcBdfJ81HAAAAAASUVORK5CYII='
+              ),
+              '🐟': (
+                  'iVBORw0KGgoAAAANSUhEUgAAAEgAAAA4CAYAAABez76GAAAKhklEQVR42uVbeXRU5RX/3TdbJpksM0kICURUUIQUoqJAMmSx'
+                  'rbi0VioJYFWoWj1itfZwEAJYOqcukCJqPdUD2nqonh4lbFVbF1AoWSaItZLWgJ4qEUIWwqxMMut77/YPBTPJzGQmmcmi9793'
+                  '3vu+785v7r3f73ff9wgJsgJTs1qvsX1fJs4HwU4QvkwReo7tffi6Howho0RMOnfDgQsVpNwD4PI+t2SAmph4PxG93uA2NsBE'
+                  '8ncKoFkb96UnIckMYHoUi59i0MsKUdpS+0hZ63cCoOKNdc8Q8FCMw0QAu1kSHjWvM37yrQVo3oa6i5nwKQDVIKeQCaiRlUKV'
+                  'eaXxxGgASIjnZLKA+4cADgAIDCwhUT5WXF3323LTgaRvTQRV1tQo2o/ndgDIjqN/zYLAS+tWlf57zEdQe0ve1XEGBwAKZJkO'
+                  'FW+sXQVmGuspdk2CfFQRqNpY3bDDWF2fOmYBIuaZvfNWoVRBpU6COkkLTXIK1EnJUKmToFCpARrMsrwQYHPRY+YJY6sGMdPi'
+                  'PY6Z9jOd/1BrtBOUag1UKtUAIDDEQABSwI+A1wOftwd+jwfMUXHGFoUgX1e7qux/8QCgaIN5ikDiImYqEggGAJ+RzH+uW1va'
+                  'MCSAFu60XKZgYSkTlgC4KA5Aw+d1w9ftgqfHCUkUIz3dplDIJbUPl7UMhe0rSbmBgUUhMomJ8bv6NSWmmAGq2GEtJtBqEH4c'
+                  'b5rwTXwBAW8Pepx2eLpdQOjI+kKQuKRuXWlH7GS2djmBNgFIiZxfND9qgG7ZZZ2oBG1ixpLhrAGyJMJ91oFuhxWy1Deq6GNZ'
+                  'LRgbVxR7ohbQSbY/MnBPlEH9fFQRsGin7XYF09HhBgcABIUSOn0WciZdivSs8VAolb1/whXkk7ZGM0/JE7XZGUn2fdGCAwAk'
+                  'UE/ECLp3K6tsmY4tBL5rtGgjlhndTgu67RawLH+dCVhav7rklXBjyp88kBUQlQejEdC9zAfQLArPjLt0EJS7AMwfjSpbFkU4'
+                  'rafhcTkAwKYSxIJ/rrqms+9zxur6VDDvB3BVjNv7A/VVJc8JocFp1UKh/PtoBQcABKUS+pwJyJp4IZQqtSHAimf6beFPmbVg'
+                  'fiNWcMD81/qqkudCEkWTiQUIKa+CUdb3ntvShsYnl2HPHRdgzx0XwLxpKVztn48oUOqkFGTnT0FKWuaioura2UEg+uUXAJTH'
+                  'OGWX6FPfH5YoVuyyP0LMj4YCZ9/KUvi77cEO6vSYv7kO2sy8qD1wn7Wh225FenYuNMm6uIHl97i7khVpBa/+LM1irK6/G8x/'
+                  'ir3I0fKGNfO2hJQai3dZ5xKzKdS4pm1r+4EDAP5uO45sWxf1+i5bFz79YD9aPzuCY43vwefujl80aZPHBVT+/9zw0vEKMD87'
+                  'CFlxyuHTvxRSi927lVUy0wsAFKEGdzYdCDvx6SP7o3bCaekEMwMAJCmAjuNH46udSMjV6dK3a1PTkmMnqPSHZlOBPyRANoP9'
+                  'LgAzBulV1I/q9FlB17aOk/D2dMe3MAkk6HPyocvIjGWUxwvPiyHV/L1bWUWENZFG58wsj3CvLGovMrLyoE3V99owGJ0t8Y2i'
+                  'c5aWNR6phnHR7ly7P6q61hkSIJvBcROASZHGz7htPdQ6ff+81+kx47b1MSV63pRgvmbrPAU5sjgdtKUasvtFbeioE/4Sth9E'
+                  'xHcOuFDeFMzfXIeJRTdDpU2FSpuK/OIFmL+5DrrcyTE5nZGdF7R7sSzBYelMGBVIy8yBNjUj0iM2lScQsshSZU2rFkKKFYB2'
+                  'OPlL2+fN6OxVoPXj83HxzLmJkyjMsJxqQcDnCSVKXzGvKVkaOoKUqUXDDQ4AGHKCeVO3w5LYziAR9DkTQjfyBH4jfL2XpcKR'
+                  'YMBaXTpI+IZRBHweSJKU0DWVag10GYZ+olTyqPeGBUgGTR4JgEACklJ0QV0yn9uV8GVT0jP70pIPPzDNPRsWIADpI6WjFEpN'
+                  '0LUkBoZhTSWUKnWQSIjcj1IIJgANI6LIhf51YliCt7cEZT4S0cftP834ArK+jAmrWQwM61EUSZSGHSBZliAGfL20KSLSeAEA'
+                  'diwiaedCw+9barffYPnsMA8XQD5PsG8qTeI3U4/LeV4Lfv2vRKTavRu8+Oj5X+0F0buTShdff/nPH4M61ZAwR0W/F6LfF9QA'
+                  'U2uSEwoOyzJc9jN9dnh8b8AI6sOa3jpx8DW8u8KIU42vJ8zZs9auoOtkXVqCzrv1WtPW1U/SMDA7NoCAowDgtZ9G4+Y70VB9'
+                  'O7yOM3F31mnp6KOZxicUHG+PCz0Oa6hbhaWbDl4UC0BBZKT9w7fwzkOzcaK2Jo7FOQBHV1sf5Z2bwHT2wXG6LYI/tCAWgPod'
+                  'Wgr0OHH42ftw6OlfhOwqxmq29pOQe7FmtTYZKRn6BO2UAVg7TkCWpUj9o4VRAVRZY5tRuPTRCm2YcG9t2I29K4ywHz8yJNF4'
+                  '+mTwuYPsCRcFc5N4gtP2JaTAAASUUWSsrg/ZVD8vhhbuclxMxE2ZU2cXX3rTL5FfvACpuZNBCgW8tg7I0leLiJ5unKzdgaxp'
+                  'c5GSnR+z0/bOVljajvdSHAImFczp88Y0DuAE/LC2n4AY8EfJHcnZ+t5LtWG3eSWkcTLoPPdPmzgVaROn4pIf3Qc54MOZo43o'
+                  'bHoflqNmuK3tcBxvQvb04pgdt7QHH8jIypsEdVJ8jyIGvB5YO06GeJcfMbSXF5iaq/v2pM8DdFZr+FjXY28HoV+oCSoNcgrL'
+                  'kVNYHoe2gxAkWHMuvCzeafWepb3lByzHfGQvN0NjvwvAlpA16O0byQcBDyeayeZPLURKugGaZB0mTZ8Vz/difgAP7l6Scy3L'
+                  '2DC4f49/M8v0r+Tg3Otji3ZYn2aiX2Ns2X9l0LJdFfqPAQAmFoyauj0g+skg5trYUFWyJuw2X1NhWMGEtQDkMQBMgAlPdCfr'
+                  'rz4PDgCYSBZ96jvOkd4YbaWxuv6qsBF0zip22G4g4m0AjRud2PD7gsAPbr8l61i4J776qEaxD6ApMfZDWgWR59StK+2IWMgq'
+                  'a2zpEGg9wA8AUI+WdCLQ+poK/d+ieXjO44dylIrAO+j/5dFAdsjhNZRFVekX7nReIkBaCeB2AMkjBEwTgZ+Y/olhpynGT6jm'
+                  'bajTs4A3wTDGyGrviWkrrKxxGoike5iwDMC0xGcRw+t2ocflfH//A4U/HMpUBaZmdYbGagLRKoQ5f9A/0/DioPn94t2WabIs'
+                  '3ALQzQBf0be3NARU4Pe44el2wuNyQZbFc84uq68qeXmosxdtPFgsQHgZwOSBPeH74yKAKmu6dEzqOURsBPhKAJd87YBmoLGy'
+                  'LEH0+eD3eeD39MDvcYcTli6ZFVc2rike8omtoqfMWvJLywlYCSBcG+FNh9dQkbAWlcnEQvN0+0RAyCaFqAcrdDJzEgksEthB'
+                  'gPNMm5V87q7VABYgijPXBByu984ritdnnOWmA8qAVnUjy3wdEWaCkQbCFwyuMa8u2Q6ikfmCpq8ZN9YXMHgFAZUAUgcI+1vN'
+                  'VaWvDZdvwmgAqKFqXrO5quTuFIU7l8G3ArQNhNbQagDXD6dvoyKCItQKg9IrTpMUyCUI6cyyT5Q1bx9eO8c6XD78H7uoC0ys'
+                  '7/vZAAAAAElFTkSuQmCC'
+              ),
+              '🐠': (
+                  'iVBORw0KGgoAAAANSUhEUgAAAEgAAABICAYAAABV7bNHAAALnElEQVR42uWceXBV1RnAf9+99y0JJBACskWWSAwCLoQAoq2C'
+                  'tToQEpDFhYp11BG1taPWcWlHyrTWztjaFlE6LtXRUhGsigFFq6PYcdSaBEXEyKIVBRUIa0KSt92vfzwMue++l5e8JI8Ezh+Q'
+                  '3Hfuuff83refcyJ0s6Yr55pY28agxmhsxoCORmQY0AvoDWQC/5I5VfM64nlWt4Dy/MQ8iFwMejF8cSG2kQOANP3TvIU68tnS'
+                  'ZaEsm5iNPzwP5FrQ4iTd96D6JGouZ7+9SRZUhY5bQLqyaByGcT3oPKBnku4h4G/YLJRLqw52xvtI1wEz7gcY/BaY0spbvgJ7'
+                  'tsz5sLIz38s69mCKJ2DYfwHOacNtrxEIXiE/2bi/s99Pjh2Y8QMwIveDXNmm91DepMfBaTJtWyAd72kcEzjPjZuLaW8Emd+2'
+                  'L0kr8PpnpgtO2iVIV47thxhPIpSkcPt3GKEzZdbHu9P5zmmzQfr82PNQ4xk81mD8PvB5wDLBMMEQUAVbwbYhHIZgGAJBCIWj'
+                  'n6lck244aQOkayYtxOf9DVk9DCyzFXf4jv5o2+ihuq+DB2pOU130msgiO52AOlXF9P2y/oQa3iDDPybVMcK7vyP4xTY0HMLI'
+                  'yAya2b1XeAuybpDiqvpuDUgrpi0AcwmCJ6X7IxECWz4lsrfG7VkyMoNW3pDbvCWVD3c7QPpOWRZefQyDy1Idw66vJ1C9EbvB'
+                  'LSRmr954huZjZvcC5QWEBVK8uqZbANKPpg8mzOsgp6U6RuTAPgLVn6CRiPNFPR68+SOw+g2IveVbDJ0tRWve69KA9L/TTsUw'
+                  'X0cY0h44jZ9+ArYTjtmnL76CkYjHra3hPbsJbf9cjZzcxf7LNt/aJQFpRUk+YrwDDEwZzv59NFa74XjyhuAdmg/ifFUNhQhs'
+                  '+6yZjRI8Awct8122eX6XAqTvl/XH0neAESnbnMN1NGxY74RjmPgLR2Hm9nX3P3SIxs8+QYMB13SswYOX+Od+9osuAUi3TvVx'
+                  '0PoPMCHlMcJhGj+qxG5saKZTBv7TzsDsneNWqZrdBLZ85pI0xMDqPwDvsPygeDxTZdzqN1OyoSFZiDAdCOCxzm5foHjQeqg9'
+                  'cAACW6udcBD8haPjwgl9s4PgF1vdbj87G1/BKIyMDAAvygr9YEaRTHjp61bDqSwrIazPIGQf1fvIyJSTVa0qvRq4rj1wQju/'
+                  'csU53vwCzD5utQrv+jYuHM+QYWScXvQ9nO9bXwx7ub412Wr9XLQcmsEBm5C5yUrN7kzNQ/lru9SzsZHgV/9z5j19++MZNNgN'
+                  'Z+8eAls3x4iNga9gJFa//jEDK+E9uwjt3HGukdXzWWBOyw6mrAzVx9yVDflQJr64NzUJ8liPEl1FSF21vtgKkaNplfj8eAsK'
+                  '3Qa5sYHglmpAnTZq9BkuOHb9YRo2VBHYUo19uJbI3ppZgZeKzmgBTiGiy+LmpKIvpJSsakXZNahObQ8cu/YQkX1O1fKdUoCY'
+                  'MYmsbRPY/GlM0Cj4Tx2D2SsnJh7aFTXeajcPBURr968AXIGrvjXZj+hzQFa8qINQ+Ok2F8z0/al5iP65va4zuN2pWmZObly7'
+                  'E/z6S+zaQ04bdUoBZm5ujH36jsCWagecZjldob7147NcH2Rl3Q2cnsC5vyFnr93RdgkyrcXtVS27/jCRA/uckx463N2voYHQ'
+                  'TqcTsvoPxDPQaaMiB/cT2LY5WjNq3rdffzxDhmNkZAhwC3D1UY9VOhK4M7Ek2I83mbpWS88HpecjzGqv9IS+2eGSHqOnW8pD'
+                  'X38ZLZ41t1H5BXEyfqdaIQa+wlH4Ckc192zztHJWsyhf7nMWnRxtFzLopTYBUl1kYNBu1cK2idTscdr7OF5LA42E9+yKkbJ8'
+                  'l40K7diOBhqd9um00W7PBh4keGXUpZeMA52ZOHTWp6T40VDbKopV6+cDRXElIqw8+GIt5e81IAJlkzK4eWYWHkvi5Fv70XDI'
+                  'IRVm7z7uMXd961AZI7MH1kkxk47YhL/dGZO35cW1ZVHqchXwRzDubjGDsPUfbSq56oaLehDS3yf6fMmqWv7+al3T74+vjf58'
+                  '25xsdzyz3+m5rNy+riT0e6PrlLK8uCmHhsPOcsiQ4S1NZYxWlfwQZUYLfT6W8S9/4gi3krsc3y3A4EQfv/Rug+vaqnfrE5Yz'
+                  'HPYnXiJaX+9UGzEw3SpDZP9eJ+wBg6ILAC1+28bTSYRiuSuNaXG8dy/ug3B7i9luHGE1DYljVwJoY8zEs9wOMXIwBmJOjjs+'
+                  'AiIHD7ilMXkb1jJAebFNgPD47iK65yZhK5uU0aprdl2d88FZPcEwkvYze/VO+s2I14fRI6u9LmSnjC/fHHvRSpzdzhoIoZ8l'
+                  'G/XmmdEXK3+voQnOz2dkxVGdmIn37JUwTnKATDBx34hCAp9vBo3+HFeU29beiHexBX0M3UN0t1aStEy4bU52XKPsDPycdkky'
+                  'MuJ/McGgE5A/fj+zTy6Zfc6hw5ro2/EuG/Hry6XDgWs7snSpgUDMxP3x+4Wce5/E4yUtzWZTqwFhci/QoW+mwUbnxH3xATUv'
+                  'zIvPD2aa9ld4PV+2CpBWzjgduLyjn988ZgEQy0pgW05FvD7E58c34lTS1izrQFIbpB9MGwD2P+mMbTF2TKadIGYxc3LJnHAO'
+                  'aW/eOkkIKBot+24G7mpvtp44QXYCEvOYbE1K3Or9vQDX7hFLK0pnE2IpcFJnPl883qZlGvH5QboYoJA9PB4gA+GJzoYD4Cso'
+                  'PDa2pdUirqMTGeml6Xj+97Ylc/wkzJzcrgfI0MlxL0vx6rsRWUAH71Dvdk35UWI3Hwo9C1RxYrdBWlFW6BasipJ8LOsD4Ozj'
+                  'HEAE4ZEk6cYlcSTIWAYUngAq9Aqm/g4It9DrCjcgo3uc+OkAQA/IWWt2gqxuodcZWlEyJsbNh0uAp5KQ7e5tnUxYfSRb13tx'
+                  'LNO63JZjf1FTeK3rpw0lYt6CcH1ryhzdqIUxtFiK1mw4mm+WroKEtendZPhPltHPBR3JqhS9sl3Gr74VsYuBz48jQIubw4ma'
+                  '68gdQKLjDCdR31CWMJuXcS9XY8h5QPVxAOdjeoV/7ZrjxFe2APcn9mbGdS3Wg6So/Bs81mRgfTeGs49IZK4UrI0vKbW194F8'
+                  'lMCiX6jvT82jpbKGnPnibmprzwV9rBvCCaA6+4ikxJ/flHWNRMKXAXXxMiM81lUkq/vIlHWNUrzmepSrEgzUFVsQYY6MX7Mu'
+                  'aYVh4itbEK6I68GV2Q4vljSMiHq5JQilXRhOHSJzZVz5q20KkSqmX4XIE0DzKp4N9G/zWolWTb8ENR4EzeticL5CZaaML/8w'
+                  'pTiyonQqwnKaFwwNOT+lxSStLM0EuRH0TqBfF4iSVxMKXi3nvLavXcNUzhoI4YXAdNAgHmtS+/ZJb5rbk4bAzaB3kGQFtpNa'
+                  'DSK3yrjyZZ31gI45ivDWZD/ZWZcTjtyDaeanAUwjog9iWH+QsasOdOaDOv441NsXXIQaS/F7T2nd6cI2tT0gjxDmITm7fFc6'
+                  'RLTzDtQ9VzwVn+dhMn3DyfCB15Pq+nkN8G9UViAD1jbf/dWtAR1RPYt9h65B5V5E+uGxood5vZ7ozg7TiP5vGEcO9doQURtD'
+                  '3sTvXYGhFYwt3pjuc6ppA9QEauWkPhjBhcCNtH5JezG5WbfLlHXHtAyT3nPzq8afTNi+HVhA4l2mzmTTtm+QSz9874QA1ATq'
+                  '+bFDUfNXoNeQfJ+kgi4jKLfJvKqaEwLQUdUrLsTQXwLzAX+S7nsRHiDSuEQu3VR3QgA6CmpsP0y5CZWbSLbKK9Rg8yesyCNy'
+                  'yUcHTghATaCenOynZ+2VCNeSfBnqMKLLUJbKnPUfnxCA3Opnzz/yF2KSnaTegOpKDHmVGjYe13+iywVqEQaji89DtAS4ADiL'
+                  'lutYYYQNqPFTmVOxqb3P7/JrYrIIGyrXAesA9IUJuag9BVvPA0YijAD6HClTHAIOoLIdQzpEiv4PrToe/dvOqK4AAAAASUVO'
+                  'RK5CYII='
+              ),
+              '👍': (
+                  'iVBORw0KGgoAAAANSUhEUgAAAEEAAABICAYAAACp+JiNAAAHhUlEQVR42t2bW2wcVxnHf9+Zmb15fYmdpCGxSZo4LmmlRq1o'
+                  'S/NAUgSCoLYgUQNKFRNArUpFm5cg8Qg8oCJekMoDFKSGSyuk0KI89ClSi+iFoF4ioqS2iRMcO3HaGl/Xe5udOR8PTmxv6qZe'
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'nickname_icons.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded nickname_icons.py (3/6)
+        run: |
+          $payload = @'
+                  'e9ee7nnb3XNm5vzmu/y/c84KVW76n4P3gLkHsS0gPugpOnecEPmJJaJNqjZ57XYYSL4AfO3DP3IaMYdl59G/RxGCqdqVzscf'
+                  'WBTALOrbwZ7QgZ5v1TcENZ/7mB4uynN67uDe+oUAjUvo4yByVPu+11ivEGJLsxi24QSP1ysEp4K+T+hbj3p1GBMqutYWmov3'
+                  '1R8E0UrT7f46dAep8Fp6bz26Q2uFI26uQ0vQDRUO2KBaPcUakZggN1U4oiiC1luKXF9h/7G6cgc993A7kKqwdOutr5hgzO3L'
+                  'GHW2viAod1Q8xtabJaipvDJU+27dQJitAXRP5ZZg6gcCTbl9QEOFoz6QXX+sp+wgDy3DfiJjBSuGoNrtIPL1ZZQZffWznnAu'
+                  'uR/YuIzMMFY/EAyPLc+D7LYoQVh2AaO9h7bh2vPLBGmB36J6GmMsavNA4Wq6zYEWrz5dFhEfgFCyiPERzUB6WnY+XVx7COd6'
+                  'ngZ+uIYv0AemgUlErqA6iOhFYAgxF3BL78jW5ydqBkHP93RhOQN4RLkJ/SgnUI6zc/vLH7ULVjEEPdsdw0u8hshdfJKaMIjy'
+                  'S6YSv5PPPlNaNgR9ZZ9L+9bnQbv55LYzqH5Tuv7UWzEE/e+hTQT2OeALtX5K9S3FkTzBuI8tWDSs4IW7QmJrktjm5I26TWPM'
+                  'F2XH0TeXBEEvHliH7x4BngTSNY92I3lyvRk01JWYPi37NiLeDac3Cs5tsvPZUXdxJYgwcPDziDmEr99gaVtsK27FS3ly706v'
+                  '3P2NLCVxb4DwKeD7Zaj03wcbaOAxVB4FulbTUW0uYOr1cdB5CzAxg9PsVbaY7xji7UncliUlriI4He582jt0F9a+iNK+FtGq'
+                  'MJgvAxDfmiLVlQap6YJ0HA0POAA68N0O1L4KbFqrkJ3rnUaDWQhOk0d6d0utAVxr3qyhafhjoG3NkpaCLc7rGK81xqrtSIje'
+                  'fM3bHljrCmah32tQ2+NNNm/xR/JY3wKSM3q2Ow10rHk5m54PZP4HRdSvDQibC5k+OUb2zDSZN8ZQ3/YbYrGWKMi42KZ4mVjK'
+                  'vDVBacxfmV5Y6HGhUhotknl7HC3NAra+xR8tvOwSeC7u2p+ui3ek8IfzhLlZeRjOBMy8PVHTezpN7kR8719/Y4hIEyOk72zB'
+                  'xFfnkZykU0xsNHtEsG6UKhsNqZr53wh2bHOC5C3pPmlKDQFECkLu7LxWADBxB29DDJNyqjB7wSQMXmsMmVUGu8nmjwA/iwyE'
+                  'YKJEMD1f5rvrYqTvaEbcWrqHPKmv7Pt5ZGJCadwv+5y6tanGAABoo2Pr7shA0AWKUVyD0+Cs0o3t5uhkB1cWBEhbFhuqOueS'
+                  'UriQpTicAwWsvB+ZmOA0e2W1ROFClmRXlddwVJk5NUEwWbomoILE9rb+yEDw1seRmJmTy4XBLNYPiW1KYmIrr6Zs3lK4mJ0D'
+                  'ABBMl/plxzNTkYEgDqQ+00j29NR8DTFSwB8p1OZ+nrFOKv4IVPfgVhXqhwSJ7Q21B+4ZG9uUfCK1/9g/IyeWsErwP7+GpaoQ'
+                  'uymuTop9ya+8+OqcJokSg8JwrkwwiSPEO5I4Td4KV5kUk3BwUg7iGUH4EhBNCP6lfBmAxnvbcFI10AvKD1S7fypyLIxUTFDf'
+                  'Embnd1nin07VBsBsW8/5xK45L4lMOCiVr2k4DTU2UmtaI+cOJlb+PsKZEpCo2vXDmYDCQBZJGpKdjQh2OHIQxDM4DS5hNgCg'
+                  'OJwntiVZFYuwxZCZdyaxhVl3M67JJL5shiIZGOMdSXJ9mWuSlszJceLtSZwmF8wyPNcqNhdQvJQvW9IPc+FJkRfCiEJI4b9X'
+                  'WKjtKVzMVbdGSZmCJryHy1wRY0uRoSCQvrNlqfuIlcedtJP1WtJ7G796bHTh9y4mzFT2b75a1xBCtf8K4jS4xLYkAm32dqXu'
+                  '/svw9b+7dPpZBpI2KumyeLlAMDVvnCZuSGxvwG3xytYclgw15syCBRfkMHBkEQMEHejpQ7klChAy/xqfgyCO0LSnDZOsmqWO'
+                  '05nfeE0plosl5aVoyEbKaofYpxLVBADQSn+880Ox4iryXwFTa87Aalk8MIkaxCpPGheFIJ3PDqPyIDC61kFxod8HUysvq0uj'
+                  'RabfGGPm1CRaUijq5cUtAZCuP/wDwk5UDgPHgZG1AOG2xhZMwKd4efkrS8FkiezpScKZgNJokcJQ/n259c9XFg2MH2me/T1b'
+                  'EB5C+BGwZTUgBBMlMm+Ol4Np8XCbK1tTCHOzE1/oXvGO1O8bHvzbIxVBmIPR29OGy1Hg/tUAkevLUBzKVdnCvPcav51svz4z'
+                  'LBkCzB3rexzkKWp9nlEhf26GwmC2OgDa4oPSFL/7eqVYMYS557t4YB2+8x2Q+4DbgFZgXS1YhNMlCkM5ggkfW9Cy020fJ79N'
+                  'wgmdhLniNDm/Tt1//Bc36v5/j6THPML+BzIAAAAASUVORK5CYII='
+              ),
+              '👩\u200d💻': (
+                  'iVBORw0KGgoAAAANSUhEUgAAAEYAAABICAYAAABLJIP0AAAKmUlEQVR42t2aaWxc5RWGn+/e2ewZL3G8xEtMnJUQsjqYBCJI'
+                  '2qYsIkCaYLVVaRoqoPAjCIpUqRIqqvqnoEotKKguohKEqMJpQikkKouaqGqAps4CCSEkjhOSeB17vM5+7/3649oeG2934plr'
+                  'u0cayZr5Nr/3nPe859xPME1NvluZSVyuQ2cdiliCZC6CbKSQSNpRjK9BfAEc5fTxU+J5jFTuL6YVGIc3Ogj0bMEQDyO4G8iw'
+                  'NpFWBG+D8ZrYfrLu/wYYWbvMhep5HMkvgNJJLvcpkl+Jh45/MKOBkfvW3oOQu4GK1C7MhyjKz8S2/zbMKGBk7foM1PhupNyZ'
+                  'xm1CSPGMeKiuZkYAI2sry1H4G7Dapi1fo4MnxOPH49MWGFlbVYGifwTMt3nrQ/RmbRM7j0SmHTBy/61lSO3TFBDs9VLquxgV'
+                  'W0X1Pn2ikYqtnCLjB6YOFAC5BeXii1ZG2gYMauwlELdMvTgQT8t9a743LUJJHlhzN4Y4NH0EpQhg6DeK6pP+KfMYeXijA13U'
+                  'TC+VLfNQlRemNpT8wUcQlE+/Yowfy7crF0wJMFIiUIzfTNM6VUEXL0yNxxy45dtAQVJzCvJgfjlkeGzJUvKNFV77gZH6c0mD'
+                  'UjoHsn2wZD7MnwuZGek8oZMM16O2AiOfRwGxzvKEwtkmKEMtOwsWV8CieZCXA0oajivkT21N17J2fRVK7D+WBhflQ3HhxOMM'
+                  'Cb195icYhkgE5KSPqnHmuPubjS5H+qgt9pOJn5YwASmcbXFNATlZ5qef3dEN0DTQdNA1CEchGILeoNWTOli+aj2cOmoPMJLK'
+                  'cf1REVBeBrlZkwgDAQ7V/AxYzoAfaNDRBW3tJnjjAq7eBRy1h3zH0y4OByycNzlQJvQDhxmiSxdBlm+iYFo90o3SZ7OG76SC'
+                  'zwtxDW4oAZfLHrXiUM30f6UJwmHwuKEvZHpU4iEusA8YKZ2I/ljyZpqHUxWTLO0uDgRQXpwIP12HhismgZuWZZ+OUUTi359b'
+                  'YoJiIQ8G2sJcPNuJTCLbSENSfyZAV3tkfD4aOJKqQnnJUD702OIxUiLY3w9Blg881sLman0Pv33qY+Ixgzu3lPPDXTdbmvf6'
+                  '707zyQfXcHtUfrn7duaU+yae5HZDltfMXkK47PGYIxsTacJrXbmePd5OPGZmkM8+abM87/NPzbHRiM6XJzusn3NQVUvF/ura'
+                  '6bQ81DAS8WPo1l8s6lpirKEl8UJyMAEIaT8wSZBFTp578O/cfOtF5NCxuQWeZMhpHNWXbovFLA+99TslNDb00tYU5P4diy3P'
+                  '2/HsCg7tvUBpRTarb5+TxNniCfq1o1aShzc66OiND5Lc0gXTsyNz7iJEooDoEdvrcmxsOwDRKPT0TT9Qevr6QRnVYdIDjNh0'
+                  'RAPkoD9eaTTVpsmwUwfGgNoNBk0lnLDjdnJMDDDZVNOh/rIprDIzYEFyLeDWs3HO/yM8yONChRvvzaBgsfWMhyHN0JGYynf4'
+                  'ozTszEojWVfXoS84lPQsFtFyVCGblHX39rcm9DFQs61WIoQYWYMgJXR0WmtM9VvhUheFSydZdHYExjmrnTpG0DXmb+2BMZ5c'
+                  'miwUTnDc6Ge1NZQ6x5aqBrSNL90jnwe5cv+XND91idjF8IhsF/q4l2sPX6BxRz165wQgN7VOJEKjNpKv7BxXJrV1mA1ut3vU'
+                  'n8PH+jCCBtEzIZoea8A5z4OzxInUIH4pguZP8FT0XIjM9WM0vQJd43uL6R4hOz2mecJS4fK10XgPgOwH83AtTMj7+OUIoY97'
+                  'CR/rHQaK985sMqp8YyvbxhYLz1AE7STfixPq6nAUrjVB+cibIWq+k+JXFhD8ZxfBD7uJ1UfQuzVQBGqeA8+KTLLumYVnjXfs'
+                  'cL10deJ+70CisA0YoVyy9G4j0A2qA0qLRi6hgm9zLr7Nueb5oxJUEA4xUZlughKOWDurQpudAu+c5ZH+DjB0KJsDYuzoFm4L'
+                  '4iWuweWrQ9uWVp5is30cY1R8jhgnM43QGV1w/jLErz+Ny0gMvmpIEhTAkFdtA0ZU79MxOJLUpHAE2dIe1EIa0rDex5GagdYX'
+                  'h7ZAbFj33yIsSFfdqG2Hmpo6J7NadoL4vqIqaw3dSOMLH4thLwQZHjelRfksKnGRpR8jK34EITWklEhdIjUDI26AlDh8LoQi'
+                  'qjn9ZReGfAjBViT5FrY6IbYfrxwBzO7awz4H4Q9ArmeaWl5uNmtvXoondoFZ/pcQ0vQK4RCobgeKWx14zNvEgj0HAGRNpZN8'
+                  'vgv8AMmDwBjpS2wX2+v2jyBfhwj9Gsn6RHEmKC7Mx2PXC7GxlG8sRlOrv1+j9VD/9VUWVywmVPAAudF3EYoYt5Lsv+x8EDgo'
+                  '31jhxeu6B8lmYA1SlqDQjGTPaKAAiJrag5eBGwa+KCkqYMWS6dFx++xcPc1t7YOhdVvlCnwZLorDL+I0Rgq3v+6tprmxeESl'
+                  'BHQgaERyTMC/pVt7f9fL63rGz+CQzQwwQ0quNLaCUOl1bhiZ1Pz5tDYXjTY1E5iLZB2wS0ItUUfTS4/VvfryY3XLx/S4mtqD'
+                  'XwA3Df2yuDCfLG/GlALRGwwPeksi7lU2ravEKWKUBp9DYJYGVy/P5cNDdxHs8yafkRB7Y8hnnv3T2mGbiT++dXC3EDzJDLGV'
+                  'SxdSXJCP2vgerV91cvH8AlqaiifZIaFRk8Z9T79adWowlBTk35lB1tRqtiuagt/i6JENkwalv4tRqgrl8B8ePXbbIDC5IvQR'
+                  '0DJTgOno7CIW1yhYmIHLm1J9miuEcuDlR06UACjV1dU6gr/MFGAMKWlpb0dRBKXLfKlevkg6jT8PlgSGEHtSuXpxYT53VK1i'
+                  '84YqKm9egi/FV1IHwqlshTf1yEvu+v3jJ+5QAJ7Yfu9J4HSqVOrKGxeS6fGgKgoFebNYt3o5eTmpUwVdPb2EIhHy5nrwznKm'
+                  'HBtFyh1KoqEm96Zi0YqykWToUBVW3bQIlzN1XY7mtg4QafIa5O0JYIR8E5h06z43e/T60+V0snBeWQrDyZQdZSt96aCy8kFg'
+                  'nqje0gj8a7IrOlR1zN9KCgtR1dRkkmA4TE9fEF++k5xid6qByRh2SimYNAnH49o4oCnMyk5dR6OpXxnPTUM4DQMmFhX7+4uu'
+                  '67buvvFvZHtTmKGa/R1IKSld7jOr7XQBs+tH9/YgxaSUcGt7YIIGVOpEWTQao7O7F0+2yux57vQBYxYOxpuTyxbthKNj36KK'
+                  'JnHDyoo1tvn7w8mXXmCaC7zvA63Xu6BuGJy90IAc5e6dlAbtnd0p/Qda2wPohkHJMi+qQ6QPmOc3bdIQvDWZRf2BLr4434Dx'
+                  'jct/9V9fIxaPpxQYTdPxB7pwuBWKFmembN1RFZcU7BGSXZNZ+Fqrn86eXkrnFOB2uvAHOmmZgH+uP3z9zMnPo2ylj6azwZSs'
+                  'Oabv1dS+dwbEsplQWAqhsGn9ahzCwfsvXCUW1lMfSkNsxlTcUhq0+TtRVEHxssz0eswr+9+br+riPKDOBHDycrKpWnlT0vPC'
+                  'PRqn3umg7ULImsc8ue2+BoR8faZ4TaC7h3Akmrz2z3aw6oHZSYUSLkf850DdTAGn2d+eRoE3xHZu3doV9YkNCPEsiBOqokSm'
+                  'NTBtHdcVSp+9MxLQ/wFIWubms9usWQAAAABJRU5ErkJggg=='
+              ),
+              '🔥': (
+                  'iVBORw0KGgoAAAANSUhEUgAAAEQAAABICAYAAABP0VPJAAAJwUlEQVR42uVcW5AcVRn+/tPd0zPb3TOzt2ySDbBsQpLNPUUJ'
+                  'CSpQIcYQCVSIGH1QpAClChKyaFEUKrVigRAp9wJ5CBHxwQeDRES2oiilFBSIsSIJCmWKS4AUgUA2e5me2exO9/l92M1e59Ld'
+                  'M5OZLf+37d7zn9Pf+f7rObtABQrvgWZ3Wneffqg6dq7nFpUICH0XaWIOh8Lpt5Md1s3MoHM2NypUEl1mPUl8BEAD4QVFqrdG'
+                  'Wvve/79kCABYO+zPmHFgxIaw3iXnSKLd/OqMBYQZlGyPfqUg+greP+HHKBGeSnSYPy6lCZUEEG6DSHYav2RytxQEiOQXpj4i'
+                  '4D67y3yc20qz9pIoTcatXQB9m0AfFqLHaE19DOCjaUAxbrHj5u4ZAciImfBdACCB00VQ+d8s0eC2ZId1b0UD0tNVE2WST06I'
+                  'XgXrpxygMvj+RLu5rmIB0Tl9G4D6CSuuK9gfAW6O1woR/4L3oKriAOE2hMDcOkk5YWkRVFfn4dCFdsq8u+IAsWvMtQBmT9nd'
+                  '9bwHWmFI0+L84Rk7e9vj8coyGcaXMjyNJlPGFUFVnmmPNYP4Ag9zx0Lkbq0oQEjic5lf0I+C6nSF+03viSB/rbIYQpiX5c3l'
+                  'iQ5zW5Bahhk7fMy/buARq65yAAEacoTOvamu6Bo/mS4xPwGgxsf8qlDlxSUFxO4yNvhIkZ1ctZqU8o9eahvugp6MWb8C0+YA'
+                  '37OsUEDUbC8GHrUWs8u3Uxv+7HFfB/N0E+JMsjvZYe53iTqs3sSr1AY5gRWqHTe32BIPEXFzQLNdUhJAuAt60uXfAtztfTF0'
+                  'HIwmD4nWVsG8NRk3P7U78B8QJ8FkJsGXEGAU+D31JQHElua9BCwTJO7zUe6/ScAXfcw9C8A6MI17moJDPxlF9yGJTnMZAfeM'
+                  '6Hff904Qfq38bSUuPiDE9DMAodFNO+lVkVREdx7HWnIhkFNUQBJd5hUAbzwLdxWnerwqit6R6AHwaln5AZwpKiAkcf/ETcd2'
+                  'DPvcowNltRjiVNEAsduNVQAun1ha9z5cHfWjTBJeLi8edLx4DCHcMfVlROdqXyHLcY6X1WSY3y0KIKMNlq9PK64ovcgXQ8Ii'
+                  'XeYw80ag1kWH0XC2ySQAwE6ZG4EMMZzFel+UHea55URDuuJwwPC0LJWyNowBQoStWYzyan95kXJVGfE4Hv1+4lQgU5O0kIHr'
+                  'J/qQbExYmmyv8gQKP4kwiG8po0c9HHgoYSGIRxjS//PogtE0OkvkEI8NPGbV5knbKTVgPgLGwjImIW8WkL9cCqChrys2XyjC'
+                  'vSy3eaFZOPyXwUdjF2ZzSMlO89fMuL2sIZfEsSDjBh6x6gi4BABU6axVwVjqoa5a7bruW3a7tY8IL0vwADE3gmgNgGsBRIJ9'
+                  'hQBYFinkyg8ChVlNXg0mZZQqy1Uims/exoZBfCMDN9Ko4RUq+vyLQFoI6U9PwO3pKUiXJJEMOHTb+P5Qs8rA/HLR3OntQbhl'
+                  'OZTaOshkAsPvvwe3N9jpp8rkOweyu4yVkLRpgi9sFsVoqgTe1b7eEZcGQBgWwktXQr+oBaQoARwjN/ge5NK9Uxox9QKFd6mC'
+                  '273rQiYnM11tmI3wyotBethv2F3pix2dxlUgTL2AYwqgeOeigVhi29MdXZWByIrVIC3kXQ9jk9ffTXVF5oHpNxn6QUbZr1TJ'
+                  'ocHMG66HoS9ZBghvSyRgjd1p5D3Ysncbs6WrdAMZD+JZAEiUFZF0dl+oWDFo8873Uzs8YbcbOzOdJzODUp3WFqTpXyBkM68E'
+                  '2R3GMYCayoWHOnsO9AWLc1VsSB06CB7y1Qz7mIFuAG8IgsPMzQBdA6AlD6LHVID6ypphKmqezEmBNrcRw8d8tTrmEHDrKDPg'
+                  'vaNPvYKAd8sKSEjPz6KGOZ59SYH10DtCUuY7XN4pPxcUDgceLywrP2iqBsWKngM8cFQQ+GhgMOrqoS9YCKEHA4RUFYrp7UNF'
+                  'LF56toKPChdKoAMmEalC6KIWAAQKBQPEjymIKrP0Dh7q30XszoG3Afi7TyoE9MVLx1JsJcBtJlI1aI3neZ+yALP0KB+GW/vf'
+                  'G90eetHPSG3uPAhjfMeUeA38ns3qi1o8OdQxAMOREtvLyK3pka4783Oex+k6Quc3TXumzmrwbKmh5oVQqmt9+xtSVe+MMi2Q'
+                  '5v2+n4DoHgPEjNvdADzlI1rjeYCYXo2GmprzFmQU0hFeshza3MZgm6hH4GfjtEbPWe7pCCUOjAFCN+EMM57yZPez52b92Mjy'
+                  '1VBqajMWa6Gm+ai6eE3G96XwI6LKgDqn0ROriLCPdmBoxLGO+Un5OLP4Tk4vXN+QkR3jdh5GeMkKsOOAB0cuFJEe9kXdnAuP'
+                  'eGeIWlsPUhQodbPgfHIid/pBcu+46Zyte+9MHQLnvj6lNjR4tndhWb7tOJ8ocW8nq0pNHYRpjW9ibmd6wNiRen0aICPFIh7I'
+                  'Ok4LQZilzxZzA1IDJRbLY1YR6AvGT0OUaCxnX0VK8dPJznWCWDvtlwD6U8bFxKpRCaK3LM/KFKW6BuEVqyeHc6LsIBI/F21N'
+                  'vDI5OZsirqTtiuB/A5jkwUTUqghASNUQXrYKbu9puL2nwOk0SA9DqamDEs384cKwgFOfTX08qEp15/TwO0Vidw28w8Cu6am6'
+                  'gUoSpboGoeaF0BctRahpflYwzuYkGTpsD4Zb+9/LCwgAmMJ+EKBDQT18pQnpUzNi+mdVn70rc4KWScEODDlCbAOhfyJVZywg'
+                  'k3ORPkUR26gt83WxrKVmfEf/u8y4GaMHJyTEzAVkPPRLYropsr3/WPYUPodYO+39zNiOmS5nz2qZv2e0Jn6fu6bJI1arvRvg'
+                  'h1nKmYuHdMHAg2ZrsiN/6elFIYOc5y99Ra2btXYmAuL0fPaquuG1LxAh77m+J8dABNY2/uMy59OTT4+2sWeMuKdOdmtffu3z'
+                  'XsDwDMhY6b/p4A3Dn5zYBdepeFTYcdj5+MRD6saDvv7uJtAlj/Rzy9eKaO3zwrCsSgRDJpOp4b7+ayLXHfqb74gUeAeeXWQ5'
+                  'evwPSk3dlZUSklm6kL09f1VODl5L33oj0AWagq8BpZ9ZdaWIRveJWGxWWVmR6PtEDtjbtOtef6mgnKVYCzrz7OrbNMtqE9FY'
+                  'wzkFwu4/zYmBe9TNh/cWJYkr9gKHnlnxDWFaP1SsaAupakn+8Qk7DrsD/W/JoeRP9M1H9hU1qy2ZPR9YEB12oz9QwpHrRZXR'
+                  'RLquFqRv6IzjpgaPYWjwd6prP0DXHS3JNY5z9k+Z0s+supI15QZStRVC1S5AKFRLqtAgVJWEoBGnKBnScdiRaQwP90gn/QG5'
+                  'zhEedp7Wthx+8Vys83+n4A/wAu/bRAAAAABJRU5ErkJggg=='
+              ),
+              '😀': (
+                  'iVBORw0KGgoAAAANSUhEUgAAAEgAAABICAYAAABV7bNHAAAKY0lEQVR42u2ce3BU9RXHP7+7m90N2WyekIQEEgMEkUcgD7CI'
+                  'GvBJTSqoAbSj0/KqbbGltlZtpx07bR1rBy1K1XYYZyp90ATUEmoceYlEpU1iDCPaBMwDwiMhS/aRx+4mu7/+seERkpDc3c2y'
+                  'Qc4/O3v33u/97feec37nnN/5XUEQRRYVakhzZCGYBWIqQmYA6UAEENP7CdABtPV+1iFkDR5Ri0ZUc1RfJZYVu4M1ZjHipBxc'
+                  'nEKY9gEktwG3ACY/Ia1IPkCIPWg928TsnSdGHUHyo8JwwhwPoMhHkGIRoIzQ+N3AXoR4A5ttm1j4viOkCZKHC410OVeB/Ckw'
+                  'nuDKGaR4BaF/UeQUW0OKIFmxNgxxcj1SPAXEcmXlLIhnIfElkfPn7itOkKy852ak8gowg9CSGqSyTuT+a/cVIUjuyzMQGbkB'
+                  '+G4wnL2vwwQ2EdXzhJhS6gwaQbJqSRpu91ZgHqNDPkGI5SJ7x9ERJ0iW33s7wrM9ANN1sMWK4D6RXbJXzUWKOn+TvxThKRmF'
+                  '5ABEISmVlfnLR4QgWfmNtUixDTAwekWHFH+XlflrAmpisqJgCbAN0HB1iAfBgyK7pMhvgmRlwSIk7wB6ri5xAQUip+Q9nwmS'
+                  'VflTcIuKUepzhue40WSLnLe/VO2D5JHFetxi61VMjtdx4/mnPLJYr95JW7UvAFlc9SKzsWp/r8rEetOH/SEcIQc+4vawUMwt'
+                  '2T+kBsl9eVqksukrRI5XURQ2yYq1YUObmMn4I2AWXz2ZgTy17rIm5q3nOBqAOL6aYibckCamF7efO6Dt83OX4/uBIKfN2sWb'
+                  '737B4ZoW76OZOo6li28gxhSYIHwE8ePocn4H2NBPg3rLF3VAkj93aGnt4PnXyrB3uPocjzTqefLRmxgbF0Eo4wOncRnSxfzi'
+                  'rr4+yGhc5i85Uko2b63sN3gAe7uTzVs/QUoZsvi9kojOsbS/k1Z42F/k6i+aaTwxeDm4ocnCof81hyz+RZP+w30Ikp/mJyPF'
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'nickname_icons.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded nickname_icons.py (4/6)
+        run: |
+          $payload = @'
+                  'Qn9xy6tPDOOckyGLf9HUdaf8ND/5gga5RWEgMvWG45ahz2myhCx+n/CnW1l6gSDvop7/mZ996GUpi80RsviXaNEiAEUWFWqA'
+                  'BYEBFcO4bwjj93VEC2VRoUYhzZEFRAckNTYOXTKK8iNWGWn8SySaSZ2zFRQyA4V43YSYYZwTHbL4A+jjLAUpMgIFl5s59Gpz'
+                  '7qzkkMXvb2UiQ0HxTA0U3qxpCaSmDP4E01KimXn9uJDFH0CDpipIkRYwOCFYvSIL0wC+whSpZ/WKLIQQIYs/kMUKWVHQAKQG'
+                  'ErXN5uCtd7/gs95kcubUcSy9axrRUYZRgX+R1AtZUWDmyndkhKq0KoDxGg+DSqRyjYOhcg5ov0bDoGJXAPs1Hi5PkF/9fG63'
+                  'B49Hhtw/83gkbrfH38DFqkXIBqSY5csAtpV+zgf/aaS7240pUs+EJBMpiVFMGG9ifEIkCfFGtNqRdXM9PR5On2nnZLOdplM2'
+                  'jp+y0nTKhq3dSViYhlvnpnL/129AUXyKj+q1eJQahHoN2F1Wx56yuvPfbXYnh+1nOFx7pk9gFxcdTsLYCMbFG4ky6okyGTAZ'
+                  '9URF6gk3hKHRCPQ6LUJAuMG7LNXl6EZKcLp6cLslnY5urDYH9g4XVpsDa7uTltZ2ms90YLZ0DVpm7e52s/vDOqKjDNxx8yRf'
+                  'co0aLcgaX6g9WNU0NLyUtLZ10trW2Ye4YMvBqibfCBLUKEgO+XLTM+aOUeNpfR6r5JCWBsMnpDssamtCl6r1kpXPYooeR0Nt'
+                  'BY21FZyoO0RPjysoBGi1OpLTZ5GakUNaRg42Swtvv/6zi8bqE6yFOkO1ViwrdsvyggMIClSFmEY9Zy1d57/v2raBJ//wETfd'
+                  'vcrrxN09tLWe4GxLI+bmRszNDZibG7GePUVXu4XODgtd7RZcTi+Gy9FxnlCtVofO4F3f0unDCTdGMyYimnBjNFGxScQlpBKX'
+                  'kEZcQiqx41KJiU9G0XjXQJubavnd+vmXjFXnywy2Tywrdmt7vekekKoISkk09SGow2Zm49N38fjze4hPSkfRaHv/SCpTZgYp'
+                  'cTpVx8an76LDZu471qQoH/jx7DkXSYNCMd6NIcOWqZPj+x0zNzfw7GNzqa1+P+h+pu7zj3nuh1/D3NzQf6zpqlfT3bg9288T'
+                  'JLJ2nARU9Q9nTU8asPbSYTPz4lN3UPTqehxdIx+ku5yd7NzyKzb8JA+7paV/LiUEWTPHq3XOu8Tcd05f0CDvwS1qMGKjw5k9'
+                  'PXHgINLdw563NvLM6umUlW7G5ewcEWLKSjfzy5XXU7LlmUEnhDkzktQ3NYgLXFzavPAlKrYxHT9p5bebDgy5Hj7GGM2Ntz/C'
+                  '/Du/Rcqk2T5X/aSUHP+yio/f+wsHd79BZ7vl8pm4EPz8sVtISVLVZtmneaFvf1Bl/hNI8bwatL++Vc2B/x4b9vmmmAQmz7iZ'
+                  'iZPnkJR6AzFjJxATl4xWpyc8whtpdHVY6HE5aTOfoO3McU41fs6xo1Uc/ewAtrbhr73fMi+Vby5Rm0XJH4ucnS/00yAAWX1n'
+                  'BN36BiB+uHBOZw+/efkDWkIscIyPHcMvfnArBr1WzWX9Gqj6ZJIi870OEM+pQdTrtaxakYUuLHSa8PU6DWsfylFLDiB+fTE5'
+                  '/QjyVkBsG4FqNbBpKdGsXJ7la8Yc2AqgIli1IovUZNWxz2eQ+MpAFcW+HC58vwdYh3cz2rBlzvRE1jyYjUZz5aq4ihB8u3AO'
+                  'mdMS1WddHtYNtIVz0EcuKwpeAh5Te6cj9Wb+9LeKAbvARlIiwsNY81A20yaP9WV+3Chydq4feMYf7JIji/VYwz4Eme1L9vx6'
+                  'URV1x9qCQs6kibGsXD6H+NgxvpQ0yjEYFojpxS5VBHm1aMkkcFcCqg3aIyW7D9Tx7721OJw9I0JMuCGMexZN4bYF6Si+xVYW'
+                  '3GSJeSX1g/M3lPKV5+chRCk+bqSztzsp3X+UsvJjOANElEGnZcHcidydN4XICJ2vMC6kyBe5O3ZdXsGGY6HlBfci2I4fbXqd'
+                  'Xd0crGqi/NAJ6o+1qa7RCAHpE2LJzRzPvDkpjAkP84djD4gVImdH8dAWOFw3Vpm/BileIwCvmbDaHRypP0vdsTZOt7bTau7E'
+                  '3uHE5fIWFHQ6DZEReuLjxpAYbyR9YgwZ18VhigzInj438KjIKdk8PBelxtd7t2b+g9G7b9WJ4JHhbMX0iSCvJhUsQvKmL477'
+                  'CosFKZeK3J2qilWqzUVkl+xFcWcCB0cPN6ISNDlqycFXfyKy3mkkqicPeFltxB1kkSA3Eq6ff7l9qQE1sQH80gLgj4TeHrND'
+                  'SPE9kbvjQ7/SF7+VN6ekDLs9G8njQGsIENMKYj12e7a/5AREg/rXkwyrQT4BJAeZmBakeBV39wvixlJbwLzXiBj+vjwDJuP9'
+                  'SOVhkLczcm9scCPZhWALdvubIf+KroF91H1JyJ77EfI24Fa8b7vzR9qA/Qi5G7dn+7nVhxGb/4I6pRQVakh3ZCLFbO8rAkUG'
+                  'cB1IE96l73P9ku2ABYQNqAdZi5A1SFFNnaE6mK8J/D/3p/7BKjEarAAAAABJRU5ErkJggg=='
+              ),
+              '😂': (
+                  'iVBORw0KGgoAAAANSUhEUgAAAEgAAABICAYAAABV7bNHAAAOGElEQVR42t2ceVRUV57HP7eqqAUoVgFxg4gQV0DAJRoTtW07'
+                  'LnTcY8zoTJvEMd1OWnPaTs6cOTPpmXOmezKJdiet6e5JOicxE/csakK7L6hxBERwRRQERdkKKCiKoqiqO3/gVhZLVVGA5vdP'
+                  'nbrv3t+99/t++7vvCXqQ5LaFSmItKQgSQTyJkAnAYCAACL3zC9AI1N75LULIAhziCkqRx1VNrli03d5TaxbdDsqpGQPwUy1A'
+                  '8iPgGSCoiyyNSI4hxEFUjh0ieU/ZYweQPLlQh59lAQq5DCmmAopuWr8dOIQQn1Ffv0NMOWJ5pAGSFxYG0tT8MshfA/3oWapC'
+                  'io0IzXqRtt34SAEks1f4IW6tRoq3gDB6l2pA/Cf0fV+k/aWl1wGSObMmIRUbgZE8WlSAVKwSY7450CsAycOTtej17wGv9YSx'
+                  '93aZwB8Jtq0V8RnNPQaQzJ0Ti92+BRjH40FnEOIFkbrrarcDJLOen4Zw7PSBu+5pMiKYJ1J3H/JkkMIzezN7LsKx+zEEByAY'
+                  'SYbMmf1CtwAkc366Ail2AFoeX1IjxRcyZ/arPlUxmZ0+B9gBKPlhkAPBiyJ197YuAyRz0qci+Q7Q8MMiK5Au0nbv8xogmTs7'
+                  'HrvIfkxtjnuGG2WqSPv6msc2SBbO0GAXW37A4LQabhxbZeEMjedG2qhaB6TwgyeZilH13x6p2J304ag3cZLN5uDsxXLyLpVz'
+                  'pciAUqlgyfOjGPlkpE+3lX+5gi27zmG3SxIGh5M0rC/Jw/uiUnlVOJA4mCLG7j7aKUDy8GQVen0OkOjJDI1NLew/do1jp0to'
+                  'NFudroWF6Pjtm9N8CtBbvztArbHJqS0wQM2ksTH8eFIcATo/T1meh+iUhxNclUu3oMA1SPfBsdkd7D92jb3HrtFkaelBzZAu'
+                  'TaZGKxmHCzl66jrTJ8Ux/Zk4lEq3JWok8vYqYH27EtRaz7FcB8Ld4VhWXs8n23K5cbu+3T4hQVqWzk9iZIJvVezc5Qo+/yqf'
+                  'uvr2a2QD+wWzfNFo+kXp3WVrQKeNFSO2m9oGKDv9TeB37nA6nlXK5l3nsNkcLtcCA9RMSB3I6BHRxA4MQSG6J9l3SMn10jqy'
+                  'z9/iVM4NGptcJVilUrBkzigmpg5yN3b+lUjb9Z4LQHfKF0VAdGcs/nbkKl/vu+Qi5foANTMmx/Ps+FhvjaX3UV+LncPfF7P3'
+                  'yFUXoISAuc8N4yfPDHGHVTlW7WAxYXuTM0BZs5chxKedjf4y4xJ7j7lWDSakDmTR7BHotH70JjWarWz+5jxZ+a61/BmT45nz'
+                  'k6HusHlJpO3+wjkOUrC0s1EHTxS5gKNRK1n5Uhp/vyC518EBCPBX88qLKbyyOAW/h6Q440ghh78vdsfpL3UKFOXZ2f2RYkpH'
+                  'Y66V1rDj24tObf46P365fDyjR0bzqNGYpP68vny8y03btucCRSW1nWWo0+XZ2f3vS5BdLOwoU7e22Pnr1lwcDxgdjVrJG69O'
+                  'IC4mjEeVEp4IZ83L4/Hzu781h0PyyfZcWlrsHZeBWhRz7wPU+lCvQ6NcXWN2alvyfCIDox/9NC1mQAhL5yU5tVUaGtl77Fpn'
+                  'UjQVQCG3LVQCT7fXr97UzL5MZ2aTx8cyPmXAY5NtjUvuz6Sxzm5+79GrNJg6quPLKXLbQqWCWEsKENJet8Mni53EMShQw9zn'
+                  'hj12KemCWSMI1mudzMaRU9c7GhJCnDlZhYKkjnqdPHPD6f+sqQloNap2+9+uaCAzq5QrxQYMta1q2SfUn/jB4UwaE0N0ZGCX'
+                  'Nuotf61axXOTh7B19/l7bSeySkmf9mRHepaoQooEhHRrcYEBap5KHdjmteZmGzsyLpJ5usQlgCxtMlJ6y8ihE0U8Oy6WeTOG'
+                  'o1F7Vr31Bf+JaYP49tAVTI2tybRQdBLhS5GgfHtl/CoQ7cIYHamnsLgGrVbFsnlJbeY19aZm1n30PecuV3a60es36zhfUMHo'
+                  'EdFo1Cq3wPEVf5VSQXSEnsJiAzqtH0vnJREZHtCRBFUJmZ2e52lp40GyWG3818bj3Kpo8Ghc/75BvLlyIhqNqlf5d+LKzipa'
+                  'y47e06fbz3q8+LuVgM++zOt1/p3oWLAC0Hs7POd8FVmmJKQu3Kvx2fm3OHuxvN3ruedvc+b8be+25h/B/xlHkHuxsisI6VWA'
+                  'V26l0hbBn21rsD6XiOLmYfoeW8qwhAiGxkXQP0pPaIgO3R3xbrK0UGu0UFbRwOVrVVwsrKLO2FrH+WbfZZKH921zjl0HCu77'
+                  '3GAtw+Mf4B+svZdGtMW/YuqnOKLG8idDFr+1byFMWeMVQEJmpzcDak9GXbAM54OqVZgduntt/xL1HyRoi9yu45y9UM53h64Q'
+                  'GKBh9cvj2+z3+49PYTJbmTUlnqQRfd2uK51vGs47lWvv71LRwOrID4jXFHoKULOQ2ekGPDj0lGUew4fVK7BJZ+M31j+LVREb'
+                  'H4mg8N2KNeRbnP2OWlh5PXIDidp8T1hVKwC3LeDxxolsqFrpAg5AblMyFtn7j+0b7HouWEa4JtxSzfrK18k2p3rETgG4dZ4v'
+                  'x5zCx9U/w9HOo7QW6ccZ8+heB+i0OQ17O4UJu1SysXoleU3uRjXCqEDI6511O9c0ig3Vr7U78X31S+11gHI6WYNNqvig6hcU'
+                  'WBLcYVeswKEo6DCeaOnPhurX2lSrh+mSZVi7EtYT1CL9uNLc+catUs3vq17ndkvfzoKFAgXIdgEy2oN5t3KNk7fqiMwOfz45'
+                  'All5ZZSV17f5xMPXZLM5uHm7ntNny/hrpgardK/s2+gI4L3KN2iw6zuqCRWokOS39YC5RfqxvvKXGGyeBYEnq+I4vfebVv5C'
+                  'EB6iIyoigMg+gQQHaggO0hIUqCFYr0Gn9UOpFGjUKoTAKa6REpqtNux2idnSgrHeQkOjFWO9BaOpmcpqExVVjRjqmpB3steW'
+                  'cbMgxrNY7o/VP+fXke+iFG1UGCX5Kq5rzzDYUvdwTeh/a16kyPqEx3fUETXmPn8pqa41U11r5sKVqm6XpgfndpcuWYay0ziX'
+                  'RSE7Hr5UR5E2TyEWbbcjyXw41jlkmuLVIu1RvXUgRIEjwruc+1vjTHLNyQ/r12GxaLtdcUcXDt5tNtjC+djwM+/XqQ2n36iZ'
+                  'qFTqHoNGpVITPXou+HlXjJMIPqpZjtHxQI1dOA7C3cMLCrbj4D1AuanmJbeNcnuU/quvSI5UUFtdRk1lCYaKEgwV1zFUlGCs'
+                  'uU2TqQ5zYx1Npjqsza0nNKyWRmw2670Nq7WtdRq1RocuMAT/gBB0gSEEh0UTHhVDeFQs4VExhEXGENqnP6fK7Pwp29SlAHNz'
+                  '7WJWhv8FwI7dsfMeQCJl1y2ZnX4o35L44zNNXQ/2Kkx2FNHqOxuJIX5U90tReaO1yzxOmp7imYBMhmsu7RdjvytvlZ17Uabi'
+                  '888NL/pksQUlN3vcAl0rq/QJn821i0Gw6b5lu0P/VLrOUG7r65NJ8i5fYNuHq7E0NXQ7MNZmM3s2/YYLV6/6hF+JdRBrbqy7'
+                  '5QKQieAlvlq01IRz8Ks/8PYrIzie8RHWZnO3AHM84yP+dflQdm962+uiXVtU4wh56Z4DeKDdZ5mmVLd6k9qqG2xa/yo7/2ct'
+                  '46ctY8L0f2BAXDLCy/NCUkpuXMvl+32fcurAZ5hNdQ/MqfcZQBKR1BZAsT6b4SF3azbVcejr9zn09fsEhUYxZOQkBg0ZTXTM'
+                  'cEIjBhIa3h+VWoMuoDVWbWqsw2ZtptZQRm3VDW6XXKT0ai5Xz2dSX1vRzpwBvhTQWFeAJC0IdD5hb2/fo9TXVnAmcwdnMnf4'
+                  'VufsVlD4LPayutgghKj2FXdhLu9xLyZMt3zITRpcAJJCnvRZ0G8s6nGAfDmnQJxwAUghxR6fLfbaVz0OkNKHc0rp2OMCUGlY'
+                  '2E4QXb4NIVQQXJ3Z4wAFle9HL2t8werCpvkRGS4AHZkibELIN2h9EdZrWh65mbf+cSyDB4X2GDhxg8L455VjWBq5tcsVEwGr'
+                  'EfdPczgVmfO2vlOQuHhtkEA85Q33mcEZTNMfIsBfzYS0gWjVKopv1GKzd09lUaf1Y870ofzdvEQC/NUM8Cuj3hFMsRd1rDvx'
+                  'z282ze/ziZPqPtwpf8s7+xMvW/wFTHTfqElmBu3lhdDt94qTQgjiYsJ4Om0Qdim5VdGA3UdAadUqJj8Vy4olaQwbEuEUeCZp'
+                  '82lw6D0HSYp/+3xB+L+77q0dWvZl1WwpeR9EhzNFqqpYEvYFKbqzHc5vbmrhVO5NsvLLKC6tbetVi45vgoDBA8MYk9SPcaMH'
+                  '4N/JyyqnzWPYUruIalufzlhfEfCLz+b3OdD2ze+AVvxZ+pn7VM9QCMViKeUoIE4p7LY+SkNAvKZQMdo/j1T/HBR4JhnGBguF'
+                  'xTUUldZSXm2i2mCmobEZq7W1LqxWK9EHaOgT7k/fPoEMHhRKwhPhBOk9eyvULpWcNo8hz5JIYVO8o8Ye2mhHqQJZKIXIFw7H'
+                  '5hvhEfuOTBG29rXDG109MzMGh3ILMJ7HgkQOKF7o6NXLdkMWr6ZL+a6EYNtk4IOuer1uJgnyD+g0E7wBx2sJclpBdvrTwAa6'
+                  'cEqtmygfKX4uxuw60aWgt8vCm7b7OA0NqUjeAKofAWCqQaymoSG1q+D4RIKcpClvegAt2ldArgX69zAwlUjxIfaWdWJ8Rr3v'
+                  '8rLuUPzDk7UEBc5HKpaCnEb3fbHBjmQ/gk00NHz5yH+iq20bNS8aaZuPkD8CnqX1a3ddoVrgKEIewO7YeffpQ7f5vx51KdsW'
+                  'KhlsSUKK5NZPBIoE4AmQQbQ++r5bijQBdSDqgWKQVxCyACnyKNLm9eRnAv8f5YOgANcD6wsAAAAASUVORK5CYII='
+              ),
+              '😊': (
+                  'iVBORw0KGgoAAAANSUhEUgAAAEgAAABICAYAAABV7bNHAAAKXElEQVR42u2ca3CU1RnHf8+bTXaX3Vy4mEAScjUJlEuQJFJR'
+                  'KwKi1ISbIDqDttMLqPUDrWDth850+qHDaKvVonb6sTBqDQImDMhNLoPCSAIkKJgEcqOJGAgk2dyT3dMPb7gs2Sxsdt81Cf3P'
+                  'ZHbm5LzPed7/e85zzvOc5xwhiFAfrwghqXMmwnSQDESlAymADRjd9wvQBlzt+61EVBkuKSdESjhnPilP5zuDpbMYTsqxhfGE'
+                  'mpajmAf8BIjwU2QzisOI7Mfk2iIzdtQNO4LUlyushHYuR1PPo2QuoBmkvxP4HJF/09KyRR492DmkCVLfrLDT0fVLUK8CsQQX'
+                  'l1DyHmJ+S7Lzm4cUQapodShSvxYlrwFj+GFxBeQvMP4dyf5Xzw9OkCp+8mGU9h4wlaGFMpT2suR8uu8HIUgdmGMhPPxvwIvB'
+                  'MPaDVRPYSGTveknb1RU0gtTJJUk4nR8BsxgeOIHISskqOGc4Qer44vmI65MATNfBRjPCMskq/NyXhzTf7E3uUsRVOAzJAYhE'
+                  'sUsV5640hCBVvGg1SrYAFoYvwlDygSrO/XVAh5gqylsCbAFCGBlwITwrWYUf+02QKs6bi2InYGZkoRvIk+zCPYMmSJ3MTcMp'
+                  'RcPU5tyZ4SYkS7K3n/fZBqmKhWac8tEIJkc33Lj+oyoWmn030s2mN4GZjHioLJpNb/g0xPrch0NDeIUc+BW3i0fl/sJDt+1B'
+                  '6sAcE0rbeBeRo3cUjY2qaHXo7YdYhP23wHTuPkxFffey1yGmx3M6q4Gx3J1oxGpJkin5rZ57UEfnb+5icgDG0tG1xmMP6gtf'
+                  'VAITuLtxkW5LiszO7wAwXS+225/2l5zKmqucLvueiqpGrjR34GjtBiDcHsaYqFGkJY1h2qQYUhJGD0n5fRhPWOdS4AP3HlSc'
+                  'uxcl8wcjsbyykW27z1JZe/WO6qckjmbp45NJTx47JOR7mPQ/k5zChdcJUqdy4+iVGl+dUaVg+56z7D50HqWUb/OqCE88ci+L'
+                  'F0xCZCD5im27v2XPYWPke3VmTSpBZuyo0420U1YMxlPfvK2Ezw6e81n5ay+/62AFH2wvHbDOpq2l7D5knHyvYaAebekNG6Rv'
+                  '6nnhU6AuBurvgaYI6DBzuOFLjlTV9vtqmZNjyMmMI3niaCLsYQC0tHZRdaGJr0rqKD37vdsLH/6qhsT4KB7KSXCTdfirGr4o'
+                  '8k3+8ZI6SjzIT7g0i4ejHwBrF0S1QGwDxDWAprwtHecCG0V9vCKElM7LQJTHinUxUJoGbVa34t+f/iNN3Te2nyLC7LywaA6p'
+                  'Wd778/maK7y/uQhH640Y+ugICxv+8Ji7/A17aWruvGn9auaFVdmkJnrfVTpfBP8sPEBLd+sN+aFRbJj+Z/eK9g6YVq4T5RlN'
+                  'VFrGaSR1zvRIjhIoTYej0/uRc21tfg3WECvr0taSWrVAf8bLh0lNHMO61bOxmG9MoKL1J1W7yXBYzCbWrZntnZw+fVOrH2Nd'
+                  '+lqsIVa3ntcPrVY4mulN3yhS22eE/GlNxk+BRf3+fTodyhMHngutMZxvqyTcZGdV4kpS7cl9a9EocIZAzJUBn7XbwpgYG0lF'
+                  '1RWsZhPPLc0kepzNrU5sTDjnq69gs4Xx8+X3kTzxNlP3TfraTTZirROoaavFYrKwKuEZoi33DLB29qKvcEzU8UWvI2p9v2F1'
+                  '1E93bHaJPtaDAeP03aChuTL6GeTTaf4rfSpdl2U0DNVXMjSUJPX7Gq1W/xtst0J9dHB6j3H6Jmt62PEmBPKl6u8xniBD9VWR'
+                  'GhDuPrmFB67Bq5HGE2SsvuEaYHcPeQRwd6cjCDtFxuobrhmrvWJ4QXnwOaDVrcQSwCw2a5fx72Ssvg4NcLgVjXYErsExLcYT'
+                  'ZKy+Dg1wz+cL5OIu9pLxBBmqrzRriKp2K4trAHu7/43ZOmBCEFbSxupbpeHSytytkoJpFf43mFnmPZwQKBiqryrTQJV5/Crp'
+                  'NYNvLKM6OMPLaH2FMhOKUo97qNPKQRSUJd1W/t8r3qWtt51nE1aQch8wtYKgo0/fyhPwYW0+thAba9Nfuv1z6dUD66soNVFt'
+                  'OUFKZ1O/mJCgd92xzXrArHXUwG5Mbzu17Rd4o+wtHopMYHHqJOy2sKDy42jvpuDcJxwpq8WlFImjJnp/wN4O08u99fQmKi0l'
+                  'etD+eF4BQp5Xj7k+WvdVrkZAR18WnrUTRrfwX3MZG7Zsp6fXpRdbQpn3YDLzHkxhlDXUUGLaO3rYd6SS/V9U0tnVC0CoSeO1'
+                  'p5YQ353hUV/iLukG2auNlG2SXbBMD+uJ7AeV59UQxn+v/3lAPLCyayqbt+kB8o7OHnbsL2ffkUoemDmRR2YlMiEmPKDE1Dc4'
+                  'OHyshqMnLlwn5hqeXTyN+Bk9wNeDb0Bc+68NJNSJRbG4VC1+5iB+uudbdh7wPJ5TE8YwY8p4ZkwZT/RY26DkNzS2ceqbi5w8'
+                  '8x2VNZ73yHLnpZM3P8Nf/p24nPFy/86LNzYOi/L2AI/55cko2Lb7LLsPec/Xjh5rIzEuioS4SCbGRhBhN2OzhmEbpQ/HtvYe'
+                  'Wtu7cbR1caG+hdq6ZmrqmmhobPMqd+GjaSxZMCkQLtn1jUPTTYWbEP8IEoFlT0zGPiqMrZ+dYaDtrIbGNhoa2zheGpijXiKw'
+                  '/MkpzH8wJTDjV9h0s7Oqo9WRD9QHQv6Cn6Sy9hcPEBVpfEp1hN3Myz+bFThy9OSFbTdP5jc6UXHuepS8HrCpt62bzVtLOHXm'
+                  'oiHkzJw6gVVLp2MbFcglhXpFsne86ZmgkgU2eszVwLhAvsiZikts332WmrrAnHNLio9iyeOTmHxvwEO6/RKo+q2hVdGiV0D9'
+                  '1Ygv/u25yxwpqqXkzEW6e3w7l2sOCyHzR+N5KCeBjJRxBg1YWSvZBW/ful52J+jAHBPh4UVAplF2o6vbybnqK1RUN1J/0UFD'
+                  'Yystji66up3XyYgINxM9zk5sTDjpyWO5N2kMYaGGnoT4GibMvPWUouc04KK8h4DD/D8N2HMiuWQXHgE2ctdAveOJnAEJAiCy'
+                  'dz1I8YjnRjiO1frqgF7WgM+l7eoCbSW3hmRHFproZaVMye/2mSB9qG0/j1JLgM4RSE43Sp6WWYVV3irddl9McnYcRPEM+i0H'
+                  'IwUukFWSU7D3dhXvaONQcgo/RdSLuuBhDyewRrIL8u/MRPli6/WjmR8yfM+tdiE8fydHMQdFkO6v5c1FsZVbs0KGg0FWaqnk'
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'nickname_icons.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded nickname_icons.py (5/6)
+        run: |
+          $payload = @'
+                  '7Djoy0M+781LVuHnaM5M4NgwmsuLISTbV3IGRRCAzNxZQ2TvHOAfDO0MBQXqbazm2d7OpQZ0iA3glrzL0DtjVoqSlySn4At/'
+                  'hPid/iLZhUdwOLJQ/A64PASIuQyyFocjy19yAtKD3HpTyQIbPZZfgVoPxAWZmAaUvI+z50358a6ApZUYc0XXgTkWIuxPobTn'
+                  'QM3HuBsbnCj2ImzC4dg65K/o8myjlk1A9T6FqHnAI+i33fmDq8AhRO3D6fpE7t950Uj9gxrv6TsXkomSGfoVgZIOJIOKQN/6'
+                  'vpYv2Qo0gbQAVaDKEVWGkhIqLSXBvCbwf6bO50KiFxBVAAAAAElFTkSuQmCC'
+              ),
+              '🦋': (
+                  'iVBORw0KGgoAAAANSUhEUgAAAEgAAABCCAYAAAD0dpAhAAAbSklEQVR42uV8eXhc1ZXn776t6tWmKpVK+66SbMm2hBdsNoPZ'
+                  'YgwBT7N8ENOAWZN0ksHzNd0wafLFSfgSSJqemYakGcIWCAlJkwngTMA2BtsBjBcZWbZWq7Tvqn1/Ve+9O3+8UkllqbQ47nzd'
+                  'Pfcv1atb9577u+ee87vnnCfgnObcdrcF/5+2+dZOAKBy5049NxB5lwtPXEMSEQ6EhaqzRFSD7XOVtzzv2vfyO/8ZAana9siX'
+                  'OCnwKBPzXcHE/RaoClROVBVzwRGI+ht73n8zSACg7qrtnax/eEW2gVSDwyubi77n2vfqP/+n0JTrdj7AxKZ+yIYnCgA6bx/F'
+                  'XDTa/ckfSkjdDfffx461vgYAXE4h7GtvgJqIITLUhuhIB6AqMz8y5AVVU/E3eva/+sv/kMB8aefNTHj8VTYyZU8fIcJALFkB'
+                  'Q9kqsHoLfKc/RMI9CABI5q/6B06Nh3eyqdMWqroWpWu2wWTNBQDIYR98p/bCc+RtyLEA2KjbwkY9bzi33PY4yxdt7dr//Oh/'
+                  'BGBKtz6YK8b973CT7ZtBtQ1ndUbYN90K20XbwOc4AACxcBD9YQai51WAKmCk0J2svbTm+0wilMOaHYjmN8IzPgyrowCCTgQj'
+                  'iDCWr4Ztw5fBcAJi492gShJs3J9Pk95dtoYtjLf31MF/z+DUfOn+/6r3u/axkckqgILhBNg33Yby274Dc+1GsHojACAeDaP9'
+                  '2EEkZQWGhBs06gflBIHNK6t9gkmETbrcYuSuvQkBzwS8EyOw5ReBF3QAAIblYaxogm3tNiQDk5CmBkCUJMNG3VtsKy/dXlR1'
+                  '9ZtT/ccTi0p7xx1sg2D4rsNRLE5NjvYsZ6GrmtZf4Sgs/rquuvKz4PCwvOgPtuzmaivyPuA93d8gSoIFALNzIyrvfgY59ZvB'
+                  '8Lp0VykaQfuxQ0jEYygsrwHv60PCNwbweoUBoAIAlZMoq1uFoqo6JBMS2o4eQiwSypiTM1hRdtuTKL/9O+DEHAAUnL9/rRw7'
+                  'O16z9YGrF5O5obt/JaX0u5ShbznXrnUsFZzGxkajCvyGAk+YYslNi7vr+xtWJI+Ncf6+6wEKVjCg+KZdqLjrKfCWvIy+iXgM'
+                  '7ccPQ4pFkVtYgsqGtaBKEgBAwSgMZYgCAFTVHlasbIS9qAzJRBwdxw5DikbmCGCpvxLOr70Ek/NiTcPiXiM/1XGg9rp7nlxI'
+                  '8PZTx9sI8CkAC6+y310qQAlwjwEoBtBtZOmnC/Wt3rrza+xk92kmPJEHAIbyNXB+/efIXXcTQEhG36Qkof3YIcSjYeTkFaCu'
+                  '6RIQQqAmpWkSRBmASQIATSZSzwhqGzfC6iiEFI+i7fiheUHiTFZU3PUUHFfsAAgBURKEdXf8wHntXW8ttABK6WMAKEC/unrd'
+                  'uvolaE8+IeRvU8I93tzcnMzuvnc8p5ts/xdGjjMAYL94O6ru+TF4S/6cvklJQtuxg4hFQjBbc7Fi3eUgDKPJqKROMGGSDGF5'
+                  'LwDI8RBAaeo5gxVrL4PZaocUjaDt2CFIseicSQhhUHD1/cjb+igoy4NQCt599k7nVbe34lvf0s23iI7Wk58DeAcApyjMU4tq'
+                  'D+G+D8AMSo50tDS/O3+v3UztVbfv46e6vwlVARgW1qseRNEN3wRhuLngJOIaOOEgRJMFKzdsBsuyM3QmHtSAYvgAQxluQtMg'
+                  'CXLEn+7EsCxWXnwFDOYcSLEI2o4ehBSPzitezFSC6Mr/AiJaAQC8v29N3Reu/tKtD+bOq0VgnwCQBOitq5rWX5ENnBWNG1YQ'
+                  'kAcBUMqQlOZltvU3P2Ko29x8dtreQGdCdMUtiFoq5x0zmZDQfuwwYuEgdAYjGi6+EhwvzMgmJyAHPdoHlvcwKmGH07sVGMs8'
+                  'RpyAho1XQjSaNJA+/3jOcaOg8I4PQRVtKP/rn0BwVGljhyYKDcHh3oqtu4rOFbLz1LFugLwIzUP84/SV59zGEvwEAAfgXztb'
+                  'jn82x7Nt+RtTyDd6lg2OVgMAZ8lH1b3PQjXmwz85BlVR5gHnEKKhAHhBh/oNmyHoxUyNDUyBUjWlQdwYA4Z3pQfwjc0Rkhf0'
+                  'WLlhM3idHlIsirZjBzNACvk8SMTj0IkGmAsrUbPzWYjFK7UFRt05umBHZ92Xv1YyZycZ5XsAAgA2rWrccNu539evWXslBb0Z'
+                  'QIJh6T+c+33lll3WZLLfxYbGigFAcFTC+eDzMBZWw5hjhaLICHjG0/1lOYGO439CNBQAy/FYuWEzRKN57pH2j80yIewAw3Fc'
+                  '2itI3vmJsd5gQv2GzWB5HlIsivbjh5GIxwAA3nFNAW35xRooejOq7nsWxuoN0yBZiNvVVXfTA9Wzx+z54ospQumPAYAS+ozT'
+                  '6dRlXKIJ+7S2jeRnbSdPZnCmupsfyROkzh42PJEPAPqSBtQ88L/AmWyaLAWaLO4xTTY5IaH96CFEgj7NdKy/HKYc2/xHcJaS'
+                  'KAx/lOmKuY6CaAYqPtGb1VgaLVbUr78CDMsiHg2j9bMP0XumGeOD2m9yUwABAMMJqLzr+zDVbNQ+x7xGxjN4umb7/WWzxwwa'
+                  'df8DFIMUqBYMOV+dfr6yccNdIPRSAH6ayDTkpVsfzCWewW42qt2nxJIGVN/zDFjBkO5jc2in2jM2BNfpE2j97ENEgn4QwqD2'
+                  'oktgyc1OweLjPek9oiL/EYODB2VVZ4oDQGysa0GPYrbloW7tpSCEQVKKY2KoF1RVwHIcLLmZBIywPCru3A2jUwOJxHwGbmK0'
+                  're7mR9Idh48ciRFCd2uKgu9Ur1+fs2rVKoEh9KmUjv+os/OYZ4aJ7xYMkYlWJjJlAwCxeCWq7n4aDK/P3EyzDYJeBKUUk8N9'
+                  'mgcmQM2aDRkbOV+LjmoYqIKo9L330gSjfTC4ASAZmIIc9i84gM1RhJrGDSCz7KrFng/CsHNpAMuj8o7vwlC9LqVJbjO8I624'
+                  'Y3fabQQNurcA+AHk6WQMqZx+igLVABIKS1+Z7crrJr44zYbGSrRjVY+qe34MRifOFZIAVkdhps1aeREcJRULrk2Vk5CmBlLG'
+                  '1xQAAI0ZsWJH2mWPdy/KbB3FFahoaJptMLL2JZyAyjufgqFstTZVeLyodvLUGWA3AwCWmHQrAOu0kgKYjuoJXBI70iTw6jN/'
+                  'YgPDdQCgK6hB9d3PgBHE7PPO+rvE2YCiytpF1yVNuEBVOaVBBlcaIKoTD6QBGu5YEv0vqqhFaU0DAMA3OYZIMLvmMRyPiq88'
+                  'BZ1D4yacf7DWueX0YY0mpMGZu6NE+6726rt+x3v7LgMA3lqAqh1Pz685sy6f7lEtplNQXoPy2lVLWlN0uH2W0IbP0wCxAv3t'
+                  'NOaR/i+WfMOevtxSqsLVejzNH+blNDojKu9+GnxOgabBvv7LndfueIlSZL3VE0q6nVvvfZzz9tyqKboFlTueBmeyLihXb1sz'
+                  'FEVBbmEJqhrWLnk94YGWmc3h+d+nAera80afKhiTABAd6YQqxZY8aMWKRhhzchEJ+THWv3AEgzfbUbnjh2BFk/bZ0/Ng0lZd'
+                  'iSxxT8VSynNTPT8CKAivR+WOH0FnL11wjqmRfvjdE9AbzahNXT6X0ihVEek/rf3N6qhrb/khpFiqhpjeOsAkwk6qKjj57gtA'
+                  'Xg04TgDH82B5ARwvgOMEsIIAnks943hQUNBUWHbo7BnkFhRDbzBlFUSXV47y276Dvl99G1AV8OHJ5wlh+ihVq8/RHy9JBl8k'
+                  'ikRACEpveQxicd2Ci0wm4ujvbNUWqarwTYyAYRnIiSSSchJKIgFZTkBOJqDIScjpz0lQ/whEKZyKwVsngN1qBkBUZ9wPwAkA'
+                  'jG8IkrkUSUlaVvROVRT0nmlGw8VXYQG7DWPVOhRd9zDG9r0AkoxwKqsrJUrmXJQTRCYe0AOA4/KvIKfhqkXn72tvgZzQxpFi'
+                  'EXS3fL5k2QX/4MzcvDlNntMAsdTwAkC+DlAYY2NouGobFEWGnEhAkROQkzKUZALJ5KwdSCagJLUdiEcjoFRFwDOJyZF+5JdW'
+                  'LiiQfdNtiI/3wte6D0SRhDn2R5ZEADDXXoL8LfctukDf1Bg8Y0Mp+kSgM5jA8Tw4buYE8LwAluPBCQLY6dPB8eAFAYO/2Ifp'
+                  'LVIE06tzAOo68FLrik3XxJl4QJ8MuSGPd8OU4i9LaYosY6CzBRNDfRjoOAWboxC8Tr+wJ7xpF6KjXZDcA1lsVh5K/+oJEMIs'
+                  'MncSfW0nNeALS1G9Zj04Tliy7PHxHkhT/SntMSq9e1/+v2lnlnFExNzj0397m/cs63ixHIeq1euRk1cAWU6gr31xb8hwPIzl'
+                  'q7N+L5asBKszLjrOQNdpSLEojBYbaps2LQscAPCe2DMrtWXP4DkZACV409Nphtv5CaJL5ESzCWNt40bwgg6e8WF4J0YWP/u5'
+                  '2am/YCte9PchnxuTg71gOQ51ay9JRwWXHM71DsN3at8MQGLOT7MCNLD/tT8qemvax0989NKC3GbeY6HTo3r1upTRPAlFTi4C'
+                  'UMl5gad5KgWu0ydAQVFZf9GC3jNbGz/w8gx75o1K797KF7MClEoz75/+OzLQCs/nv1v2pLkFpbA5ipCIxzGQcrvZtSQ7QLpF'
+                  'NGjI1ZmKKduRX1K1bDl9p/Yi2PnJrHRz/tFp954VIMVseoSyOjqjRa8g1HVk2ZNXrV4HlmUxMdyLgGdiYS3JQuYEe3bwoqEA'
+                  'Rl2dIIRB1ep1C9KK+VpkoBWj7z83o40MB57P++ocOzmHS7z30oSSU/bRjBrLGHj7e5g8/AaonFiyADq9AcU19QAF+tpOzgl/'
+                  'zo4dcWb7vAacM+dly4xoR4uqKKqogdFsXQ5Zg/vI2xj41ROgSWk2a/+iY98LZxYFCACI0XYfFYzy7EEnD72O7p89AF/LXqhL'
+                  'BKqkqg46gwmxSBjDPe0LHKW5msJbi7O69/H+swgHvOAFHUqXeBGlShL+Mx/j7AsPYfzD/w11lm2krE7ldI575/XO8z30dJ8I'
+                  '5TZeM8hEvdtB1bTyqlIEoe7P4D2xB8nAJChVwRttIFncKiEMBL0BnvEhhP1e2PKLIMxzC48OnZkVydOaoawB1lVXz3NTD6O7'
+                  '5QgopahY2QSLLS+7siRiiPS1wHviPQzveRaB1v1QYsFzg1ZI2p1/373/lXfmG4PLNnj3B6/+wrntwVaEPb/hQsO1hNJZeaMQ'
+                  'vM3vwdv8HghhoHOUQ59fBZ2jCrr8SujzqyDkFACEwF5YAkuuA0HvFHrPNGP1pdfM0Yz5PJnOWjRfvgiutpNQFAUGcw4Kymau'
+                  'b8nAFKSpfsQn+xCf6kN8Uvt7dvnOObsH2VQ0lBTz7unf/+qhpcSVFsx1Q4rvZuLe69mYz5p10tlnVxChc1RAZysC1edgcsoD'
+                  'yungKK+Do9wJkioeUJNxhF0nMPXJrzM94UU3IqfxmnRQjMoJeEcHMO46A8gS8u25IIkwkv4xxKcGoEqRJRA1BqpoCyqi7RDl'
+                  '9N9z7ftF8+LcbpmtcssuKysE7iVy9AaSiK5ipEgBkwjqslVqLc1AnI8ki62MQOVNSVVnmgAndqi84UNWr3ule8+L7uWR3wvQ'
+                  'Knfu1POjpImCrldpsoFR5GpGTpRASRQQNSmCKjxREgIUhQFVCFHl9CIoYQHCqERJZJw7ygoUVCGEUmAmkQcQloJlVcoISRA2'
+                  'SVk+SjnBTRluhLJ8LyH8GZWyp2wid7J5z4vRPxvnC7xvcG57cC1JxO6DHN9CEpEqRgqZiSJd8HmmA1tUMIdVnWGQ8uJhiIbX'
+                  'e/a89PkFVcQLMUj1dTtvZZXIo0zMu5GJ+fXnZjZ0jnLo7GXQ5ZVDsBWB0RkRDoUxPOACKGDydkAdz6QBrKMawbwmEBAUlZUj'
+                  'x5YLmohC8o0h4R6C5B6G5O6fQzmozpJQxNyTVLD89ELUUp43QOtvfsTgj4Wf5cKeu5mYOyOHqy+ogbl2E0yVTRDLVoM5hwaM'
+                  'D7rQ3/YFKCjySyshdH+AQPvhzKBaZROYjfditFfLU5XXrkKJsyETDDmB6GgnIn0tCPYcRXw0MyNDRVtUNjrehsB8q+f9N4N/'
+                  'IYB2M87rup9nAyMPMYkwn95x0Qxr4/WwNX0J+oKarL8ecXVgsFsjrIXlNahqWIeBt76NUM/xOaGOmgeew1B3G4ZdmnYVVdWh'
+                  'ckVTVqkl9wB8Lfvga90HZValiioYFMVS+mZP7oqH8a+7E8tZLbuczjU3PXyZw9HewvkHN0/X/bGCAY4rvoKy256Epe4ycKbc'
+                  'rJ6qv+sURlxaCKWoshZV9WsBAvhP7UXCP55J0Iw25K6/CTn2fDAMg4BnEmG/B1IsClt+0bzBeM5ghal6PewbbgGjMyI+3gMq'
+                  'S6l6Sk+TPeb+b6b6K08FelvOXnCAaq+750lusuMNJhFKU+GcVVtQeffTMDs3gmH5BTIGFL1nTmBiUCskKa6qQ2X9RWlN8Db/'
+                  'AcngVKZgogn2DdsBAJZcBziOh989gWjIj0jAj9yCkqyxH8JyMJatRu76L0OJBtIsnSRjAh/13G1dvcXq7T2994IBVHPtjp9z'
+                  'nq7HCFUIADA6EaXbH0f+VfdmVItmC+Sf/eII3Kl4cYmzARUr1mT0cZ94F0rYl0k0eRF5m25Nfzbb7OAEAX73OOKRMEI+N+yF'
+                  'JWAYdoGIpQBL3aUQi+sQdjWDyhIACjbqucTWcGWjt//Mb/9sgJzX3/tt3t35d9NXDVZvRuWOH8GcKuBcLFbc2fwJ/O6JtKEt'
+                  'm+dyOfXpr6BK0XN5HhyX35XxzGy1gxf0CEyNQ4pF4J8aR25BKViOWziyYC+Fpe4yBLs/Tc/DxHz1lsarHb7e039c8EawoPu+'
+                  '8eE6ztPz1DQ4jE5E1X3/BEPporWXWpHk0UMIerWjU7GicY4XSp0/qNG5DkaRohk37ulWWF6D6jVa8UQk5MeZzz+CFFv8mqHL'
+                  'K0P1vf8EzmBNG0XB3fMN580PXXLeAHGRyfdmk7ziG3dBn1+5qDBSNIIzRz9GJOgDCFBZfxGKq+d/VyY+2TdTdpsZT0Vs6PS8'
+                  'v8kvrURN08UghCAeDePM5x8hGgosHv+2FaF0+9+nL8tElcH4xt8+L4Dqb9xRwQbH0qsyOzfCuvqahZktVRH0TuLM0Y8Qj4QA'
+                  'AlQ1rFuwssLfui97SLT1w6zfOYor4Gy6BIQwSMTjaDt6EL6psXSWN1szOS9GzpprZ2xMeLzEuS27FmU9vAkJTwqzJrNvui2l'
+                  'mBSJWAyxSBhSJIRYLIxYOIh4JAwpFs0I8lesaEJhec0CQXcZ/jMHUnSMzrl5Bzv+BPWGb2Wt5MgrKgVVZfS0HoecTKDzxCcg'
+                  'hEDQG6A3miAazRANJuhNFogGIwTRCEII8jbdCn/r/vQRRzz83wFsXxZATDK+bpY7wIgvjvgn+xCPhKCqS8t02M4pYjq3hXuO'
+                  'QQ77oRodPiYyJQLQpwOAxrwxhCeLg52HYG26IesYVkfRHEohxSKQYhEE3BPnYM5AbzBCNFpA9CbQuJaLJ3KsYfk2SE06ZjFR'
+                  'eCdHEA0F5oBDGBai0QybowiFFc50fSAAjA+4FgTI0/wHAIBssL8EoGXWVy5FdDwNAJ4Tf1hwjGluBQA59nwUVdTC5iiCaLKA'
+                  'OYcnUVVFLByCd2IEMjtT00hkybbsI0bApCk5oSrM1lzoDCboDCaIBgN0ogk60QhBFOdUmHU1fwrv5CgmhnpRWFkL0Tg3XxUb'
+                  '60LYdQKqziq55JFv1xPyOCi9JHX/ec/14evPrbjshh/ERrtywj3H0++FnOspp+9qZqsd9RuvnCNLIh6HFAsjHg0jHotCioYR'
+                  'j4ShYtZGs0xy2Rqkclya+5NEBA3rLkNt0yaU166Co6QKllwHdKJh3vK7srrVICCgVMVg1/yeaPLj1zQXbyp+EQcPyoD8W6Te'
+                  'PCIgv9E0K+8pAJg49Fr6NYnZbbinDUrqvYryFWvmlUXQ62G25cFRUokyZwOcjRux6pItYBOhWSkfwbtsgAhn+GA2Vwm7Tiz5'
+                  'zmYw58BepFX8eieHEfJ7MoP0w+0IuU6A6izJs/aaxwCgo6XlLAH9PYCDbadOHAMA14e//EfFmBeMjXYjeDYzzBOLhDAx1KfZ'
+                  'obz8BUt75yQJBk9npnx0xo+Xr0GM8UXKCult85xcXjFDae0qjW9QYKDj1IyTohTjB17Sjoi55JXZt2sZyqOKiq9nyGEseEbT'
+                  'uFfTKWIAGOw6nfaYpbVrliWbt3mWXWNYqMT4/LIBcu17YVI1F6WD2pH+FkRH2pcshGg0Ia9YK7sN+T3wTg6nDPN7iA6ehirm'
+                  'Rl3K8DczMimnTo10n27unP2sZ//rP1RMBe74ZF86sK+NpxVG5OYXw2zNXbJcknsIwY6ZdLNsKuzp3/di53kxaVm0/w2dfp2I'
+                  'Uoy9/9NlFTOUOevTN+7BrtOQfKOYOPAyAALFXPqoZnuWsChD/n0gDKY++TXi470Y6GhJB/pLaxuWpT1jHzyX1kRKCFTR8Xfn'
+                  'fVn19ZwctTZcsYmNeWsBQA57QAgDY0XTkoTheAEJKY5IwAc5KUE6+ksogXHI1vK2no9+/dBSFxXobTlrW3nZtUzUUxEcaEVA'
+                  'X5TKuZUuqf45fbSOvQPPifdmbI+16ljPR28+dt53MQDIMebcror2tMmfOvxLBLuXXsxQWlMPhmGgGz2J5FgXIJjkhL7i+uXG'
+                  'MQXk36iK1rjsGYR+6AgIIfNGBrK1yGArxg78fMa26XPiqi7v5kXze4t1aN7zYpSxVF9GeS1XT6mK4d/9AKGzR5e2ML0IO/VC'
+                  'GD0JSggStuq/Hdj7P8eWC1DbwZ+FFWvZvSAs+Mk2WGNDEE1L+zcjkYFWDLz1ZLr4grI6NZFTtdW174XJCxIwc7tOTJpXbjnE'
+                  'KpG/JkqSpaqKYNtBgFIYyhrmfU8jrdYn9sB/+DUAFLKtZo/rwJu7zjdR4O1pac9ZtaWIjbo3qJNnQVgexrLVWctnKFXhPfZ/'
+                  'MPzuT9JuXeVENZFXd2ffvlfev+BB+9obH76I+Ic+YlNv22ghhBLYN26Hue5SCFbt7iVH/amigT2IDGoFVLK1vO3soabGcwuU'
+                  'zqfVbrn9MOfr2wwAYvEK5F58C8zVG9Lx8GTIjfDZo3Af+/3MyykAVENuOGks29b74Suf/NtlNbZs4WqZwl+z/qFbiRJnMskl'
+                  'D0JYqMl4xhSytazl7KGm9RcCnHSk8+o7DvC+vmtmM2zCaxlwLbQ6S5NYgco5pfvlCuP2/tdei/9F8mJVtzxUwIYjz7Ex9zYm'
+                  '5jPNuQoQAtWQ51PM+c/07H39GfwbtJob7v8qGxr/ARuecsytDSBQ9Dkx1eDYz5r4XV173uj7C+XF5raKrbuKeOr/K6qqVQSy'
+                  'XmX4Xl6nvnO+Qp3P/JzivZ2hcg0ljEoZvl/gmHc7/vjywJ879v8DClmTiBVUs0sAAAAASUVORK5CYII='
+              ),
+              '✨': (
+                  'iVBORw0KGgoAAAANSUhEUgAAAEQAAABCCAYAAADuSnCvAAAHGklEQVR42t2ba2xT5xmAn/fEuQzi0mlCU0Ar2kZZO0SyxE7p'
+                  'vRlrgEVx0jqXrRoJa9UyTZPo/k6rVH5M0/6NTpOmsrWwMKY2JIxgyErQoOmoKMSOATWDsU4tVdXb2k5ZS53E9nn3IxYdmZ34'
+                  '+Fzs8P7zOT7f5fne2/d+5wgLiJ7buJSZynvxlV2Q+oNv4JHoYKAGZBDVOuB30hl73It+jXkHNdFVTbIyjjBMOv13HW+71ysg'
+                  'mDyB6h3AEmC7HmjYUHQgJBJbgJszvyow9QlPtEMRhPZrARnh4gNBts658C090/4l10c1GLgNWDkH0wOqSNGAaLz1ZmD9//3f'
+                  'ML/ngY6EslxcyWDwG8XTEFO2QrYVkYfdByJt2S+bbUUBouNtK1B6cqzeGh0LtbsXXepXAetygAq5vhRXB3KiqQr/DSHQXmAz'
+                  '4Fvg2YuoPI+pv5f1kdcdAzIQeBzYmes24rtJOk6/5ZqGaDRco9HWXfj974H2A615wAC4BdEnKeM1jYZGnAvJ82qBoKmQuyYj'
+                  'MwMgjwE32DC7Zkwd0WjoJlva0R9YBnpPAQ7XQSAqdQ61VYmYt9objbQAFQto0AYdusvvplN91qG2LqLGX+1ZS15RpJLk9EbX'
+                  'gEgwsh0xNyP6HDBlXc85BfpDyqeDEox8WrC5PB0oR2VzfuDUtfB7TZ6h0a5lSKIbla3AndnzEADeBOkjndor64cvORNuG+9H'
+                  'zWN5/v0jvuD/onzzxZSrQK6FEzoJ3JV125VKrZLb/+xo6NOBwFPAdgvmdZ90xF/yLlMV6cthIiNOw8iIteihhivRJjcQrXwe'
+                  'SGS50+d4djrQUAt82eJjD3gKRIL7J1EOzbn8H4Qh5z2ZFOIkV+tA4BZvt/+GuXuOuTxnJ5I4Zi72QBYORAJHjgK/Aq4AL6Pp'
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'nickname_icons.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded nickname_icons.py (6/6)
+        run: |
+          $payload = @'
+                  'J53fzAVqUBodLBO4E2W8Eh1s2IbK0wU+blLuWyHtp9/zxmQ8IWJrS2+QSn7bOx/iNotIYAlgr3jscPgtisno8OpKPr2xFXQb'
+                  'YHdfMg36W6SsTzrGxhYVEO1vCGBIL/AQsNyFLmaLVr7UHnnw7BslCUT761Zi+DqBR4Baj9ibwClE+0hP/1G6Jz4pKhDd3VRF'
+                  '9cchhHzLkW5KAuEwGLsIj/1FBPUEiO7A4OuBOzGkB/QhwE/pyVsI+9D0M9J59h+uANHB+lWYxncRtgFfYbGIEEPZi1H2Bwmf'
+                  '+dAWEO1fW41RtQWR3sz562KWKUQPouyRzvGjloFoX+1SlpTH+ezM93qSp6wnZtW+e65TGACPWgeiemE2GboORYhbBiId8cuY'
+                  'xiaUY5l4fz3IJMgu0kaXrSijQ/UrSBpdwMNA3SKDYIIeR429JGYGpff8FWfzkIHGtYjZg/KIS2m5U3IBlX6M9G7piF92PVPV'
+                  '/rUVGJWbEOlBaWfBkzhPfMO/UdmPqXulO3ayaHsZ3bfu81SVd6HSS/YjDTdlBhhB6UOnhqR7Yqakdrt6oOFW0sZ3EP0+sMrF'
+                  'rv6G0kdZcreEz79f8vUQ3YHBusYNaLoXJAwstd8obyMMYJjPSjh+btEViK7O40+Br5LmNZsOIsqr0fWyw5kUoKglRHkw9k/g'
+                  'vD2qesgpGDhRp9BouAZNDiLUAs8QiPx4oZrDtVTkMKq1Npb0iJOLZF9DNPVThDsyvmA70db7rKVHYmdC7xCOxUsLiGjLnCZb'
+                  'LD0/MfYK8H6BnUcsaaPbQPR0yxrmHlKLWqqiz9q/Hi0wJDhqLvY1xGc0Z7laq9FwjQcTmyadOF5aQFSas05Pk/dbaictLwBJ'
+                  'i50ft1JNdx2InmjyAU05Wm22pCDdsUngpMUhOG4u9jTE778dWJYjc2y2/OWCVbMpM10BYr2merplDWW+HtCtwHyfirwM7IGq'
+                  '/RLcP7nwLjn4NQy9mOcwXpXO2LqiAdGJrmoSiS2o9GZyDiuSAA4CeyQYGZm/phK4RH712l9IZ+wnRTEZPbdxKYmpcZDfFAAD'
+                  '4HPMnuUe1WjrzgWcdH5mYLrjP/LzIakqB6vs8uj8o8kLyEcs979SPCCScrLKPn+a/YE5Cizgb2TYjRd28wYiDcOXMdkEtqrs'
+                  'kyi7MNNd8/b1g1gyU82fr/bhmrnkvduV2yKjwKiOt63ApAs0nyp75pUE6cM3tU/qRq7kt0R6BJXOXCkcZcYxN4EUXCDSWOuP'
+                  'UPl1jttJYLUEI29abre/fjmG8W5W7RUdlY7xJjeBFJ6YacWBedQ6WgiM2aw1/i9grBjmYguIBA+8A3IpR0ngRXt7pBwTNzhc'
+                  'skBmB55r4mIPiEi2ib8u4fELpQ1EGM2WuTAlp2y12xE9C8z94iKCB2KzYlZ+Iou5nJG7D31sT0FQkKE50Weo5IFk9SOmTXP5'
+                  'rJ2fZTaIn4D+UsLjx70AYv/tQDFHUFnzPw5xxJF8oHvsXeBuPBYHqu4VP7+6kspOGiMvsYjlv2PSbqclFwnrAAAAAElFTkSu'
+                  'QmCC'
+              ),
+              '❤': (
+                  'iVBORw0KGgoAAAANSUhEUgAAAEgAAABCCAYAAAD0dpAhAAAGMklEQVR42u2ceWyUZR7HP79nDhyqYEvYGDeAnWmLbqFkUxK2'
+                  'UXe7tOWI210122X/gd1EgzHx4IiyupsNm6zrLhvB4x8PDB7RVQiCGnRtR+iGlSYrlbZDtYgdINXGe0DtwRzvzz96bA+GTqcz'
+                  'Q8u833/amXme93nz6e9853kKKdTxJStndJZWT+cCqbO0evrxJStnpPKaksykjrIyT7gnZ6la+nOjUqrC1cAVQ4aEgS8EAooc'
+                  'sYzWFhTmHpRdu2KpuGmtqXG0f/j1T8WSZSr8WGABMBtwDxn2qShtlmijqNlvvo3szz9Z35tWQCcXVF5jOVinyipg5jjX+lLR'
+                  'Z7EcjxQcre1IBkx7ceVcnKwTZY3CrHFOP43KyyLRbd6WA8dSCujYoqU/dKr5J7AKMBM0gAjwlFOn/WleYF8okQmnFt6QG5Wz'
+                  'DwC3Aq4Jrm8h/Mtl5N65R+o6JwwoWFJxiyLbgMtSHDI+t5S1hQH/q+cb9NGiqptE9Yl+F0qdlG+Adb6Af0dSgFqLa9weR+gp'
+                  'hTVpjKuK8g9v4Lo/Cput4R9sNsFF7zyI6j3JxsoE72BHyB26bXFjYyRhQB1lZZ6zXTl7BJZnJP2IPuMtyrt1IIhrTY2j/Vho'
+                  'h8DqjCwP/3bldN08p6GhZ+Rno+LJgfJyZ7grZ2fG4ACo/D7YFnpy4OWJY6efzhScPiNixdmunJcOlJc7x7Sg9pKKh0HuviCF'
+                  'jLIBo4LKQxdmfdnqC9RtjAsoWFL1S0X3ptXnz69o/0/nBVpfMVT7mvz7RgHqLK2e3hPpeR+YR3arozcW/VFxa/13w2JQb7j3'
+                  'DzYcAOZc4nBuHGZBx5esnGF6IqeAy20+AJzBxTxfo/+MAXB0R1fbcIZppkb1t4MupqKrbSYjSzNZDSAfXF0xy+2Wz1PQY11s'
+                  'stwxx2zjniY/s+GcU6bXxK43KAttFnFbkIUGodBGEZdQkUElzyYRL1CTZ8DKsVHEa8241AjSbaOI52HSbYAzNor4FbVR4aTN'
+                  'IV5rbwUNlgZsFHEVMA6V92wO55ZDHU2iIMGSyq+AXBvJMJ32tvjzjIAictjmMSqHNQio6Q9GB20go3rVgww0qYr1ig1kRKeq'
+                  'jj2DgAqbD7QqfGBjGVRLfqC2bRBQf+e60+bSX/8ouwYtaeAXl0OepG9jQbYr7LCi20cBmnukrlOVPbb56M781vpPRwHqq4zk'
+                  '0axP7kYfGxash74oaKp7B/BnMZ83vM37/xcXUF/6l/sAzcre1OjmUel+5Bu+o3WHUd2bhc6129f09rtjAgIQp64HurKITk9M'
+                  'ddM5C8Zzvek9sv+UKn/PHueSvxQF/MGEAQGctXK3AG1ZgOdoyP311riOd76Z7QuqFmP0EBPfWTpZFRWxrh2ZuRKyoMGALfLX'
+                  'i9i3/nw+OGMCAvAWXf4AIocuQjoHvfPztoyZ2xK50kcLls0RYx0GfnCRwPnMIrq4sKX+4zEfeyRytYKjtR1q5Gb6zmBMdUWM'
+                  'yqpE4CQMaEgbsmnKl4PKhvxA3X8SHj/eBYIlVY8oetcU5fO4r8V/+3gmjHtfUH7LteuB3VOv0eI17/zcO8Ztccks1lFW5gl3'
+                  '5dQC102VjGW+iS5L5rxYUjvL5jQ09ORgVgCT/tsQgQbL4/pFMnCStqDBSru0ciYR3gKWTFI+7zl1WmWi59JSZkGDlXaj/4wx'
+                  '0RWTtJD8Ly6WTgTOhAEB5DfVn/Y4L6kC3phEEXmfx+VZ7mv0T3hrT0p2t17Z+Hp3yBW6EeGFSRBzngu5Qzdd2fh6d4qul9JU'
+                  'KsGFVfci+jcyv7VYEbZ4m/33SQofGafl2FOwpOLXijwLZOoMfRfCGl+z/5U0WGR6FCxevkgdsZ1AUZrhtKH8xhfwp2UjWNrc'
+                  'wNv6VnNvLFoKvJhGOLtx8ZN0wUmrBQ17XFJS8TtBHiZ1J4pCInK3t7nu+QwE/czoRHH5FepwPq7wqwne8psWkbWJPq6YMoD+'
+                  'H8CXVSuxR0GuGufUTxTuL2jxP5fhsiHz6iytnt4T7t6EyAbg0jGGfwc85HF5tqSqtpn0gAbUf1btTpT1CCP/rU2XIE9LLPLg'
+                  '0N0WWQVoaNOrYVaJyF2ITsOS7eGItf2atre/wtbwSlwnyR9tQN8D+6AdQKzpv3oAAAAASUVORK5CYII='
+              ),
+          }
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'nickname_icons.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
       - name: Write embedded test_app.py (1/6)
         run: |
           $payload = @'
@@ -4626,6 +5658,8 @@ jobs:
           from io import BytesIO
           from unittest import mock
           from pathlib import Path
+
+          from nickname_icons import emoji_picture, nickname_clusters
 
           from app import (MAX_MESSAGE, TABLE_COLUMNS, AccountProfile, FollowMediaQueue, MediaPreviewLoader, PreviewCancelled,
                            Recipient, RuntimeClock, Session,
@@ -4642,6 +5676,22 @@ jobs:
                            send_interval_ms, valid_id, wrap_cell_text, ellipsize_text, preview_recipient_text,
                            TargetProfile, CollectionPreferences, normalize_collection_preferences, TargetLookupResult, target_lookup_result,
                            load_collection_preferences, save_collection_preferences, target_lookup_text, privacy_failure_reason, parse_target_count)
+
+
+          class NicknameIconTests(unittest.TestCase):
+              def test_combined_emoji_stay_together(self):
+                  self.assertEqual(nickname_clusters("🐟小👩‍💻❤️🇨🇳👍🏽e\u0301"),
+                                   ["🐟", "小", "👩‍💻", "❤️", "🇨🇳", "👍🏽", "e\u0301"])
+
+              def test_fish_and_combined_icons_render_without_system_fonts(self):
+                  with mock.patch("nickname_icons.native_emoji_fonts", side_effect=AssertionError("Unexpected system font lookup")):
+                      for value in ("🐟", "❤️", "👩‍💻", "🇨🇳"):
+                          with self.subTest(value=value):
+                              picture = emoji_picture(value, 21)
+                              self.assertIsNotNone(picture)
+                              self.assertIsNotNone(picture.getbbox())
+                              self.assertEqual(max(picture.size), 21)
+                              self.assertTrue(any(r != g or g != b for r, g, b, alpha in picture.get_flattened_data() if alpha == 255))
 
 
           class AccountProfileTests(unittest.TestCase):
@@ -4806,6 +5856,12 @@ jobs:
                   self.assertEqual(result.duplicates, 1)
                   self.assertEqual(result.skipped, 3)
 
+          '@
+          [IO.File]::WriteAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (2/6)
+        run: |
+          $payload = @'
               def test_merge_sources_and_preserve_id_strings(self):
                   records = [Recipient("00001", "", ["关注"])]
                   added, repeated = merge_records(records, [Recipient("00001", "张三", ["粉丝"]),
@@ -4825,12 +5881,6 @@ jobs:
                       path = Path(directory) / "@0000_共同好友__26人(2).txt"
                       path.write_text("00123", encoding="utf-8")
                       result = read_list(path)
-          '@
-          [IO.File]::WriteAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded test_app.py (2/6)
-        run: |
-          $payload = @'
                       self.assertEqual(result.records[0].sources, ["共同好友"])
 
               def test_empty_and_invalid(self):
@@ -5030,6 +6080,12 @@ jobs:
 
               def test_target_is_a_valid_local_task_label(self):
                   self.assertEqual(collection_target(" @00001 "), "00001")
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (3/6)
+        run: |
+          $payload = @'
                   for value in ("", "..", "a/b", "https://example.com", "x" * 65, "甲"):
                       with self.assertRaises(ValueError):
                           collection_target(value)
@@ -5044,12 +6100,6 @@ jobs:
                       self.assertEqual(len(batch.paths), 2)
                       self.assertEqual([r.douyin_id for r in batch.records], ["00001", "00002"])
                       self.assertTrue(all("粉丝" in r.sources for r in batch.records))
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded test_app.py (3/6)
-        run: |
-          $payload = @'
                       self.assertEqual((batch.records[0].comment_count, batch.records[0].region), (8, "江苏 镇江"))
 
               def test_counts_are_unique_within_each_category(self):
@@ -5250,6 +6300,12 @@ jobs:
                   for records, message in (([], "演示"), (self.records, "  "), (self.records, "a" * 2001)):
                       with self.assertRaises(ValueError):
                           self.session.start(records, message)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (4/6)
+        run: |
+          $payload = @'
                   self.session.start(self.records, "演示")
                   with self.assertRaises(ValueError):
                       self.session.start(self.records, "不允许重入")
@@ -5270,12 +6326,6 @@ jobs:
                                   Recipient("00003", "联系人丙", ["关注", "粉丝"], "女", 19, "江苏 南京", "江苏"),
                                   Recipient("00004", "联系人丁", ["评论区"])]
 
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded test_app.py (4/6)
-        run: |
-          $payload = @'
               def test_combined_filters_are_intersection_with_inclusive_age_bounds(self):
                   result = filter_records(self.records, query="联系人", source="关注", gender="女", min_age=19,
                                           max_age=31, region_query="江苏", region_field="资料地区")
@@ -5480,6 +6530,12 @@ jobs:
                   png = media_cover_png(inspect_media(self.landscape))
                   width, height = self.assert_valid_png(png)
                   self.assertAlmostEqual(width / height, 16 / 9, delta=0.01)
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (5/6)
+        run: |
+          $payload = @'
                   self.assertEqual((width, height), (1920, 1080))
 
               def test_portrait_keeps_its_aspect_ratio(self):
@@ -5500,12 +6556,6 @@ jobs:
               def test_corrupt_video_fails_without_returning_a_cover(self):
                   with tempfile.TemporaryDirectory() as directory:
                       path = Path(directory) / "无法播放.mp4"
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded test_app.py (5/6)
-        run: |
-          $payload = @'
                       path.write_bytes(b"not-a-video")
                       with self.assertRaisesRegex(ValueError, "无法读取封面"):
                           media_cover_png(inspect_media(path))
@@ -5720,6 +6770,12 @@ jobs:
                   for preferences in (CollectionPreferences(None), CollectionPreferences(targets=[]),
                                       CollectionPreferences(targets={"bad id": TargetProfile()}),
                                       CollectionPreferences(targets={"id": TargetProfile("行\n换行")}),
+          '@
+          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+
+      - name: Write embedded test_app.py (6/6)
+        run: |
+          $payload = @'
                                       CollectionPreferences(targets={"id": TargetProfile("字" * 41)}),
                                       CollectionPreferences(targets={"id": TargetProfile(123)}),
                                       CollectionPreferences(targets={"id": TargetProfile(fans_private="true")}),
@@ -5730,12 +6786,6 @@ jobs:
                                       CollectionPreferences(targets={"id": TargetProfile(following_count=1.5)}),
                                       CollectionPreferences(targets={"id": TargetProfile(fans_collected_count=True)}),
                                       CollectionPreferences(targets={"id": TargetProfile(fans_collected_count=-1)}),
-          '@
-          [IO.File]::AppendAllText((Join-Path $PWD 'test_app.py'), $payload + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-
-      - name: Write embedded test_app.py (6/6)
-        run: |
-          $payload = @'
                                       CollectionPreferences(targets={"id": TargetProfile(fans_collected_count=1000000000000)}),
                                       CollectionPreferences(targets={"id": TargetProfile(following_collected_count=1.5)}),
                                       CollectionPreferences(targets={"id": TargetProfile(following_collected_count="123")}),
@@ -6284,6 +7334,14 @@ jobs:
           同一目标的多次成功导入累积参与统计，失败导入不改变此前成功导入的数据；切换目标按各自的已导入名单独立显示。
           此项统计不使用自定义采集人数，也不随表格筛选或排序改变；保留原有接收名单来源中的“互相关注”标记。
 
+          ## v1.20.0 名单删除与昵称表情
+
+          右键点击名单中的一行，选择“删除此人”；先用 Ctrl 或 Shift 多选，再右键点击选中的行，可批量删除。打开接收人资料后，也可在资料正文内右键删除该人。
+          删除后更新名单、当前分类及互相关注人数，并取消对应的待处理媒体任务。正在导入或运行任务时暂不可删除；原始名单和已经保存的文件保持原样，自定义采集人数保持设定值。
+
+          “搜索账号”的目标昵称支持粘贴表情。未编辑时在输入框内显示彩色图标，编辑时在输入框下方显示彩色预览；保存后账号卡片和首字符头像也会显示图标，原始昵称保存在设置中。
+          内置 🐟、❤️、👩‍💻 等常用彩色图标，其余表情尝试使用系统字体。图标来自 [Twemoji](https://github.com/jdecked/twemoji/tree/b6b55fef1e8636b540a6d016a4729ca8cdf2e60b/assets/svg)，由 Twitter, Inc. 和其他贡献者提供，按 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) 授权，转换为 PNG 后随程序分发。
+
           ## 本地运行与构建
 
           安装包含 Tkinter 的 Python 3.12 后：
@@ -6302,7 +7360,7 @@ jobs:
 
           ## 当前验证范围
 
-          交付前已通过 115 项逻辑测试和 YML 内嵌源码一致性校验。
+          交付前已通过 117 项逻辑测试和 YML 内嵌源码一致性校验。
           另在 Linux 的 Tk 8.6 中文界面中通过完整源码 GUI 检查，覆盖 1280 × 768 小屏、901 × 578 最小窗口和多种窗口尺寸，
           验证表头和资料列对应、评论列隐藏 / 恢复、数字排序、缩放、右侧紧凑操作区与日志、左侧分类按钮、时间和视频封面可见。
           资料采集窗口另外检查本地抖音号查询、失败后真实重试、三种分类保存、保存文件可重新导入、
@@ -6378,10 +7436,12 @@ jobs:
           from importlib.metadata import distribution
           import subprocess
           import imageio_ffmpeg
+          from nickname_icons import EMOJI_NOTICE
           parts = ['imageio-ffmpeg 0.6.0: https://github.com/imageio/imageio-ffmpeg',
                    'Pillow 13.0.0: https://github.com/python-pillow/Pillow',
                    'FFmpeg sources and license: https://ffmpeg.org/download.html',
-                   'FFmpeg binary build sources: https://github.com/imageio/imageio-binaries']
+                   'FFmpeg binary build sources: https://github.com/imageio/imageio-binaries',
+                   EMOJI_NOTICE]
           for name in ('imageio-ffmpeg', 'Pillow'):
               package = distribution(name)
               for item in package.files or []:
